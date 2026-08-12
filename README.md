@@ -1,4 +1,4 @@
-# Schlong Physics Swapper 1.4.0
+# Schlong Physics Swapper 1.5.0
 
 Native SKSE plugin for compatible SOS six-bone schlongs. Faster HDT-SMP owns
 Gen01-Gen06 while arousal is below a configurable threshold; CBPC owns them
@@ -78,8 +78,8 @@ The streamlined **Main settings** page provides only everyday controls:
 
 Technical controls now live on their own **Advanced** page. A separate
 **Troubleshooting** page gives one overall health result, plain-language status
-for each dependency/configuration, a one-click recommended-settings repair, and
-copy/save diagnostic-report buttons.
+for each dependency/configuration, quick soft/erect tests, one-click recovery,
+suggested fixes with stable error codes, and support-report controls.
 - refresh and restore-default buttons
 
 Defaults are threshold 60, hysteresis 5, bend 14, and a 1000 ms polling
@@ -153,7 +153,10 @@ The troubleshooting page shows loaded and live connection state for:
 Its health check scans the active MO2 virtual `Data` directory for SMP XMLs
 with a complete `<system>` and all six genital bones. It also checks CBPC
 master maps for Gen01-Gen06 and CBPC parameter files for UBEPS01-UBEPS06.
-The page shows recent handoffs/errors and can copy or save a diagnostic report.
+The page shows recent handoffs/errors and can copy or save a privacy-safe
+diagnostic report. It also includes temporary verbose logging and a 30-second
+capture that records the state once per normal poll while the user reproduces
+the problem.
 
 ## Log and report
 
@@ -163,6 +166,23 @@ runtime independence. External APIs are called dynamically through Papyrus,
 so missing optional SOS bend APIs fall back safely without a hard DLL link.
 Saved health reports are written to
 `Data/SKSE/Plugins/SchlongPhysicsSwapper_Diagnostics.txt`.
+Debug captures are written to
+`Data/SKSE/Plugins/SchlongPhysicsSwapper_DebugCapture.txt`. Reports include
+versions, settings, connection state, relevant configuration filenames and
+recent events. They do not include the Windows username, save name, or full
+computer paths.
+
+When reporting a problem, attach the diagnostic report or 30-second capture and
+include the schlong addon, Skyrim runtime, mod-manager name, expected result,
+actual result, and short reproduction steps. See [SUPPORT.md](docs/SUPPORT.md).
+
+## 1.5.0 changes
+
+- Added Skyrim, SKSE, plugin and dependency version details to reports.
+- Added stable `SPS-xxx` problem codes with plain-language suggested fixes.
+- Added one-click soft/erect tests and a repair-physics action.
+- Added optional verbose logging and a guided 30-second debug capture.
+- Added privacy wording, support instructions, and a GitHub bug-report form.
 
 ## Building
 

@@ -1,0 +1,86 @@
+name: Bug report
+description: Report a Schlong Physics Swapper problem
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve the mod. Run the in-game health check first. For repeatable problems, use the 30-second debug capture and attach the resulting text file below.
+  - type: input
+    id: mod-version
+    attributes:
+      label: Mod version
+      placeholder: 1.5.0
+    validations:
+      required: true
+  - type: input
+    id: runtime
+    attributes:
+      label: Skyrim runtime and SKSE version
+      description: These are shown at the top of the Troubleshooting page.
+      placeholder: Skyrim 1.6.1170, SKSE 2.2.6
+    validations:
+      required: true
+  - type: input
+    id: addon
+    attributes:
+      label: Schlong addon and body setup
+      placeholder: UBE SOS addon, UBE body
+    validations:
+      required: true
+  - type: dropdown
+    id: manager
+    attributes:
+      label: Mod manager
+      options:
+        - Mod Organizer 2
+        - Vortex
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Give the shortest sequence that makes the problem happen.
+      placeholder: |
+        1. Load a save
+        2. Raise OSL arousal above the threshold
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostic report or debug capture
+      description: Drag the generated .txt file here. Check it yourself before uploading.
+    validations:
+      required: true
+  - type: textarea
+    id: conflicts
+    attributes:
+      label: Relevant conflicts or overrides
+      description: Mention anything overwriting the SPS INI, CBPC configs or OSL compatibility script.
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I ran the in-game health check.
+          required: true
+        - label: I checked that this report does not contain information I do not want to share.
+          required: true
