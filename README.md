@@ -164,36 +164,6 @@ so missing optional SOS bend APIs fall back safely without a hard DLL link.
 Saved health reports are written to
 `Data/SKSE/Plugins/SchlongPhysicsSwapper_Diagnostics.txt`.
 
-## 1.4.0 changes
-
-- Added an optional gradual erection transition with a user-friendly duration
-  control from 0.5 to 10 seconds; the default is 3 seconds.
-- Uses SOS AE's native 0-20 bend API with smoothstep easing and only sends each
-  changed integer position once, avoiding animation-event bounce loops.
-- SexLab/PPA handoffs remain immediate for scene alignment, and installations
-  without the native SOS AE call fall back to the reliable normal position path.
-
-## 1.3.1 changes
-
-- Renamed the bundled CBPC files with a `ZZZ` suffix so they load after other
-  SOS CBPC maps. This restores the Gen01-Gen06 precedence the pre-rename UBE
-  filename had.
-- Added one delayed soft-state confirmation after each CBPC-to-SMP handoff and
-  after a soft-state skeleton rebuild. It idempotently stops CBPC, re-enables
-  SMP, and reapplies the soft SOS pose once.
-- Reused one cached bone list for both CBPC and FSMP calls.
-
-## 1.3.0 changes
-
-- Renamed the plugin, menu, files, log, and report to Schlong Physics Swapper.
-- Preserves and migrates existing settings from the old INI name.
-- Recognizes both UBE and DW 3BA Futanari addons; a live six-node skeleton can
-  satisfy the compatibility check even when an addon ESP has an unfamiliar name.
-- Removed full XML/CBPC disk rescans from skeleton-repair events. Health scans
-  now run only at appropriate lifecycle points or when requested.
-- Reuses the FSMP bone list during the erect-state reset guard, reducing work in
-  the regular polling path without weakening reset protection.
-
 ## Building
 
 The project requires Visual Studio 2022, CMake 3.24 or newer, vcpkg, and the
