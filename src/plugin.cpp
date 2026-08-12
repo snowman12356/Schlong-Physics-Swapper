@@ -25,7 +25,7 @@ namespace Mod {
 namespace fs = std::filesystem;
 
 constexpr auto kName = "Schlong Physics Swapper";
-constexpr auto kVersion = "1.3.1";
+constexpr auto kVersion = "1.4.0";
 constexpr auto kIni = "Data/SKSE/Plugins/SchlongPhysicsSwapper.ini";
 constexpr auto kLegacyIni = "Data/SKSE/Plugins/UBEPhysicsSwitch.ini";
 constexpr auto kReport = "Data/SKSE/Plugins/SchlongPhysicsSwapper_Diagnostics.txt";
@@ -47,6 +47,8 @@ struct Settings {
     bool positionControl{ true };
     int bendMethod{ 2 };  // 0 native, 1 animation event, 2 compatibility
     bool animatePosition{ true };
+    bool gradualErection{ true };
+    int erectionDurationMs{ 3000 };
     bool bounceGuard{ true };
     bool useSexLabBend{ false };
     int sexLabBend{ 14 };
@@ -110,27 +112,35 @@ std::atomic<std::int64_t> lastBendApplyMs{ 0 };
 std::atomic<std::int64_t> bendSettleDueMs{ 0 };
 std::atomic<std::int64_t> bendConfirmationDueMs{ 0 };
 std::atomic<std::int64_t> softConfirmationDueMs{ 0 };
+std::atomic<std::int64_t> erectionAnimationStartMs{ 0 };
 std::atomic<std::int64_t> bendGuardUntilMs{ 0 };
 std::atomic<std::int64_t> bendGuardWindowStartMs{ 0 };
 std::atomic<std::int64_t> nodeRefreshDueMs{ 0 };
 std::atomic<std::int64_t> ignoreNodeEventsUntilMs{ 0 };
 std::atomic<int> appliedBend{ -1 };
 std::atomic<int> requestedBend{ -1 };
+std::atomic<int> erectionAnimationTargetBend{ 0 };
+std::atomic<int> erectionAnimationLastQueuedBend{ -1 };
 std::atomic<int> lastBendMethod{ -1 };
 std::atomic<int> bendGuardCount{ 0 };
 std::atomic<int> bendConsecutiveFailures{ 0 };
 std::atomic<bool> lastBendSucceeded{ false };
 std::atomic<bool> positionAutoSuspended{ false };
+std::atomic<bool> erectionAnimating{ false };
+std::atomic<std::uint64_t> erectionAnimationGeneration{ 0 };
 std::atomic<unsigned> switchSuccesses{ 0 };
 std::atomic<unsigned> switchFailures{ 0 };
 std::atomic<unsigned> bendRepairs{ 0 };
 std::jthread pollThread;
+std::jthread erectionAnimationThread;
 
 void Evaluate(bool force = false);
 void QuerySexLab();
 void RefreshDiagnostics();
 void Save();
 bool SexLabHasPriority(const Settings& copy);
+void ApplyRequestedBend(bool force, bool animate, bool automatic);
+void CancelErectionAnimation();
 
 bool PPAOwnsPosition() {
     return ::GetModuleHandleW(L"AccuratePenetration.dll") != nullptr &&
@@ -195,6 +205,7 @@ public:
                 Record("SexLab scene detected; CBPC override requested");
             }
             if (previous != active && stateKnown.load() && usingCBPC.load()) {
+                CancelErectionAnimation();
                 Settings copy;
                 { std::scoped_lock lock(settingsLock); copy = settings; }
                 if ((copy.useSexLabBend || PPAOwnsPosition() ||
@@ -264,6 +275,8 @@ void Load() {
         settings.positionControl = ini.GetBoolValue("Position", "Enabled", true);
         settings.bendMethod = std::clamp(static_cast<int>(ini.GetLongValue("Position", "Method", 2)), 0, 2);
         settings.animatePosition = ini.GetBoolValue("Position", "AnimateChanges", true);
+        settings.gradualErection = ini.GetBoolValue("Position", "GradualErection", true);
+        settings.erectionDurationMs = std::clamp(static_cast<int>(ini.GetLongValue("Position", "ErectionDurationMilliseconds", 3000)), 500, 10000);
         settings.bounceGuard = ini.GetBoolValue("Position", "BounceGuard", true);
         settings.useSexLabBend = ini.GetBoolValue("Position", "UseSeparateSexLabBend", false);
         settings.sexLabBend = std::clamp(static_cast<int>(ini.GetLongValue("Position", "SexLabBend", 14)), 0, 20);
@@ -294,6 +307,8 @@ void Save() {
     ini.SetBoolValue("Position", "Enabled", settings.positionControl);
     ini.SetLongValue("Position", "Method", settings.bendMethod);
     ini.SetBoolValue("Position", "AnimateChanges", settings.animatePosition);
+    ini.SetBoolValue("Position", "GradualErection", settings.gradualErection);
+    ini.SetLongValue("Position", "ErectionDurationMilliseconds", settings.erectionDurationMs);
     ini.SetBoolValue("Position", "BounceGuard", settings.bounceGuard);
     ini.SetBoolValue("Position", "UseSeparateSexLabBend", settings.useSexLabBend);
     ini.SetLongValue("Position", "SexLabBend", settings.sexLabBend);
@@ -443,6 +458,69 @@ bool ApplyBend(RE::Actor* actor, int bend, bool flaccid = false, bool animate = 
     return graphOK || nativeOK;
 }
 
+void CancelErectionAnimation() {
+    erectionAnimating.store(false);
+    erectionAnimationGeneration.fetch_add(1);
+}
+
+void StartGradualErection(int targetBend, int durationMs) {
+    targetBend = std::clamp(targetBend, 0, 20);
+    durationMs = std::clamp(durationMs, 500, 10000);
+    CancelErectionAnimation();
+    const auto generation = erectionAnimationGeneration.load();
+    erectionAnimationTargetBend.store(targetBend);
+    erectionAnimationLastQueuedBend.store(-1);
+    erectionAnimationStartMs.store(NowMs());
+    erectionAnimating.store(true);
+    requestedBend.store(targetBend);
+    appliedBend.store(-1);
+
+    erectionAnimationThread = std::jthread([generation, targetBend, durationMs](std::stop_token token) {
+        while (!token.stop_requested() && erectionAnimating.load() &&
+            generation == erectionAnimationGeneration.load()) {
+            const auto elapsed = std::max<std::int64_t>(0, NowMs() - erectionAnimationStartMs.load());
+            const float t = std::clamp(static_cast<float>(elapsed) / static_cast<float>(durationMs), 0.0F, 1.0F);
+            const float eased = t * t * (3.0F - 2.0F * t);
+            const int bend = std::clamp(static_cast<int>(std::lround(targetBend * eased)), 0, targetBend);
+            if (bend != erectionAnimationLastQueuedBend.exchange(bend)) {
+                if (auto* tasks = SKSE::GetTaskInterface()) {
+                    tasks->AddTask([generation, bend, targetBend] {
+                        if (!erectionAnimating.load() || generation != erectionAnimationGeneration.load() ||
+                            !stateKnown.load() || !usingCBPC.load()) return;
+                        auto* player = RE::PlayerCharacter::GetSingleton();
+                        if (!player) return;
+                        const bool ok = Call("SOSAE_SKSE", "SetSchlongBend",
+                            static_cast<RE::Actor*>(player), bend);
+                        if (!ok) {
+                            CancelErectionAnimation();
+                            appliedBend.store(-1);
+                            Record("Gradual erection unavailable; using the normal SOS position method", true);
+                            ApplyRequestedBend(true, true, false);
+                            return;
+                        }
+                        sosConnected.store(true);
+                        appliedBend.store(bend);
+                        lastBendMethod.store(0);
+                        lastBendSucceeded.store(true);
+                        lastBendApplyMs.store(NowMs());
+                        ignoreNodeEventsUntilMs.store(NowMs() + 2000);
+                        if (bend >= targetBend) {
+                            erectionAnimating.store(false);
+                            appliedBend.store(targetBend);
+                            ++bendRepairs;
+                            Record(fmt::format("Gradual erection completed: {}/20", targetBend));
+                        }
+                    });
+                }
+            }
+            if (t >= 1.0F) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+    });
+    Record(fmt::format("Gradual erection started: 0 to {}/20 over {:.1f} seconds",
+        targetBend, durationMs / 1000.0F));
+}
+
 void ApplyRequestedBend(bool force = false, bool animate = false, bool automatic = false) {
     if (!stateKnown.load() || !usingCBPC.load()) return;
     Settings copy;
@@ -454,6 +532,7 @@ void ApplyRequestedBend(bool force = false, bool animate = false, bool automatic
     const auto now = NowMs();
     const int desired = DesiredBend(copy);
     requestedBend.store(desired);
+    if (erectionAnimating.load()) return;
     if (!force && bendSettleDueMs.load() > now) return;
     // There is no read-back API for the live SOS bend. Once the requested value
     // was accepted, repeatedly sending it is not verification; it only restarts
@@ -514,6 +593,7 @@ bool SetOwner(bool cbpc, bool force = false) {
 
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (!player) return false;
+    CancelErectionAnimation();
     auto* actor = static_cast<RE::Actor*>(player);
     const auto& bones = PhysicsBones();
 
@@ -560,8 +640,13 @@ bool SetOwner(bool cbpc, bool force = false) {
         if (cbpc) {
             requestedBend.store(DesiredBend(copy));
             bendSettleDueMs.store(now + copy.settleDelayMs);
-            bendConfirmationDueMs.store(now + copy.settleDelayMs + 1500);
-            if (copy.settleDelayMs == 0) ApplyRequestedBend(true, true, false);
+            bendConfirmationDueMs.store(copy.gradualErection ? 0 : now + copy.settleDelayMs + 1500);
+            if (copy.settleDelayMs == 0) {
+                if (copy.gradualErection && !SexLabHasPriority(copy) && !PPAOwnsPosition())
+                    StartGradualErection(DesiredBend(copy), copy.erectionDurationMs);
+                else
+                    ApplyRequestedBend(true, true, false);
+            }
         } else {
             bendSettleDueMs.store(0);
             bendConfirmationDueMs.store(0);
@@ -621,7 +706,10 @@ void Tick() {
     bool settledNow = false;
     auto settleDue = bendSettleDueMs.load();
     if (usingCBPC.load() && settleDue > 0 && now >= settleDue && bendSettleDueMs.compare_exchange_strong(settleDue, 0)) {
-        ApplyRequestedBend(true, true, false);
+        if (copy.gradualErection && !SexLabHasPriority(copy) && !PPAOwnsPosition())
+            StartGradualErection(DesiredBend(copy), copy.erectionDurationMs);
+        else
+            ApplyRequestedBend(true, true, false);
         settledNow = true;
     }
 
@@ -646,6 +734,7 @@ void Tick() {
         // complete physics hand-off. Reapply the position once and keep the
         // already-confirmed SMP/CBPC owner unchanged.
         if (stateKnown.load() && usingCBPC.load() && copy.positionControl) {
+            CancelErectionAnimation();
             appliedBend.store(-1);
             bendSettleDueMs.store(now + copy.settleDelayMs);
             bendConfirmationDueMs.store(now + copy.settleDelayMs + 1500);
@@ -786,6 +875,8 @@ void UseRecommendedSettings(Settings& value) {
     value.positionControl = true;
     value.bendMethod = 2;
     value.animatePosition = true;
+    value.gradualErection = true;
+    value.erectionDurationMs = 3000;
     value.bounceGuard = true;
     value.settleDelayMs = 350;
     value.maxBendFailures = 3;
@@ -795,10 +886,12 @@ void SaveSettingsAndApply(const Settings& copy, const Settings& previous) {
     const bool positionChanged = copy.erectBend != previous.erectBend ||
         copy.sexLabBend != previous.sexLabBend || copy.useSexLabBend != previous.useSexLabBend ||
         copy.positionControl != previous.positionControl || copy.bendMethod != previous.bendMethod ||
-        copy.animatePosition != previous.animatePosition;
+        copy.animatePosition != previous.animatePosition || copy.gradualErection != previous.gradualErection ||
+        copy.erectionDurationMs != previous.erectionDurationMs;
     { std::scoped_lock lock(settingsLock); settings = copy; }
     Save();
     if (positionChanged) {
+        CancelErectionAnimation();
         ResetPositionRecovery();
         appliedBend.store(-1);
         if (stateKnown.load() && usingCBPC.load())
@@ -845,6 +938,15 @@ void __stdcall RenderMain() {
     ImGuiMCP::BeginDisabled(!copy.positionControl);
     changed |= ImGuiMCP::SliderInt("Erect upward position", &copy.erectBend, 0, 20);
     ImGuiMCP::EndDisabled();
+    changed |= ImGuiMCP::Checkbox("Gradually become erect", &copy.gradualErection);
+    ImGuiMCP::BeginDisabled(!copy.gradualErection);
+    float erectionSeconds = copy.erectionDurationMs / 1000.0F;
+    if (ImGuiMCP::SliderFloat("Time to become fully erect", &erectionSeconds, 0.5F, 10.0F, "%.1f seconds")) {
+        copy.erectionDurationMs = static_cast<int>(std::lround(erectionSeconds * 1000.0F));
+        changed = true;
+    }
+    ImGuiMCP::EndDisabled();
+    ImGuiMCP::TextWrapped("Automatic mode smoothly raises the SOS AE position after CBPC takes control.");
     ImGuiMCP::BeginDisabled(!copy.positionControl || !stateKnown.load() || !usingCBPC.load());
     if (ImGuiMCP::Button("Test position now")) {
         ResetPositionRecovery();
@@ -928,14 +1030,14 @@ std::string BuildReport() {
         "PlayerBones={}/6 XML={}/{} [{}]\nCBPCMap={}/{} [{}]\nCBPCParameters={}/{} [{}]\n"
         "SwitchSuccesses={} SwitchFailures={} BendApplies={} LastAction={} LastError={}\n"
         "Position: Enabled={} Requested={} Applied={} LastMethod={} LastSucceeded={} AutoSuspended={} GuardRemainingMs={}\n"
-        "Settings: Enabled={} Mode={} Threshold={:.0f} Hysteresis={:.0f} Bend={} PollMs={} SexLabOverride={} EndDelayMs={} CooldownMs={} BendMethod={} Animate={} BounceGuard={} SettleMs={} SeparateSexLabBend={} SexLabBend={} MaxFailures={} PPA={}\n",
+        "Settings: Enabled={} Mode={} Threshold={:.0f} Hysteresis={:.0f} Bend={} PollMs={} SexLabOverride={} EndDelayMs={} CooldownMs={} BendMethod={} Animate={} Gradual={} ErectionMs={} BounceGuard={} SettleMs={} SeparateSexLabBend={} SexLabBend={} MaxFailures={} PPA={}\n",
         kVersion, stateKnown.load() ? (usingCBPC.load() ? "CBPC" : "SMP") : "unknown", stateKnown.load(), arousal.load(), oslConnected.load(), sexLabActive.load(), sexLabConnected.load(),
         d.menuFrameworkLoaded, d.oslModuleLoaded && d.oslPluginLoaded, d.fsmpModuleLoaded, d.cbpcModuleLoaded, d.sexLabModuleLoaded && d.sexLabPluginLoaded, d.sosScriptPresent || sosConnected.load(), d.supportedAddonLoaded,
         d.playerBonesFound, d.compatibleXmlFiles, d.xmlFiles, d.xmlSummary, d.compatibleCbpcMaps, d.cbpcMapFiles, d.cbpcMapSummary,
         d.compatibleCbpcParameters, d.cbpcParameterFiles, d.cbpcParameterSummary, switchSuccesses.load(), switchFailures.load(), bendRepairs.load(), recent, error.empty() ? "none" : error,
         s.positionControl, requestedBend.load(), appliedBend.load(), BendMethodName(lastBendMethod.load()), lastBendSucceeded.load(), positionAutoSuspended.load(), std::max<std::int64_t>(0, bendGuardUntilMs.load() - NowMs()),
         s.enabled, s.mode, s.threshold, s.hysteresis, s.erectBend, s.pollMs, s.sexLabOverride, s.sceneEndDelayMs, s.switchCooldownMs,
-        s.bendMethod, s.animatePosition, s.bounceGuard, s.settleDelayMs, s.useSexLabBend, s.sexLabBend, s.maxBendFailures,
+        s.bendMethod, s.animatePosition, s.gradualErection, s.erectionDurationMs, s.bounceGuard, s.settleDelayMs, s.useSexLabBend, s.sexLabBend, s.maxBendFailures,
         ::GetModuleHandleW(L"AccuratePenetration.dll") != nullptr);
 }
 
@@ -990,6 +1092,7 @@ void __stdcall RenderDebug() {
     ImGuiMCP::Text("Erect position applications: %u", bendRepairs.load());
     ImGuiMCP::Text("Requested / applied position: %d / %d", requestedBend.load(), appliedBend.load());
     ImGuiMCP::Text("Last position method: %s", BendMethodName(lastBendMethod.load()));
+    StatusLine("Gradual erection", erectionAnimating.load() ? fmt::format("Animating: {}/{}", appliedBend.load(), erectionAnimationTargetBend.load()).c_str() : "Idle", erectionAnimating.load() ? 1 : 2);
     StatusLine("Position recovery", positionAutoSuspended.load() ? "Stopped after failures" : (NowMs() < bendGuardUntilMs.load() ? "Bounce guard pause" : "Ready"), positionAutoSuspended.load() ? 0 : (NowMs() < bendGuardUntilMs.load() ? 1 : 2));
     {
         std::scoped_lock lock(activityLock);

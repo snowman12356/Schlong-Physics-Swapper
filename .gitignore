@@ -7,8 +7,7 @@ build*/
 dist/
 vcpkg_installed/
 
-# Private compatibility material and local experiments
-compat/
+# Local experiments
 scripts/
 *.pex
 MaleGenitals*.xml
@@ -24,3 +23,16 @@ remove-approved-bodyslide-stale.ps1
 .idea/
 Thumbs.db
 Desktop.ini
+
+# OSL compatibility files are allow-listed below.
+compat/*
+!compat/OSL Aroused/
+compat/OSL Aroused/*
+!compat/OSL Aroused/LICENSE.OSLAroused-Unlicense.txt
+!compat/OSL Aroused/README.md
+!compat/OSL Aroused/Scripts/
+compat/OSL Aroused/Scripts/*
+!compat/OSL Aroused/Scripts/OSLAroused_Main.pex
+!compat/OSL Aroused/Scripts/Source/
+compat/OSL Aroused/Scripts/Source/*
+!compat/OSL Aroused/Scripts/Source/OSLAroused_Main.psc

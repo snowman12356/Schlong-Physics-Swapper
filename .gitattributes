@@ -1,0 +1,3 @@
+# Preserve the upstream OSL Papyrus formatting; its source contains intentional
+# legacy trailing whitespace that is unrelated to this compatibility patch.
+"compat/OSL Aroused/Scripts/Source/OSLAroused_Main.psc" whitespace=-trailing-space
