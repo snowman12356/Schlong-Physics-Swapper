@@ -1,8 +1,20 @@
 # Third-party notice
 
+The MIT licence in the repository root covers only original Schlong Physics
+Swapper material authored for this project. It does not replace or relicense
+third-party material.
+
 Schlong Physics Swapper calls public Papyrus interfaces supplied by SKSE Menu
 Framework, Faster HDT-SMP, CBPC, OSL Aroused, SexLab P+, and Schlongs of Skyrim
 AE. Those projects are not bundled and remain subject to their own terms.
+
+The DLL is built with CommonLibSSE-NG, SKSE Menu Framework 3 headers, and the
+permissively licensed C++ dependencies declared by the build. Binary release
+archives include their applicable copyright and licence notices in the
+`Licenses` directory and in
+[THIRD_PARTY_LICENSES.txt](Licenses/Third-Party-Software-Licenses.txt). These
+notices do not imply that the upstream projects endorse Schlong Physics
+Swapper.
 
 ## OSL Aroused compatibility override
 

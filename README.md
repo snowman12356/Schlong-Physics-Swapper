@@ -4,6 +4,33 @@ Native SKSE plugin for compatible SOS six-bone schlongs. Faster HDT-SMP owns
 Gen01-Gen06 while arousal is below a configurable threshold; CBPC owns them
 above it. Settings are available through SKSE Menu Framework.
 
+## Development disclosure
+
+This mod was created through user-directed AI-assisted development (sometimes
+called **vibe coding**), followed by repeated compilation, in-game testing, and
+debugging. The complete source is public so users and experienced developers
+can inspect it, report issues, or contribute improvements. AI-assisted code can
+still contain mistakes, so useful bug reports and diagnostic logs are welcome.
+
+## Permissions and credit
+
+All original Schlong Physics Swapper code, configuration, and documentation are
+released under the [MIT License](LICENSE). You may freely use, copy, modify,
+redistribute, include, or build upon them, including in your own mods, provided
+you preserve the licence notice and give credit as:
+
+> Schlong Physics Swapper by snowman12356
+
+Please link to the original GitHub or Nexus page where practical. Files derived
+from other projects remain under their respective licences; see
+[THIRD_PARTY.md](THIRD_PARTY.md). In particular, the included OSL Aroused
+compatibility files are distributed under OSL Aroused's Unlicense.
+
+The author may participate in Nexus Mods' Donation Points programme. This does
+not restrict these permissions or place any feature, update, support, or file
+behind payment. The mod remains freely available under the licences included
+with it.
+
 ## Requirements
 
 - Skyrim SE 1.5.97 or AE 1.6.x, with the matching SKSE64
