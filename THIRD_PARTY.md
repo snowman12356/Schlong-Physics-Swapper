@@ -4,11 +4,15 @@ Schlong Physics Swapper calls public Papyrus interfaces supplied by SKSE Menu
 Framework, Faster HDT-SMP, CBPC, OSL Aroused, SexLab P+, and Schlongs of Skyrim
 AE. Those projects are not bundled and remain subject to their own terms.
 
-The author's private test installation uses a modified `OSLAroused_Main.pex`
-based on OSL Aroused 2.9.2. It prevents OSL from sending player `SOSFlaccid`
-and `SOSBend` events while retaining NPC behavior. That third-party derivative
-is excluded from this repository and every public release asset because no
-redistribution permission has been established.
+## OSL Aroused compatibility override
 
-Do not add that script, its decompiled source, or another derivative to a fork
-or release without permission from the OSL Aroused author.
+The included `OSLAroused_Main.psc` is derived from the public OSL Aroused 2.9.0
+source at <https://github.com/ozooma10/OSLAroused>. It adds one player check to
+`UpdateSOSPosition`, preventing OSL from sending player `SOSFlaccid`/`SOSBend`
+events while retaining NPC behavior. The compiled `.pex` was validated against
+the installed OSL Aroused 2.9.2 script used during development.
+
+OSL Aroused is released under the Unlicense. A verbatim copy is included at
+`compat/OSL Aroused/LICENSE.OSLAroused-Unlicense.txt`. The derivative source and
+binary may therefore be copied, modified, compiled, and distributed under those
+terms. This repository does not bundle any other OSL Aroused files.

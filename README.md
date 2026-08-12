@@ -1,4 +1,4 @@
-# Schlong Physics Swapper 1.3.1
+# Schlong Physics Swapper 1.4.0
 
 Native SKSE plugin for compatible SOS six-bone schlongs. Faster HDT-SMP owns
 Gen01-Gen06 while arousal is below a configurable threshold; CBPC owns them
@@ -29,12 +29,12 @@ The package includes a dedicated CBPC map and parameter file for all six shaft
 bones. It does not depend on another SOS CBPC preset being active.
 
 OSL normally sends `SOSFlaccid` and `SOSBend` events whenever player arousal
-changes, which can compete with this plugin's position control. The author's
-private test setup uses a player-only OSL 2.9.2 compatibility override. That
-modified third-party script is deliberately **not distributed** in this public
-repository or its release archive. Physics ownership switching still works
-without it, but OSL may occasionally replay a position event. Do not publish an
-OSL override unless you have permission from the OSL Aroused author.
+changes, which can compete with this plugin's position control. The package
+includes a player-only OSL compatibility override based on OSL Aroused's
+published 2.9.0 source and validated against the installed 2.9.2 script. It
+only skips OSL's player SOS-position event; OSL arousal, integrations, UI, and
+NPC behavior remain unchanged. OSL Aroused is distributed under the Unlicense;
+the upstream license, patched source, and attribution are included.
 
 SexLab P+ is optional. When present, the plugin verifies the player through
 `SexLabUtil.IsActorActive` and listens for SexLab start/end events. A player
@@ -49,6 +49,7 @@ The streamlined **Main settings** page provides only everyday controls:
 - live arousal, current physics engine, and overall health
 - plain-language Automatic, Always Soft, and Always Erect modes
 - immediate erect vertical-position control from 0 to 20
+- optional gradual erection with an adjustable transition time
 - advanced hysteresis, polling, cooldown, position safety, and SexLab P+ options
 - selectable native, animation-event, or compatibility position method
 - bounce guard, recovery limit, settle delay, and suspend-position-control mode
@@ -71,6 +72,9 @@ old settings even when both files are initially present.
 
 - Soft/below threshold: CBPC is stopped first, then SMP is enabled.
 - Above threshold: SMP is disabled first, then CBPC is started.
+- With gradual erection enabled, the native SOS AE position eases from 0 to the
+  selected erect bend after CBPC settles. Only changed integer bend values are
+  sent, avoiding per-frame Papyrus traffic and animation-event bouncing.
 - A 5-point default hysteresis keeps ownership stable around the threshold.
 - Handoffs are only marked successful when both external Papyrus APIs accept
   every request. Failed handoffs are retried and the last confirmed state is
@@ -105,13 +109,13 @@ old settings even when both files are initially present.
 1. Install the requirements listed above.
 2. Install the GitHub release archive with MO2 or Vortex.
 3. Ensure **Schlong Physics Swapper** wins conflicts for its two `ZZZ` CBPC
-   configuration files.
+   files and `Scripts/OSLAroused_Main.pex`.
 4. Start Skyrim through SKSE and open the Schlong Physics Swapper section in
    SKSE Menu Framework.
 
-The public archive contains the SKSE DLL, INI template, and dedicated CBPC
-files. It does not contain an ESP, body meshes, SMP XML, or the private OSL
-compatibility override.
+The public archive contains the SKSE DLL, INI template, dedicated CBPC files,
+and attributed OSL compatibility override. It does not contain an ESP, body
+meshes, SMP XML, or any other OSL files.
 
 ## Troubleshooting page
 
@@ -140,6 +144,15 @@ so missing optional SOS bend APIs fall back safely without a hard DLL link.
 Saved health reports are written to
 `Data/SKSE/Plugins/SchlongPhysicsSwapper_Diagnostics.txt`.
 
+## 1.4.0 changes
+
+- Added an optional gradual erection transition with a user-friendly duration
+  control from 0.5 to 10 seconds; the default is 3 seconds.
+- Uses SOS AE's native 0-20 bend API with smoothstep easing and only sends each
+  changed integer position once, avoiding animation-event bounce loops.
+- SexLab/PPA handoffs remain immediate for scene alignment, and installations
+  without the native SOS AE call fall back to the reliable normal position path.
+
 ## 1.3.1 changes
 
 - Renamed the bundled CBPC files with a `ZZZ` suffix so they load after other
@@ -163,10 +176,11 @@ Saved health reports are written to
 
 ## Building
 
-The project requires Visual Studio 2022, CMake 3.24 or newer, vcpkg, and a
-CommonLibSSE-NG checkout. Set `COMMONLIB_SSE_FOLDER` to that checkout, configure
-with the vcpkg toolchain, then build the `SchlongPhysicsSwapper` target. The
-Menu Framework SDK headers are fetched during configuration.
+The project requires Visual Studio 2022, CMake 3.24 or newer, vcpkg, and the
+[CharmedBaryon/CommonLibSSE-NG](https://github.com/CharmedBaryon/CommonLibSSE-NG)
+checkout. Set `COMMONLIB_SSE_FOLDER` to that checkout, configure with the vcpkg
+toolchain, then build the `SchlongPhysicsSwapper` target. The Menu Framework SDK
+headers are fetched during configuration.
 
-The third-party OSL compatibility override is not part of the source tree or
-build process.
+The OSL compatibility override is stored in `compat/OSL Aroused` with its
+patched Papyrus source and upstream Unlicense. It is not compiled by CMake.
