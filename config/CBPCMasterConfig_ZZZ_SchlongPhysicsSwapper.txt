@@ -1,0 +1,10 @@
+# Six-bone schlong map for Schlong Physics Swapper. ZZZ keeps it after competing SOS maps.
+[ConfigMap]
+<
+NPC Genitals01 [Gen01]=UBEPS01
+NPC Genitals02 [Gen02]=UBEPS02
+NPC Genitals03 [Gen03]=UBEPS03
+NPC Genitals04 [Gen04]=UBEPS04
+NPC Genitals05 [Gen05]=UBEPS05
+NPC Genitals06 [Gen06]=UBEPS06
+>

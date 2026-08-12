@@ -1,0 +1,33 @@
+cmake_minimum_required(VERSION 3.24)
+project(SchlongPhysicsSwapper VERSION 1.3.1 LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+if(NOT DEFINED ENV{COMMONLIB_SSE_FOLDER})
+  message(FATAL_ERROR "Set COMMONLIB_SSE_FOLDER to CommonLibSSE-NG")
+endif()
+include(FetchContent)
+FetchContent_Declare(mcp_sdk URL https://github.com/QTR-Modding/SKSE-Menu-Framework-3-Example/archive/refs/heads/master.zip DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+FetchContent_GetProperties(mcp_sdk)
+if(NOT mcp_sdk_POPULATED)
+  FetchContent_Populate(mcp_sdk)
+endif()
+set(ENABLE_SKYRIM_SE ON CACHE BOOL "" FORCE)
+set(ENABLE_SKYRIM_AE ON CACHE BOOL "" FORCE)
+set(ENABLE_SKYRIM_VR OFF CACHE BOOL "" FORCE)
+set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+add_subdirectory("$ENV{COMMONLIB_SSE_FOLDER}" "${CMAKE_BINARY_DIR}/commonlib")
+list(APPEND CMAKE_MODULE_PATH "$ENV{COMMONLIB_SSE_FOLDER}/cmake")
+include(CommonLibSSE)
+find_package(SimpleIni CONFIG REQUIRED)
+add_commonlibsse_plugin(${PROJECT_NAME} AUTHOR "snowman12356" SOURCES src/plugin.cpp)
+target_include_directories(${PROJECT_NAME} PRIVATE "${mcp_sdk_SOURCE_DIR}/include")
+target_compile_definitions(${PROJECT_NAME} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_precompile_headers(${PROJECT_NAME} PRIVATE src/PCH.h)
+target_link_libraries(${PROJECT_NAME} PRIVATE SimpleIni::SimpleIni)
+install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION "SKSE/Plugins")
+install(FILES
+    config/SchlongPhysicsSwapper.ini
+    config/CBPCMasterConfig_ZZZ_SchlongPhysicsSwapper.txt
+    config/CBPConfig_ZZZ_SchlongPhysicsSwapper.txt
+    DESTINATION "SKSE/Plugins"
+)

@@ -1,0 +1,26 @@
+# Local dependency research and downloaded archives
+.research-*/
+.research-*
+
+# Build and package output
+build*/
+dist/
+vcpkg_installed/
+
+# Private compatibility material and local experiments
+compat/
+scripts/
+*.pex
+MaleGenitals*.xml
+UBE-Amazing*.xml
+audit-bodyslide.ps1
+remove-approved-bodyslide-stale.ps1
+
+# IDE and OS files
+*.user
+*.suo
+.vs/
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini

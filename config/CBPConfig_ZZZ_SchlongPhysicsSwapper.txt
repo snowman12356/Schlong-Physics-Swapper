@@ -1,0 +1,82 @@
+# Six-bone schlong physics for Schlong Physics Swapper. ZZZ gives it final precedence.
+UBEPS01.gravityBias 0.03
+UBEPS02.gravityBias 0.03
+UBEPS03.gravityBias 0.03
+UBEPS04.gravityBias 0.03
+UBEPS05.gravityBias 0.03
+UBEPS06.gravityBias 0.03
+
+UBEPS01.gravityCorrection 1
+UBEPS02.gravityCorrection 1
+UBEPS03.gravityCorrection 1
+UBEPS04.gravityCorrection 1
+UBEPS05.gravityCorrection 1
+UBEPS06.gravityCorrection 1
+
+UBEPS01.stiffness 0.022
+UBEPS02.stiffness 0.022
+UBEPS03.stiffness 0.022
+UBEPS04.stiffness 0.022
+UBEPS05.stiffness 0.022
+UBEPS06.stiffness 0.022
+
+UBEPS01.stiffness2 0.03
+UBEPS02.stiffness2 0.03
+UBEPS03.stiffness2 0.03
+UBEPS04.stiffness2 0.03
+UBEPS05.stiffness2 0.03
+UBEPS06.stiffness2 0.03
+
+UBEPS01.damping 0.040
+UBEPS02.damping 0.040
+UBEPS03.damping 0.040
+UBEPS04.damping 0.040
+UBEPS05.damping 0.040
+UBEPS06.damping 0.040
+
+UBEPS01.maxoffset 4
+UBEPS02.maxoffset 4
+UBEPS03.maxoffset 4
+UBEPS04.maxoffset 4
+UBEPS05.maxoffset 4
+UBEPS06.maxoffset 4
+
+UBEPS01.timetick 4
+UBEPS02.timetick 4
+UBEPS03.timetick 4
+UBEPS04.timetick 4
+UBEPS05.timetick 4
+UBEPS06.timetick 4
+
+UBEPS01.linearX 0.02
+UBEPS01.linearY 0.02
+UBEPS01.linearZ 0.02
+UBEPS02.linearX 0.02
+UBEPS02.linearY 0.02
+UBEPS02.linearZ 0.02
+UBEPS03.linearX 0.02
+UBEPS03.linearY 0.02
+UBEPS03.linearZ 0.02
+UBEPS04.linearX 0.02
+UBEPS04.linearY 0.02
+UBEPS04.linearZ 0.02
+UBEPS05.linearX 0.02
+UBEPS05.linearY 0.02
+UBEPS05.linearZ 0.02
+UBEPS06.linearX 0.02
+UBEPS06.linearY 0.02
+UBEPS06.linearZ 0.02
+
+UBEPS01.rotational 0.040
+UBEPS02.rotational 0.035
+UBEPS03.rotational 0.030
+UBEPS04.rotational 0.024
+UBEPS05.rotational 0.014
+UBEPS06.rotational 0.014
+
+UBEPS01.timeStep 0.4
+UBEPS02.timeStep 0.4
+UBEPS03.timeStep 0.4
+UBEPS04.timeStep 0.4
+UBEPS05.timeStep 0.4
+UBEPS06.timeStep 0.4
