@@ -9,17 +9,10 @@ above it. Settings are available through SKSE Menu Framework.
 - Skyrim SE 1.5.97 or AE 1.6.x, with the matching SKSE64
 - Address Library for SKSE Plugins
 - SKSE Menu Framework 3
-- Faster HDT-SMP with `DynamicHDT.TogglePhysics`
-- CBPC with `CBPCPluginScript.StartPhysics` and `StopPhysics`
-- OSL Aroused - Arousal Reborn (Nexus mod 65454)
-- A compatible SOS addon and SMP XML using these shaft bones (tested with UBE
-  SOS and DW 3BA Futanari):
-  - `NPC Genitals01 [Gen01]`
-  - `NPC Genitals02 [Gen02]`
-  - `NPC Genitals03 [Gen03]`
-  - `NPC Genitals04 [Gen04]`
-  - `NPC Genitals05 [Gen05]`
-  - `NPC Genitals06 [Gen06]`
+- Faster HDT-SMP
+- CBPC 
+- OSL Aroused - Arousal Reborn
+- A compatible SOS addon with smp physics 
 
 Schlongs of Skyrim AE is supported through `SOSAE_SKSE.SetSchlongBend`.
 Legacy SOS is supported through its `SOSFlaccid`/`SOSBend0`-`SOSBend9`
