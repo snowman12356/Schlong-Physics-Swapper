@@ -12,7 +12,7 @@ above it. Settings are available through SKSE Menu Framework.
 - Faster HDT-SMP
 - CBPC 
 - OSL Aroused - Arousal Reborn
-- A compatible SOS addon with smp physics 
+- A compatible SOS addon with SMP physics 
 
 Schlongs of Skyrim AE is supported through `SOSAE_SKSE.SetSchlongBend`.
 Legacy SOS is supported through its `SOSFlaccid`/`SOSBend0`-`SOSBend9`
