@@ -1,4 +1,4 @@
-# Schlong Physics Swapper 1.4.0
+# Schlong Physics Swapper 1.6.2
 
 Native SKSE plugin for compatible SOS six-bone schlongs. Faster HDT-SMP owns
 Gen01-Gen06 while arousal is below a configurable threshold; CBPC owns them
@@ -38,12 +38,18 @@ with it.
 - SKSE Menu Framework 3
 - Faster HDT-SMP
 - CBPC 
-- OSL Aroused - Arousal Reborn
+- OSL Aroused, SLO Aroused NG, or classic SexLab Aroused Redux
 - A compatible SOS addon with SMP physics 
 
 Schlongs of Skyrim AE is supported through `SOSAE_SKSE.SetSchlongBend`.
 Legacy SOS is supported through its `SOSFlaccid`/`SOSBend0`-`SOSBend9`
 animation events.
+
+The New Gentleman is also supported. TNG uses the same Gen01-Gen06 skeleton
+nodes and SOS-style animation events, so physics switching and position control
+do not require TNG files to be patched or redistributed. TNG does not bundle a
+physics configuration; the active genital mesh must still point to a valid
+`MaleGenitals.xml` or another complete Gen01-Gen06 SMP XML.
 
 The package includes a dedicated CBPC map and parameter file for all six shaft
 bones. It does not depend on another SOS CBPC preset being active.
@@ -55,6 +61,16 @@ published 2.9.0 source and validated against the installed 2.9.2 script. It
 only skips OSL's player SOS-position event; OSL arousal, integrations, UI, and
 NPC behavior remain unchanged. OSL Aroused is distributed under the Unlicense;
 the upstream license, patched source, and attribution are included.
+
+SLO Aroused NG is also supported through its built-in `OSLArousedNative`
+compatibility API. When using SLO, leave its **Use SOS** option disabled so it
+does not send competing `SOSFlaccid`/`SOSBend` events. The packaged OSL script
+override is only used by OSL Aroused and does not replace SLO's native DLL.
+
+Classic SexLab Aroused Redux is supported as a fallback by reading the
+player's public `sla_Arousal` faction rank. OSL and SLO remain higher-priority
+providers when installed. Leave classic SLA's **Enable SOS** option disabled so
+its position events do not compete with this plugin. No SLA script is replaced.
 
 SexLab P+ is optional. When present, the plugin verifies the player through
 `SexLabUtil.IsActorActive` and listens for SexLab start/end events. A player
@@ -78,8 +94,8 @@ The streamlined **Main settings** page provides only everyday controls:
 
 Technical controls now live on their own **Advanced** page. A separate
 **Troubleshooting** page gives one overall health result, plain-language status
-for each dependency/configuration, a one-click recommended-settings repair, and
-copy/save diagnostic-report buttons.
+for each dependency/configuration, quick soft/erect tests, one-click recovery,
+suggested fixes with stable error codes, and support-report controls.
 - refresh and restore-default buttons
 
 Defaults are threshold 60, hysteresis 5, bend 14, and a 1000 ms polling
@@ -121,7 +137,7 @@ old settings even when both files are initially present.
 - Procedural Penis Animations is detected at runtime. During an active SexLab
   scene it owns the genital position; this mod restores the selected SOS angle
   after the scene instead of fighting over the same bones.
-- OSL queries stop while the plugin is disabled or a physics engine is forced.
+- Arousal queries stop while the plugin is disabled or a physics engine is forced.
 - No ESP, quests, save-game records, or SkyUI dependency beyond Menu Framework.
 
 ## Installation
@@ -129,7 +145,8 @@ old settings even when both files are initially present.
 1. Install the requirements listed above.
 2. Install the GitHub release archive with MO2 or Vortex.
 3. Ensure **Schlong Physics Swapper** wins conflicts for its two `ZZZ` CBPC
-   files and `Scripts/OSLAroused_Main.pex`.
+   files. OSL Aroused users should also let its `Scripts/OSLAroused_Main.pex`
+   win; SLO Aroused NG users should leave SLO's **Use SOS** option disabled.
 4. Start Skyrim through SKSE and open the Schlong Physics Swapper section in
    SKSE Menu Framework.
 
@@ -142,10 +159,11 @@ meshes, SMP XML, or any other OSL files.
 The troubleshooting page shows loaded and live connection state for:
 
 - SKSE Menu Framework
-- OSL Aroused
+- Arousal provider (OSL, SLO NG, or classic SexLab Aroused)
 - Faster HDT-SMP
 - CBPC
 - SOS AE bend support
+- The New Gentleman position support
 - the supported schlong addon and six live Gen01-Gen06 skeleton nodes
 - SexLab P+
 - Procedural Penis Animations
@@ -153,7 +171,10 @@ The troubleshooting page shows loaded and live connection state for:
 Its health check scans the active MO2 virtual `Data` directory for SMP XMLs
 with a complete `<system>` and all six genital bones. It also checks CBPC
 master maps for Gen01-Gen06 and CBPC parameter files for UBEPS01-UBEPS06.
-The page shows recent handoffs/errors and can copy or save a diagnostic report.
+The page shows recent handoffs/errors and can copy or save a privacy-safe
+diagnostic report. It also includes temporary verbose logging and a 30-second
+capture that records the state once per normal poll while the user reproduces
+the problem.
 
 ## Log and report
 
@@ -163,36 +184,39 @@ runtime independence. External APIs are called dynamically through Papyrus,
 so missing optional SOS bend APIs fall back safely without a hard DLL link.
 Saved health reports are written to
 `Data/SKSE/Plugins/SchlongPhysicsSwapper_Diagnostics.txt`.
+Debug captures are written to
+`Data/SKSE/Plugins/SchlongPhysicsSwapper_DebugCapture.txt`. Reports include
+versions, settings, connection state, relevant configuration filenames and
+recent events. They do not include the Windows username, save name, or full
+computer paths.
 
-## 1.4.0 changes
+When reporting a problem, attach the diagnostic report or 30-second capture and
+include the schlong addon, Skyrim runtime, mod-manager name, expected result,
+actual result, and short reproduction steps. See [SUPPORT.md](docs/SUPPORT.md).
 
-- Added an optional gradual erection transition with a user-friendly duration
-  control from 0.5 to 10 seconds; the default is 3 seconds.
-- Uses SOS AE's native 0-20 bend API with smoothstep easing and only sends each
-  changed integer position once, avoiding animation-event bounce loops.
-- SexLab/PPA handoffs remain immediate for scene alignment, and installations
-  without the native SOS AE call fall back to the reliable normal position path.
+## 1.6.2 changes
 
-## 1.3.1 changes
+- Added The New Gentleman detection, six-bone physics support and SOS-style
+  position fallback.
+- Added gradual TNG erection using its available animation-event stages.
+- Added classic SexLab Aroused Redux as the lowest-priority arousal provider.
+- Added provider/body/backend details and conflict guidance to troubleshooting
+  reports.
 
-- Renamed the bundled CBPC files with a `ZZZ` suffix so they load after other
-  SOS CBPC maps. This restores the Gen01-Gen06 precedence the pre-rename UBE
-  filename had.
-- Added one delayed soft-state confirmation after each CBPC-to-SMP handoff and
-  after a soft-state skeleton rebuild. It idempotently stops CBPC, re-enables
-  SMP, and reapplies the soft SOS pose once.
-- Reused one cached bone list for both CBPC and FSMP calls.
+## 1.6.0 changes
 
-## 1.3.0 changes
+- Added official SLO Aroused NG support through its built-in OSL compatibility API.
+- Added SLO DLL detection and provider-specific troubleshooting status.
+- Added immediate refresh support for SLO's `sla_UpdateComplete` event.
+- Added a warning to leave SLO's **Use SOS** option disabled to prevent position conflicts.
 
-- Renamed the plugin, menu, files, log, and report to Schlong Physics Swapper.
-- Preserves and migrates existing settings from the old INI name.
-- Recognizes both UBE and DW 3BA Futanari addons; a live six-node skeleton can
-  satisfy the compatibility check even when an addon ESP has an unfamiliar name.
-- Removed full XML/CBPC disk rescans from skeleton-repair events. Health scans
-  now run only at appropriate lifecycle points or when requested.
-- Reuses the FSMP bone list during the erect-state reset guard, reducing work in
-  the regular polling path without weakening reset protection.
+## 1.5.0 changes
+
+- Added Skyrim, SKSE, plugin and dependency version details to reports.
+- Added stable `SPS-xxx` problem codes with plain-language suggested fixes.
+- Added one-click soft/erect tests and a repair-physics action.
+- Added optional verbose logging and a guided 30-second debug capture.
+- Added privacy wording, support instructions, and a GitHub bug-report form.
 
 ## Building
 

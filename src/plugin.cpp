@@ -1,4 +1,5 @@
 #include <RE/Skyrim.h>
+#include <REL/Version.h>
 #include <SKSE/SKSE.h>
 #include <SimpleIni.h>
 #include <SKSEMenuFramework.h>
@@ -25,10 +26,11 @@ namespace Mod {
 namespace fs = std::filesystem;
 
 constexpr auto kName = "Schlong Physics Swapper";
-constexpr auto kVersion = "1.4.0";
+constexpr auto kVersion = "1.6.2";
 constexpr auto kIni = "Data/SKSE/Plugins/SchlongPhysicsSwapper.ini";
 constexpr auto kLegacyIni = "Data/SKSE/Plugins/UBEPhysicsSwitch.ini";
 constexpr auto kReport = "Data/SKSE/Plugins/SchlongPhysicsSwapper_Diagnostics.txt";
+constexpr auto kCaptureReport = "Data/SKSE/Plugins/SchlongPhysicsSwapper_DebugCapture.txt";
 constexpr std::array<const char*, 6> kBones{
     "NPC Genitals01 [Gen01]", "NPC Genitals02 [Gen02]", "NPC Genitals03 [Gen03]",
     "NPC Genitals04 [Gen04]", "NPC Genitals05 [Gen05]", "NPC Genitals06 [Gen06]"
@@ -54,6 +56,7 @@ struct Settings {
     int sexLabBend{ 14 };
     int settleDelayMs{ 350 };
     int maxBendFailures{ 3 };
+    bool verboseLogging{ false };
 };
 
 struct Diagnostics {
@@ -64,8 +67,10 @@ struct Diagnostics {
     bool sexLabModuleLoaded{ false };
     bool sexLabPluginLoaded{ false };
     bool oslPluginLoaded{ false };
+    bool classicArousedPluginLoaded{ false };
     bool supportedAddonLoaded{ false };
     bool sosPluginLoaded{ false };
+    bool tngPluginLoaded{ false };
     bool sosScriptPresent{ false };
     int playerBonesFound{ 0 };
     int xmlFiles{ 0 };
@@ -88,6 +93,10 @@ std::mutex activityLock;
 std::deque<std::string> activity;
 std::string lastAction{ "Waiting for a loaded game" };
 std::string lastError;
+std::string runtimeVersion{ "unknown" };
+std::string skseVersion{ "unknown" };
+std::mutex debugCaptureLock;
+std::vector<std::string> debugCaptureLines;
 
 std::atomic<float> arousal{ 0.0F };
 std::atomic<bool> arousalValid{ false };
@@ -131,8 +140,12 @@ std::atomic<std::uint64_t> erectionAnimationGeneration{ 0 };
 std::atomic<unsigned> switchSuccesses{ 0 };
 std::atomic<unsigned> switchFailures{ 0 };
 std::atomic<unsigned> bendRepairs{ 0 };
+std::atomic<std::int64_t> debugCaptureStartedMs{ 0 };
+std::atomic<std::int64_t> debugCaptureUntilMs{ 0 };
+std::atomic<std::uint64_t> debugCaptureGeneration{ 0 };
 std::jthread pollThread;
 std::jthread erectionAnimationThread;
+std::jthread debugCaptureThread;
 
 void Evaluate(bool force = false);
 void QuerySexLab();
@@ -141,6 +154,8 @@ void Save();
 bool SexLabHasPriority(const Settings& copy);
 void ApplyRequestedBend(bool force, bool animate, bool automatic);
 void CancelErectionAnimation();
+std::string BuildReport();
+bool PluginLoaded(std::initializer_list<std::string_view> names);
 
 bool PPAOwnsPosition() {
     return ::GetModuleHandleW(L"AccuratePenetration.dll") != nullptr &&
@@ -152,14 +167,125 @@ std::int64_t NowMs() {
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
+std::string LoadedDllVersion(const wchar_t* name) {
+    const auto module = ::GetModuleHandleW(name);
+    if (!module) return "not loaded";
+    std::array<wchar_t, 32768> path{};
+    if (::GetModuleFileNameW(module, path.data(), static_cast<DWORD>(path.size())) == 0)
+        return "loaded (version unavailable)";
+    if (const auto version = REL::GetFileVersion(path.data()))
+        return version->string(".");
+    return "loaded (version unavailable)";
+}
+
+bool SloArousedLoaded() {
+    return ::GetModuleHandleW(L"SexlabArousedNG.dll") != nullptr;
+}
+
+bool OslArousedLoaded() {
+    return ::GetModuleHandleW(L"OSLAroused.dll") != nullptr;
+}
+
+bool ClassicArousedLoaded() {
+    return !SloArousedLoaded() && !OslArousedLoaded() &&
+        PluginLoaded({ "SexLabAroused.esm" });
+}
+
+std::string ArousalProviderName() {
+    if (SloArousedLoaded()) return "SLO Aroused NG";
+    if (OslArousedLoaded()) return "OSL Aroused";
+    if (ClassicArousedLoaded()) return "SexLab Aroused Redux";
+    return "none";
+}
+
+bool TngLoaded() {
+    // Compatibility mods sometimes ship a tiny TheNewGentleman.esp master stub.
+    // The DLL is the actual TNG runtime and is the component that supplies the
+    // SOS-style position events we rely on.
+    return ::GetModuleHandleW(L"TheNewGentleman.dll") != nullptr;
+}
+
+bool LegacySosLoaded() {
+    // Schlongs of Skyrim.esp is also commonly supplied as a dependency stub.
+    // Require the framework's Papyrus API before advertising its event backend.
+    return PluginLoaded({ "Schlongs of Skyrim.esp" }) &&
+        (fs::exists("Data/Scripts/SOS_API.pex") || fs::exists("Data/Scripts/SOS_SKSE.pex"));
+}
+
+std::string PositionBackendName() {
+    const bool sosAe = fs::exists("Data/Scripts/SOSAE_SKSE.pex") || sosConnected.load();
+    if (TngLoaded() && sosAe) return "SOS AE native + TNG events";
+    if (TngLoaded()) return "TNG animation events";
+    if (sosAe) return "SOS AE native / events";
+    if (LegacySosLoaded()) return "Legacy SOS animation events";
+    return "none";
+}
+
+bool DebugCaptureActive() {
+    return debugCaptureUntilMs.load() > NowMs();
+}
+
+void AppendCaptureLine(std::string_view type, const std::string& message) {
+    if (!DebugCaptureActive()) return;
+    const auto elapsed = std::max<std::int64_t>(0, NowMs() - debugCaptureStartedMs.load());
+    std::scoped_lock lock(debugCaptureLock);
+    debugCaptureLines.push_back(fmt::format("[+{:.1f}s] {}: {}", elapsed / 1000.0, type, message));
+}
+
 void Record(std::string message, bool error = false) {
     if (error) logger::error("{}", message);
     else logger::info("{}", message);
-    std::scoped_lock lock(activityLock);
-    lastAction = message;
-    if (error) lastError = message;
-    activity.push_front(std::move(message));
-    while (activity.size() > 12) activity.pop_back();
+    AppendCaptureLine(error ? "ERROR" : "EVENT", message);
+    {
+        std::scoped_lock lock(activityLock);
+        lastAction = message;
+        if (error) lastError = message;
+        activity.push_front(std::move(message));
+        while (activity.size() > 12) activity.pop_back();
+    }
+}
+
+void CaptureState(std::string_view reason) {
+    Settings copy;
+    { std::scoped_lock lock(settingsLock); copy = settings; }
+    const auto line = fmt::format(
+        "{} | engine={} arousal={:.1f}/{} provider={} connected={} SexLab={} SMP={} CBPC={} bend={}/{} method={} animating={} guard={} suspended={}",
+        reason, stateKnown.load() ? (usingCBPC.load() ? "CBPC" : "SMP") : "unknown",
+        arousal.load(), arousalValid.load(), ArousalProviderName(), oslConnected.load(), sexLabActive.load(),
+        smpConnected.load(), cbpcConnected.load(), requestedBend.load(), appliedBend.load(),
+        lastBendMethod.load(), erectionAnimating.load(), NowMs() < bendGuardUntilMs.load(),
+        positionAutoSuspended.load());
+    if (copy.verboseLogging || DebugCaptureActive()) logger::debug("{}", line);
+    AppendCaptureLine("STATE", line);
+}
+
+std::vector<std::pair<std::string, std::string>> SuggestedFixes(const Diagnostics& d) {
+    std::vector<std::pair<std::string, std::string>> fixes;
+    if (!d.menuFrameworkLoaded)
+        fixes.emplace_back("SPS-001", "Install or update SKSE Menu Framework 3, then fully restart Skyrim.");
+    if (!d.oslModuleLoaded || !d.oslPluginLoaded)
+        fixes.emplace_back("SPS-002", "Install OSL Aroused, SLO Aroused NG, or classic SexLab Aroused and enable its plugin.");
+    if (!d.fsmpModuleLoaded)
+        fixes.emplace_back("SPS-003", "Install Faster HDT-SMP and its requirements.");
+    if (!d.cbpcModuleLoaded)
+        fixes.emplace_back("SPS-004", "Install CBPC and make sure cbp.dll loads without errors.");
+    if (d.playerBonesFound != 6)
+        fixes.emplace_back("SPS-005", fmt::format("Only {}/6 Gen01-Gen06 player bones are live. Rebuild or reinstall the compatible schlong addon.", d.playerBonesFound));
+    if (d.compatibleXmlFiles == 0)
+        fixes.emplace_back("SPS-006", "No complete Gen01-Gen06 SMP XML was found. Check the active mesh's XML path and winning MO2 files.");
+    if (d.compatibleCbpcMaps == 0)
+        fixes.emplace_back("SPS-007", "The Gen01-Gen06 CBPC map is missing or overwritten. Let this mod's ZZZ master config win conflicts.");
+    if (d.compatibleCbpcParameters == 0)
+        fixes.emplace_back("SPS-008", "The bundled UBEPS01-UBEPS06 CBPC values are missing or overwritten. Reinstall the mod.");
+    if (!d.sosScriptPresent && !d.sosPluginLoaded && !d.tngPluginLoaded)
+        fixes.emplace_back("SPS-009", "No supported position backend was found. Install SOS AE-NG, legacy SOS, or The New Gentleman.");
+    if (switchFailures.load() > 0)
+        fixes.emplace_back("SPS-010", "A physics handoff failed. Check SchlongPhysicsSwapper.log and confirm both FSMP and CBPC load correctly.");
+    if (positionAutoSuspended.load() || (!lastBendSucceeded.load() && requestedBend.load() >= 0))
+        fixes.emplace_back("SPS-011", "SOS rejected position updates. Use Repair physics, then check for another mod controlling the same angle.");
+    if (fixes.empty())
+        fixes.emplace_back("SPS-000", "No known problem detected. Use Start 30-second debug capture and reproduce the issue.");
+    return fixes;
 }
 
 class ArousalCallback final : public RE::BSScript::IStackCallbackFunctor {
@@ -179,10 +305,10 @@ public:
             const auto wasValid = arousalValid.exchange(true);
             oslConnected.store(true);
             if (!wasValid || std::abs(previous - value) >= 0.5F)
-                logger::info("OSL arousal: {:.1f}", value);
+                logger::info("{} arousal: {:.1f}", ArousalProviderName(), value);
         } else {
             arousalValid.store(false);
-            Record("OSL returned an invalid arousal value", true);
+            Record("SPS-002: Arousal provider returned an invalid value", true);
         }
         queryPending.store(false);
         if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { Evaluate(); });
@@ -282,7 +408,9 @@ void Load() {
         settings.sexLabBend = std::clamp(static_cast<int>(ini.GetLongValue("Position", "SexLabBend", 14)), 0, 20);
         settings.settleDelayMs = std::clamp(static_cast<int>(ini.GetLongValue("Position", "SettleDelayMilliseconds", 350)), 0, 5000);
         settings.maxBendFailures = std::clamp(static_cast<int>(ini.GetLongValue("Position", "MaxAutomaticFailures", 3)), 1, 10);
+        settings.verboseLogging = ini.GetBoolValue("Debug", "VerboseLogging", false);
     }
+    spdlog::set_level(settings.verboseLogging ? spdlog::level::debug : spdlog::level::info);
     if (migrateLegacy || !newExists) {
         Save();
     }
@@ -314,6 +442,7 @@ void Save() {
     ini.SetLongValue("Position", "SexLabBend", settings.sexLabBend);
     ini.SetLongValue("Position", "SettleDelayMilliseconds", settings.settleDelayMs);
     ini.SetLongValue("Position", "MaxAutomaticFailures", settings.maxBendFailures);
+    ini.SetBoolValue("Debug", "VerboseLogging", settings.verboseLogging);
     fs::create_directories(fs::path(kIni).parent_path());
     ini.SaveFile(kIni);
 }
@@ -321,7 +450,7 @@ void Save() {
 void QueryArousal() {
     if (queryPending.load()) {
         if (NowMs() - queryStartedMs.load() < 5000) return;
-        Record("OSL query timed out; retrying", true);
+        Record("SPS-002: Arousal provider query timed out; retrying", true);
         queryPending.store(false);
         arousalValid.store(false);
     }
@@ -330,6 +459,30 @@ void QueryArousal() {
     auto* player = RE::PlayerCharacter::GetSingleton();
     auto* vm = VM();
     if (!player || !vm) { queryPending.store(false); return; }
+
+    // Classic SexLab Aroused has no native DLL or global Papyrus function.
+    // Its public compatibility value is the player's sla_Arousal faction rank.
+    // OSL/SLO remain higher priority whenever either native provider is loaded.
+    if (ClassicArousedLoaded()) {
+        auto* faction = RE::TESForm::LookupByEditorID<RE::TESFaction>("sla_Arousal");
+        if (!faction) {
+            queryPending.store(false);
+            arousalValid.store(false);
+            oslConnected.store(false);
+            Record("SPS-002: SexLab Aroused is loaded but sla_Arousal was not found", true);
+            return;
+        }
+        const float value = static_cast<float>(std::clamp(player->GetFactionRank(faction, true), 0, 100));
+        const auto previous = arousal.exchange(value);
+        const auto wasValid = arousalValid.exchange(true);
+        oslConnected.store(true);
+        queryPending.store(false);
+        if (!wasValid || std::abs(previous - value) >= 0.5F)
+            logger::info("{} arousal: {:.1f}", ArousalProviderName(), value);
+        if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { Evaluate(); });
+        return;
+    }
+
     const auto dispatch = [&](const char* script) {
         auto* args = RE::MakeFunctionArguments(static_cast<RE::Actor*>(player));
         RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{ new ArousalCallback() };
@@ -339,7 +492,7 @@ void QueryArousal() {
         queryPending.store(false);
         arousalValid.store(false);
         oslConnected.store(false);
-        Record("Could not connect to OSL Aroused", true);
+        Record("SPS-002: Could not connect to an arousal provider", true);
     }
 }
 
@@ -421,8 +574,14 @@ bool ApplyBend(RE::Actor* actor, int bend, bool flaccid = false, bool animate = 
     }
 
     const auto legacyBend = std::clamp(static_cast<int>(std::lround(bend * 9.0 / 20.0)), 0, 9);
-    const bool useGraph = animate && copy.animatePosition && copy.bendMethod != 0;
-    const bool useNative = copy.bendMethod != 1 || (copy.bendMethod == 1 && !copy.animatePosition);
+    // A clean TNG install has no SOSAE_SKSE script. If both frameworks are
+    // present, compatibility mode can still try both normal paths rather than
+    // forcing every SOS AE user through TNG's graph.
+    const bool tngEventBackend = TngLoaded() && !fs::exists("Data/Scripts/SOSAE_SKSE.pex");
+    const bool useGraph = tngEventBackend ||
+        (copy.bendMethod != 0 && animate && copy.animatePosition);
+    const bool useNative = !tngEventBackend &&
+        (copy.bendMethod != 1 || (copy.bendMethod == 1 && !copy.animatePosition));
     if (!useGraph && !useNative) {
         // Event-only mode intentionally has no periodic repair because replaying
         // the event is exactly what causes visible bouncing.
@@ -453,7 +612,7 @@ bool ApplyBend(RE::Actor* actor, int bend, bool flaccid = false, bool animate = 
         lastBendSucceeded.store(false);
         const int failures = bendConsecutiveFailures.fetch_add(1) + 1;
         if (automatic && failures >= copy.maxBendFailures && !positionAutoSuspended.exchange(true))
-            Record("Automatic position recovery stopped after repeated SOS failures", true);
+            Record("SPS-011: Automatic position recovery stopped after repeated SOS failures", true);
     }
     return graphOK || nativeOK;
 }
@@ -474,33 +633,41 @@ void StartGradualErection(int targetBend, int durationMs) {
     erectionAnimating.store(true);
     requestedBend.store(targetBend);
     appliedBend.store(-1);
+    Settings copy;
+    { std::scoped_lock lock(settingsLock); copy = settings; }
+    const bool useTngEvents = TngLoaded() &&
+        (!fs::exists("Data/Scripts/SOSAE_SKSE.pex") || copy.bendMethod == 1);
 
-    erectionAnimationThread = std::jthread([generation, targetBend, durationMs](std::stop_token token) {
+    erectionAnimationThread = std::jthread([generation, targetBend, durationMs, useTngEvents](std::stop_token token) {
         while (!token.stop_requested() && erectionAnimating.load() &&
             generation == erectionAnimationGeneration.load()) {
             const auto elapsed = std::max<std::int64_t>(0, NowMs() - erectionAnimationStartMs.load());
             const float t = std::clamp(static_cast<float>(elapsed) / static_cast<float>(durationMs), 0.0F, 1.0F);
             const float eased = t * t * (3.0F - 2.0F * t);
             const int bend = std::clamp(static_cast<int>(std::lround(targetBend * eased)), 0, targetBend);
-            if (bend != erectionAnimationLastQueuedBend.exchange(bend)) {
+            const int eventBend = std::clamp(static_cast<int>(std::lround(bend * 9.0 / 20.0)), 0, 9);
+            const int queueKey = useTngEvents ? eventBend : bend;
+            const int previousQueueKey = erectionAnimationLastQueuedBend.exchange(queueKey);
+            if (queueKey != previousQueueKey || t >= 1.0F) {
                 if (auto* tasks = SKSE::GetTaskInterface()) {
-                    tasks->AddTask([generation, bend, targetBend] {
+                    tasks->AddTask([generation, bend, eventBend, targetBend, useTngEvents] {
                         if (!erectionAnimating.load() || generation != erectionAnimationGeneration.load() ||
                             !stateKnown.load() || !usingCBPC.load()) return;
                         auto* player = RE::PlayerCharacter::GetSingleton();
                         if (!player) return;
-                        const bool ok = Call("SOSAE_SKSE", "SetSchlongBend",
-                            static_cast<RE::Actor*>(player), bend);
+                        const bool ok = useTngEvents
+                            ? player->NotifyAnimationGraph(RE::BSFixedString(fmt::format("SOSBend{}", eventBend)))
+                            : Call("SOSAE_SKSE", "SetSchlongBend", static_cast<RE::Actor*>(player), bend);
                         if (!ok) {
                             CancelErectionAnimation();
                             appliedBend.store(-1);
-                            Record("Gradual erection unavailable; using the normal SOS position method", true);
+                            Record("SPS-009: Gradual erection unavailable; using the normal position method", true);
                             ApplyRequestedBend(true, true, false);
                             return;
                         }
-                        sosConnected.store(true);
+                        if (!useTngEvents) sosConnected.store(true);
                         appliedBend.store(bend);
-                        lastBendMethod.store(0);
+                        lastBendMethod.store(useTngEvents ? 1 : 0);
                         lastBendSucceeded.store(true);
                         lastBendApplyMs.store(NowMs());
                         ignoreNodeEventsUntilMs.store(NowMs() + 2000);
@@ -547,7 +714,7 @@ void ApplyRequestedBend(bool force = false, bool animate = false, bool automatic
             if (previous != desired)
                 Record(fmt::format("Erect vertical bend applied: {}/20", desired));
         } else if (!automatic || !positionAutoSuspended.load()) {
-            Record("SOS bend API did not accept the position update", true);
+            Record("SPS-011: SOS bend API did not accept the position update", true);
         }
     }
 }
@@ -562,7 +729,7 @@ void ConfirmSoftState() {
     cbpcConnected.store(cbpcOK);
     smpConnected.store(smpOK);
     if (!cbpcOK || !smpOK) {
-        Record(fmt::format("Soft-state confirmation failed (FSMP: {}, CBPC: {})",
+        Record(fmt::format("SPS-010: Soft-state confirmation failed (FSMP: {}, CBPC: {})",
             smpOK ? "OK" : "no response", cbpcOK ? "OK" : "no response"), true);
         return;
     }
@@ -623,7 +790,7 @@ bool SetOwner(bool cbpc, bool force = false) {
         }
         ++switchFailures;
         retryAfterMs.store(now + 1000);
-        Record(fmt::format("Physics handoff to {} failed (FSMP: {}, CBPC: {}); retry queued",
+        Record(fmt::format("SPS-010: Physics handoff to {} failed (FSMP: {}, CBPC: {}); retry queued",
             cbpc ? "CBPC" : "SMP", smpOK ? "OK" : "no response", cbpcOK ? "OK" : "no response"), true);
         return false;
     }
@@ -695,6 +862,7 @@ void Tick() {
     if (copy.mode == 0) QueryArousal();
     if (copy.sexLabOverride) QuerySexLab();
     Evaluate();
+    CaptureState("poll");
 
     const auto now = NowMs();
     auto softDue = softConfirmationDueMs.load();
@@ -790,17 +958,20 @@ bool PluginLoaded(std::initializer_list<std::string_view> names) {
 void RefreshDiagnostics() {
     Diagnostics result;
     result.menuFrameworkLoaded = SKSEMenuFramework::IsInstalled() && ::GetModuleHandleW(L"SKSEMenuFramework.dll") != nullptr;
-    result.oslModuleLoaded = ::GetModuleHandleW(L"OSLAroused.dll") != nullptr;
+    result.classicArousedPluginLoaded = PluginLoaded({ "SexLabAroused.esm" }) &&
+        !OslArousedLoaded() && !SloArousedLoaded();
+    result.oslModuleLoaded = OslArousedLoaded() || SloArousedLoaded() || result.classicArousedPluginLoaded;
     result.fsmpModuleLoaded = ::GetModuleHandleW(L"hdtsmp64.dll") != nullptr;
     result.cbpcModuleLoaded = ::GetModuleHandleW(L"cbp.dll") != nullptr;
     result.sexLabModuleLoaded = ::GetModuleHandleW(L"SexLabUtil.dll") != nullptr;
     result.sexLabPluginLoaded = PluginLoaded({ "SexLab.esm" });
     result.oslPluginLoaded = PluginLoaded({ "OSLAroused.esp", "OAroused.esp", "SexLabAroused.esm" });
+    result.tngPluginLoaded = TngLoaded();
     result.supportedAddonLoaded = PluginLoaded({
         "UBE_SOS_Addon.esp", "UBE_AllRace.esp", "3BBB UBE patch.esp",
-        "SOS - Dw3BA - Futanari Addon.esp"
+        "SOS - Dw3BA - Futanari Addon.esp", "TheNewGentleman.esp"
     });
-    result.sosPluginLoaded = PluginLoaded({ "Schlongs of Skyrim.esp" });
+    result.sosPluginLoaded = LegacySosLoaded();
     result.sosScriptPresent = fs::exists("Data/Scripts/SOSAE_SKSE.pex");
 
     if (auto* player = RE::PlayerCharacter::GetSingleton()) {
@@ -889,6 +1060,7 @@ void SaveSettingsAndApply(const Settings& copy, const Settings& previous) {
         copy.animatePosition != previous.animatePosition || copy.gradualErection != previous.gradualErection ||
         copy.erectionDurationMs != previous.erectionDurationMs;
     { std::scoped_lock lock(settingsLock); settings = copy; }
+    spdlog::set_level(copy.verboseLogging ? spdlog::level::debug : spdlog::level::info);
     Save();
     if (positionChanged) {
         CancelErectionAnimation();
@@ -921,7 +1093,7 @@ void __stdcall RenderMain() {
 
     ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "STATUS");
     StatusLine("Overall", !healthChecked ? "Checking..." : (coreReady ? (stateKnown.load() ? "Working" : "Waiting for game") : "Needs attention"), !healthChecked || !stateKnown.load() ? 1 : (coreReady ? 2 : 0));
-    const auto arousalText = arousalValid.load() ? fmt::format("Arousal: {:.0f} / 100", arousal.load()) : "Arousal: waiting for OSL";
+    const auto arousalText = arousalValid.load() ? fmt::format("Arousal: {:.0f} / 100", arousal.load()) : "Arousal: waiting for provider";
     ImGuiMCP::ProgressBar(arousalValid.load() ? arousal.load() / 100.0F : 0.0F, ImGuiMCP::ImVec2(-1.0F, 0.0F), arousalText.c_str());
     StatusLine("Current physics", stateKnown.load() ? (usingCBPC.load() ? "CBPC (erect)" : "SMP (soft)") : "Waiting", stateKnown.load() ? 2 : 1);
 
@@ -946,7 +1118,7 @@ void __stdcall RenderMain() {
         changed = true;
     }
     ImGuiMCP::EndDisabled();
-    ImGuiMCP::TextWrapped("Automatic mode smoothly raises the SOS AE position after CBPC takes control.");
+    ImGuiMCP::TextWrapped("Automatic mode smoothly raises the position after CBPC takes control. TNG uses its available SOS-style animation stages.");
     ImGuiMCP::BeginDisabled(!copy.positionControl || !stateKnown.load() || !usingCBPC.load());
     if (ImGuiMCP::Button("Test position now")) {
         ResetPositionRecovery();
@@ -994,7 +1166,7 @@ void __stdcall RenderAdvanced() {
     changed |= ImGuiMCP::Checkbox("Let this mod control the erect position", &copy.positionControl);
     ImGuiMCP::TextWrapped("Turn this off if another mod should control the angle. Physics switching will continue.");
     ImGuiMCP::BeginDisabled(!copy.positionControl);
-    const char* bendMethods[]{ "SOS AE native only", "SOS animation event only", "Compatibility (recommended)" };
+    const char* bendMethods[]{ "Native API (SOS AE)", "Animation events (SOS / TNG)", "Compatibility (recommended)" };
     changed |= ImGuiMCP::Combo("Position method", &copy.bendMethod, bendMethods, 3);
     changed |= ImGuiMCP::Checkbox("Animate real position changes", &copy.animatePosition);
     changed |= ImGuiMCP::Checkbox("Prevent repeated bouncing", &copy.bounceGuard);
@@ -1023,32 +1195,114 @@ std::string BuildReport() {
     std::string recent;
     std::string error;
     { std::scoped_lock lock(activityLock); recent = lastAction; error = lastError; }
+    std::string fixes;
+    for (const auto& [code, suggestion] : SuggestedFixes(d))
+        fixes += fmt::format("{}: {}\n", code, suggestion);
     return fmt::format(
         "Schlong Physics Swapper {} diagnostics\n"
-        "Engine={} StateKnown={} Arousal={:.1f} OSLConnected={} SexLabActive={} SexLabConnected={}\n"
-        "MenuFramework={} OSL={} FSMP={} CBPC={} SexLabPPlus={} SOSAE={} SupportedAddon={}\n"
+        "SkyrimRuntime={} SKSE={}\n"
+        "DLLs: MenuFramework={} OSL={} SLO={} FSMP={} CBPC={} SexLab={} SOSAE={}\n"
+        "Compatibility: TNG={} PositionBackend={} ClassicSexLabAroused={}\n"
+        "Engine={} StateKnown={} Arousal={:.1f} Provider={} ProviderConnected={} SexLabActive={} SexLabConnected={}\n"
+        "MenuFramework={} ArousalProvider={} FSMP={} CBPC={} SexLabPPlus={} PositionBackendReady={} SupportedAddon={}\n"
         "PlayerBones={}/6 XML={}/{} [{}]\nCBPCMap={}/{} [{}]\nCBPCParameters={}/{} [{}]\n"
         "SwitchSuccesses={} SwitchFailures={} BendApplies={} LastAction={} LastError={}\n"
         "Position: Enabled={} Requested={} Applied={} LastMethod={} LastSucceeded={} AutoSuspended={} GuardRemainingMs={}\n"
-        "Settings: Enabled={} Mode={} Threshold={:.0f} Hysteresis={:.0f} Bend={} PollMs={} SexLabOverride={} EndDelayMs={} CooldownMs={} BendMethod={} Animate={} Gradual={} ErectionMs={} BounceGuard={} SettleMs={} SeparateSexLabBend={} SexLabBend={} MaxFailures={} PPA={}\n",
-        kVersion, stateKnown.load() ? (usingCBPC.load() ? "CBPC" : "SMP") : "unknown", stateKnown.load(), arousal.load(), oslConnected.load(), sexLabActive.load(), sexLabConnected.load(),
-        d.menuFrameworkLoaded, d.oslModuleLoaded && d.oslPluginLoaded, d.fsmpModuleLoaded, d.cbpcModuleLoaded, d.sexLabModuleLoaded && d.sexLabPluginLoaded, d.sosScriptPresent || sosConnected.load(), d.supportedAddonLoaded,
+        "Settings: Enabled={} Mode={} Threshold={:.0f} Hysteresis={:.0f} Bend={} PollMs={} SexLabOverride={} EndDelayMs={} CooldownMs={} BendMethod={} Animate={} Gradual={} ErectionMs={} BounceGuard={} SettleMs={} SeparateSexLabBend={} SexLabBend={} MaxFailures={} PPA={} VerboseLogging={}\n"
+        "\nSuggested fixes\n{}",
+        kVersion, runtimeVersion, skseVersion,
+        LoadedDllVersion(L"SKSEMenuFramework.dll"), LoadedDllVersion(L"OSLAroused.dll"),
+        LoadedDllVersion(L"SexlabArousedNG.dll"),
+        LoadedDllVersion(L"hdtsmp64.dll"), LoadedDllVersion(L"cbp.dll"),
+        LoadedDllVersion(L"SexLabUtil.dll"), LoadedDllVersion(L"SOSAE.dll"),
+        d.tngPluginLoaded, PositionBackendName(), d.classicArousedPluginLoaded,
+        stateKnown.load() ? (usingCBPC.load() ? "CBPC" : "SMP") : "unknown", stateKnown.load(), arousal.load(), ArousalProviderName(), oslConnected.load(), sexLabActive.load(), sexLabConnected.load(),
+        d.menuFrameworkLoaded, d.oslModuleLoaded && d.oslPluginLoaded, d.fsmpModuleLoaded, d.cbpcModuleLoaded, d.sexLabModuleLoaded && d.sexLabPluginLoaded,
+        d.sosScriptPresent || d.sosPluginLoaded || d.tngPluginLoaded || sosConnected.load(), d.supportedAddonLoaded,
         d.playerBonesFound, d.compatibleXmlFiles, d.xmlFiles, d.xmlSummary, d.compatibleCbpcMaps, d.cbpcMapFiles, d.cbpcMapSummary,
         d.compatibleCbpcParameters, d.cbpcParameterFiles, d.cbpcParameterSummary, switchSuccesses.load(), switchFailures.load(), bendRepairs.load(), recent, error.empty() ? "none" : error,
         s.positionControl, requestedBend.load(), appliedBend.load(), BendMethodName(lastBendMethod.load()), lastBendSucceeded.load(), positionAutoSuspended.load(), std::max<std::int64_t>(0, bendGuardUntilMs.load() - NowMs()),
         s.enabled, s.mode, s.threshold, s.hysteresis, s.erectBend, s.pollMs, s.sexLabOverride, s.sceneEndDelayMs, s.switchCooldownMs,
         s.bendMethod, s.animatePosition, s.gradualErection, s.erectionDurationMs, s.bounceGuard, s.settleDelayMs, s.useSexLabBend, s.sexLabBend, s.maxBendFailures,
-        ::GetModuleHandleW(L"AccuratePenetration.dll") != nullptr);
+        ::GetModuleHandleW(L"AccuratePenetration.dll") != nullptr, s.verboseLogging, fixes);
+}
+
+bool WriteTextFile(const fs::path& path, const std::string& text) {
+    std::error_code ec;
+    fs::create_directories(path.parent_path(), ec);
+    if (ec) return false;
+    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+    if (!stream) return false;
+    stream << text;
+    return stream.good();
+}
+
+void FinishDebugCapture(std::uint64_t generation) {
+    if (generation != debugCaptureGeneration.load()) return;
+    debugCaptureUntilMs.store(0);
+    std::string events;
+    {
+        std::scoped_lock lock(debugCaptureLock);
+        for (const auto& line : debugCaptureLines) events += line + "\n";
+    }
+    const auto text = BuildReport() + "\n30-second debug capture\n" +
+        (events.empty() ? "No events were recorded.\n" : events);
+    if (WriteTextFile(kCaptureReport, text))
+        Record(fmt::format("Debug capture saved to {}", kCaptureReport));
+    else
+        Record("SPS-012: Could not save the debug capture file", true);
+}
+
+void StartDebugCapture() {
+    const auto now = NowMs();
+    const auto generation = debugCaptureGeneration.fetch_add(1) + 1;
+    debugCaptureStartedMs.store(now);
+    debugCaptureUntilMs.store(now + 30000);
+    {
+        std::scoped_lock lock(debugCaptureLock);
+        debugCaptureLines.clear();
+        debugCaptureLines.emplace_back("[+0.0s] CAPTURE: Started. Reproduce the problem now.");
+    }
+    CaptureState("capture start");
+    debugCaptureThread = std::jthread([generation](std::stop_token token) {
+        for (int i = 0; i < 30 && !token.stop_requested(); ++i)
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        if (!token.stop_requested()) {
+            if (auto* tasks = SKSE::GetTaskInterface())
+                tasks->AddTask([generation] { FinishDebugCapture(generation); });
+        }
+    });
+    Record("30-second debug capture started; reproduce the problem now");
+}
+
+void TestPhysicsState(bool cbpc) {
+    if (!SetOwner(cbpc, true)) return;
+    if (!cbpc) ConfirmSoftState();
+    CaptureState(cbpc ? "manual erect test" : "manual soft test");
+}
+
+void RepairPhysics() {
+    ResetPositionRecovery();
+    retryAfterMs.store(0);
+    appliedBend.store(-1);
+    Record("Physics repair requested");
+    Evaluate(true);
+    RefreshDiagnostics();
+    CaptureState("manual repair");
 }
 
 void __stdcall RenderDebug() {
     Diagnostics d;
     { std::scoped_lock lock(diagnosticsLock); d = diagnostics; }
+    Settings debugSettings;
+    { std::scoped_lock lock(settingsLock); debugSettings = settings; }
+    const Settings previousDebugSettings = debugSettings;
 
     const bool coreReady = d.menuFrameworkLoaded && d.oslModuleLoaded && d.oslPluginLoaded &&
         d.fsmpModuleLoaded && d.cbpcModuleLoaded && d.playerBonesFound == 6 &&
         d.compatibleXmlFiles > 0 && d.compatibleCbpcMaps > 0 && d.compatibleCbpcParameters > 0;
     ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "TROUBLESHOOTING");
+    ImGuiMCP::Text("Mod version: %s | Skyrim: %s | SKSE: %s", kVersion, runtimeVersion.c_str(), skseVersion.c_str());
     StatusLine("Overall health", d.checkedAtMs == 0 ? "Not checked yet" : (coreReady ? "Everything required was found" : "One or more items need attention"), d.checkedAtMs == 0 ? 1 : (coreReady ? 2 : 0));
     if (ImGuiMCP::Button("Run health check"))
         if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask(RefreshDiagnostics);
@@ -1063,12 +1317,30 @@ void __stdcall RenderDebug() {
     ImGuiMCP::TextWrapped("Red items usually indicate a missing dependency or configuration. The settings button repairs this mod's safe defaults but does not install missing mods.");
     ImGuiMCP::Separator();
 
+    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "QUICK TESTS");
+    if (ImGuiMCP::Button("Test soft (SMP)"))
+        if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { TestPhysicsState(false); });
+    ImGuiMCP::SameLine();
+    if (ImGuiMCP::Button("Test erect (CBPC)"))
+        if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { TestPhysicsState(true); });
+    ImGuiMCP::SameLine();
+    if (ImGuiMCP::Button("Repair physics"))
+        if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask(RepairPhysics);
+    ImGuiMCP::TextWrapped("Tests are temporary. Automatic control resumes on the next normal check.");
+    ImGuiMCP::Separator();
+
     ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "DEPENDENCIES AND CONNECTIONS");
     StatusLine("SKSE Menu Framework", d.menuFrameworkLoaded ? "Loaded" : "Missing", d.menuFrameworkLoaded ? 2 : 0);
-    StatusLine("OSL Aroused", d.oslModuleLoaded && d.oslPluginLoaded ? (oslConnected.load() ? "Connected and running" : "Loaded; waiting for response") : "Missing", d.oslModuleLoaded && d.oslPluginLoaded ? (oslConnected.load() ? 2 : 1) : 0);
+    const auto providerName = ArousalProviderName();
+    StatusLine("Arousal provider", d.oslModuleLoaded && d.oslPluginLoaded ? (oslConnected.load() ? fmt::format("{} connected", providerName).c_str() : fmt::format("{} loaded; waiting", providerName).c_str()) : "Missing", d.oslModuleLoaded && d.oslPluginLoaded ? (oslConnected.load() ? 2 : 1) : 0);
+    if (SloArousedLoaded())
+        ImGuiMCP::TextWrapped("SLO users: leave SLO's Use SOS option off so it does not fight this mod's position control.");
+    if (d.classicArousedPluginLoaded)
+        ImGuiMCP::TextWrapped("Classic SexLab Aroused users: leave Enable SOS off so it does not fight this mod's position control.");
     StatusLine("Faster HDT-SMP", d.fsmpModuleLoaded ? (smpConnected.load() ? "Connected and running" : "Loaded; not tested yet") : "Missing", d.fsmpModuleLoaded ? (smpConnected.load() ? 2 : 1) : 0);
     StatusLine("CBPC", d.cbpcModuleLoaded ? (cbpcConnected.load() ? "Connected and running" : "Loaded; not tested yet") : "Missing", d.cbpcModuleLoaded ? (cbpcConnected.load() ? 2 : 1) : 0);
-    StatusLine("SOS AE bend API", d.sosScriptPresent || sosConnected.load() ? (sosConnected.load() ? "Connected and running" : "Installed; not tested yet") : (d.sosPluginLoaded ? "Legacy fallback only" : "Missing"), sosConnected.load() ? 2 : ((d.sosScriptPresent || d.sosPluginLoaded) ? 1 : 0));
+    const bool positionBackendFound = d.sosScriptPresent || d.sosPluginLoaded || d.tngPluginLoaded;
+    StatusLine("Position backend", positionBackendFound ? PositionBackendName().c_str() : "Missing", positionBackendFound ? (lastBendSucceeded.load() ? 2 : 1) : 0);
     StatusLine("Six-bone schlong addon", d.supportedAddonLoaded ? fmt::format("Loaded; {}/6 live bones", d.playerBonesFound).c_str() : fmt::format("Plugin not identified; {}/6 live bones", d.playerBonesFound).c_str(), d.playerBonesFound == 6 ? 2 : 1);
     StatusLine("SexLab P+", d.sexLabModuleLoaded && d.sexLabPluginLoaded ? (sexLabConnected.load() ? "Connected and running" : "Loaded; waiting for response") : "Not installed", d.sexLabModuleLoaded && d.sexLabPluginLoaded ? (sexLabConnected.load() ? 2 : 1) : 1);
     StatusLine("Player SexLab scene", sexLabValid.load() ? (sexLabActive.load() ? "Active" : "Not active") : "Unknown", sexLabValid.load() ? 2 : 1);
@@ -1094,6 +1366,10 @@ void __stdcall RenderDebug() {
     ImGuiMCP::Text("Last position method: %s", BendMethodName(lastBendMethod.load()));
     StatusLine("Gradual erection", erectionAnimating.load() ? fmt::format("Animating: {}/{}", appliedBend.load(), erectionAnimationTargetBend.load()).c_str() : "Idle", erectionAnimating.load() ? 1 : 2);
     StatusLine("Position recovery", positionAutoSuspended.load() ? "Stopped after failures" : (NowMs() < bendGuardUntilMs.load() ? "Bounce guard pause" : "Ready"), positionAutoSuspended.load() ? 0 : (NowMs() < bendGuardUntilMs.load() ? 1 : 2));
+    ImGuiMCP::Separator();
+    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "SUGGESTED FIXES");
+    for (const auto& [code, suggestion] : SuggestedFixes(d))
+        ImGuiMCP::TextWrapped("%s: %s", code.c_str(), suggestion.c_str());
     {
         std::scoped_lock lock(activityLock);
         ImGuiMCP::TextWrapped("Last action: %s", lastAction.c_str());
@@ -1102,16 +1378,31 @@ void __stdcall RenderDebug() {
             for (const auto& entry : activity) ImGuiMCP::TextWrapped("- %s", entry.c_str());
     }
 
+    ImGuiMCP::Separator();
+    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "SUPPORT REPORT");
+    if (ImGuiMCP::Checkbox("Verbose logging", &debugSettings.verboseLogging)) {
+        SaveSettingsAndApply(debugSettings, previousDebugSettings);
+        Record(debugSettings.verboseLogging ? "Verbose logging enabled" : "Verbose logging disabled");
+    }
+    if (DebugCaptureActive()) {
+        const auto remaining = std::max<std::int64_t>(0, debugCaptureUntilMs.load() - NowMs());
+        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F), "Capturing... reproduce the problem now (%lld seconds left)", (remaining + 999) / 1000);
+    } else if (ImGuiMCP::Button("Start 30-second debug capture")) {
+        StartDebugCapture();
+    }
     if (ImGuiMCP::Button("Copy diagnostic report")) {
         const auto report = BuildReport();
         ImGuiMCP::SetClipboardText(report.c_str());
+        Record("Diagnostic report copied to the clipboard");
     }
     ImGuiMCP::SameLine();
     if (ImGuiMCP::Button("Save report to file")) {
-        fs::create_directories(fs::path(kReport).parent_path());
-        std::ofstream(kReport) << BuildReport();
-        Record(fmt::format("Diagnostic report saved to {}", kReport));
+        if (WriteTextFile(kReport, BuildReport()))
+            Record(fmt::format("Diagnostic report saved to {}", kReport));
+        else
+            Record("SPS-012: Could not save the diagnostic report file", true);
     }
+    ImGuiMCP::TextWrapped("Reports contain mod state and filenames only. They do not include your Windows username, save name, or full computer paths.");
 }
 
 void RegisterMenu() {
@@ -1133,6 +1424,11 @@ public:
             // The callback query will evaluate the new value. Arousal updates
             // must not invalidate an already-applied bend or they create a
             // position replay loop while Automatic mode is erect.
+            if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask(QueryArousal);
+        } else if (name == "sla_UpdateComplete") {
+            // SLO Aroused NG reports a completed update globally. Querying its
+            // OSL compatibility stub is cheap and avoids waiting for the next poll.
+            if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask(QueryArousal);
         } else if (name == "SexLabDisabled") {
             sexLabActive.store(false);
             sexLabValid.store(false);
@@ -1184,6 +1480,8 @@ void OnMessage(SKSE::MessagingInterface::Message* message) {
 }
 
 SKSEPluginLoad(const SKSE::LoadInterface* skse) {
+    Mod::runtimeVersion = skse->RuntimeVersion().string(".");
+    Mod::skseVersion = REL::Version::unpack(skse->SKSEVersion()).string(".");
     SKSE::Init(skse);
     if (auto dir = SKSE::log::log_directory()) {
         auto sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>((*dir / "SchlongPhysicsSwapper.log").string(), true);
