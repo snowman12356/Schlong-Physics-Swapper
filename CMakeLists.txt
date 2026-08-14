@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(SchlongPhysicsSwapper VERSION 1.6.2 LANGUAGES CXX)
+project(SchlongPhysicsSwapper VERSION 1.7.1 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(NOT DEFINED ENV{COMMONLIB_SSE_FOLDER})
@@ -31,3 +31,6 @@ install(FILES
     config/CBPConfig_ZZZ_SchlongPhysicsSwapper.txt
     DESTINATION "SKSE/Plugins"
 )
+install(FILES scripts/SPS_SexLabBridge.pex DESTINATION "Scripts")
+install(FILES scripts/Source/SPS_SexLabBridge.psc DESTINATION "Source/Scripts")
+install(DIRECTORY fomod DESTINATION ".")

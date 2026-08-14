@@ -1,4 +1,4 @@
-# Schlong Physics Swapper 1.6.2
+# Schlong Physics Swapper 1.7.1
 
 Native SKSE plugin for compatible SOS six-bone schlongs. Faster HDT-SMP owns
 Gen01-Gen06 while arousal is below a configurable threshold; CBPC owns them
@@ -41,6 +41,11 @@ with it.
 - OSL Aroused, SLO Aroused NG, or classic SexLab Aroused Redux
 - A compatible SOS addon with SMP physics 
 
+Crash Logger is optional and only needed when reporting a Skyrim crash. Physics
+Editor is not a requirement and should not be used alongside SPS because it can
+control the same SMP and CBPC systems. Auto Physics Reset is optional; disable
+its overlapping load, cell or scene triggers if it changes SPS's chosen state.
+
 Schlongs of Skyrim AE is supported through `SOSAE_SKSE.SetSchlongBend`.
 Legacy SOS is supported through its `SOSFlaccid`/`SOSBend0`-`SOSBend9`
 animation events.
@@ -72,10 +77,22 @@ player's public `sla_Arousal` faction rank. OSL and SLO remain higher-priority
 providers when installed. Leave classic SLA's **Enable SOS** option disabled so
 its position events do not compete with this plugin. No SLA script is replaced.
 
-SexLab P+ is optional. When present, the plugin verifies the player through
-`SexLabUtil.IsActorActive` and listens for SexLab start/end events. A player
-scene temporarily takes priority over manual and OSL control, then normal
-control resumes after a configurable delay.
+SexLab P+ is optional. When present, the plugin checks P+'s directional stage
+interactions throughout player scenes. While receiving or servicing a partner,
+the state from immediately before the scene is retained: flaccid stays flaccid
+and hard stays hard. The player uses CBPC while penetrating or having their
+penis serviced.
+
+The Advanced page can change bottom/receiving behaviour to follow live arousal,
+always use SMP, or always use CBPC. Keeping the pre-scene state is the default.
+Unknown or unregistered stages keep the current engine by default, preventing
+visible pops. Normal arousal control resumes after a configurable delay.
+
+PPA (Procedural Penis Animations) is optional and compatible. Current PPA
+versions are detected through its [documented V1 listener API](https://asdasdduck.github.io/ppa-docs/skse-api.html), with a safe DLL
+fallback for older builds. During a PPA scene, PPA owns genital position and
+SPS changes only the SMP/CBPC physics owner. SPS restores the selected erect
+position after the scene instead of sending competing bend events.
 
 ## Settings
 
@@ -87,6 +104,7 @@ The streamlined **Main settings** page provides only everyday controls:
 - immediate erect vertical-position control from 0 to 20
 - optional gradual erection with an adjustable transition time
 - advanced hysteresis, polling, cooldown, position safety, and SexLab P+ options
+- an optional one-time player SMP reset about 10 seconds after loading
 - selectable native, animation-event, or compatibility position method
 - bounce guard, recovery limit, settle delay, and suspend-position-control mode
 - optional separate SexLab erect angle and a one-click position test
@@ -104,14 +122,29 @@ interval. Settings are saved to
 automatically imports an existing `UBEPhysicsSwitch.ini` once, preserving the
 old settings even when both files are initially present.
 
+The Nexus archive includes a simple FOMOD. It automatically installs the OSL
+player compatibility override only when OSL Aroused is detected. SOS AE, legacy
+SOS and TNG all use the same SPS core DLL, so there is no pointless backend
+choice. New users can install the recommended settings; updating users can
+choose **Keep my existing settings** so their INI is not replaced. Physics
+Editor and Auto Physics Reset conflicts are reported by the in-game
+Troubleshooting page, where they cannot block installation.
+
 ## Behavior
 
 - Soft/below threshold: CBPC is stopped first, then SMP is enabled.
 - Above threshold: SMP is disabled first, then CBPC is started.
+- SexLab P+ bottom/receiving role: retain the pre-scene physics state.
+  Top/penetrating role: CBPC.
+- PPA controls live scene position when installed; SPS does not send competing
+  SOS bend or flaccid commands while PPA is active.
 - With gradual erection enabled, the native SOS AE position eases from 0 to the
   selected erect bend after CBPC settles. Only changed integer bend values are
   sent, avoiding per-frame Papyrus traffic and animation-event bouncing.
 - A 5-point default hysteresis keeps ownership stable around the threshold.
+- About 10 seconds after loading a save or starting a new game, SPS resets the
+  player's SMP once and then restores the correct soft/erect state. This can be
+  turned off or delayed on the Advanced page.
 - Handoffs are only marked successful when both external Papyrus APIs accept
   every request. Failed handoffs are retried and the last confirmed state is
   restored on a best-effort basis.
@@ -193,6 +226,29 @@ computer paths.
 When reporting a problem, attach the diagnostic report or 30-second capture and
 include the schlong addon, Skyrim runtime, mod-manager name, expected result,
 actual result, and short reproduction steps. See [SUPPORT.md](docs/SUPPORT.md).
+
+## 1.7.1 changes
+
+- Added player role-aware SexLab P+ switching: bottom/receiving keeps the state
+  from immediately before the scene, while top/penetrating uses CBPC.
+- Added selectable bottom behaviour: keep the entry state, follow live arousal,
+  always SMP, or always CBPC.
+- Added a safe unknown-role fallback that keeps the current physics owner by
+  default, plus Advanced-page controls.
+- Added current-stage refreshes for P+ start, stage, actor-change, relocation,
+  ending and cleanup events.
+- Added optional PPA V1 listener integration for live role updates.
+- Prevented all SPS bend/flaccid commands while PPA owns scene position, then
+  restored the selected position after the scene.
+- Added role bridge, PPA API and current role details to diagnostics.
+- Added an optional one-time player SMP reset 10 seconds after loading, followed
+  by an automatic restore of the correct SPS physics state.
+- Fixed bottom-role polling repeatedly sending the soft-position command and
+  fighting the active scene animation.
+
+## 1.7.0 changes
+
+- Initial player role-aware SexLab P+ and PPA compatibility test build.
 
 ## 1.6.2 changes
 

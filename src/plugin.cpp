@@ -6,6 +6,7 @@
 #include <fmt/format.h>
 #include <spdlog/sinks/basic_file_sink.h>
 #include <Windows.h>
+#include "PPAInterface.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -26,7 +27,7 @@ namespace Mod {
 namespace fs = std::filesystem;
 
 constexpr auto kName = "Schlong Physics Swapper";
-constexpr auto kVersion = "1.6.2";
+constexpr auto kVersion = "1.7.1";
 constexpr auto kIni = "Data/SKSE/Plugins/SchlongPhysicsSwapper.ini";
 constexpr auto kLegacyIni = "Data/SKSE/Plugins/UBEPhysicsSwitch.ini";
 constexpr auto kReport = "Data/SKSE/Plugins/SchlongPhysicsSwapper_Diagnostics.txt";
@@ -44,8 +45,13 @@ struct Settings {
     int erectBend{ 14 };
     int pollMs{ 1000 };
     bool sexLabOverride{ true };
+    bool sexLabRoleSwitching{ true };
+    int sexLabBottomBehavior{ 0 };  // 0 keep entry, 1 live arousal, 2 SMP, 3 CBPC
+    int sexLabUnknownRole{ 0 };  // 0 keep current, 1 SMP, 2 CBPC
     int sceneEndDelayMs{ 1500 };
     int switchCooldownMs{ 750 };
+    bool resetSMPAfterLoad{ true };
+    int loadResetDelayMs{ 10000 };
     bool positionControl{ true };
     int bendMethod{ 2 };  // 0 native, 1 animation event, 2 compatibility
     bool animatePosition{ true };
@@ -66,12 +72,16 @@ struct Diagnostics {
     bool cbpcModuleLoaded{ false };
     bool sexLabModuleLoaded{ false };
     bool sexLabPluginLoaded{ false };
+    bool sexLabRoleBridgePresent{ false };
     bool oslPluginLoaded{ false };
     bool classicArousedPluginLoaded{ false };
     bool supportedAddonLoaded{ false };
     bool sosPluginLoaded{ false };
     bool tngPluginLoaded{ false };
     bool sosScriptPresent{ false };
+    bool physicsEditorLoaded{ false };
+    bool autoPhysicsResetLoaded{ false };
+    bool crashLoggerLoaded{ false };
     int playerBonesFound{ 0 };
     int xmlFiles{ 0 };
     int compatibleXmlFiles{ 0 };
@@ -107,6 +117,21 @@ std::atomic<bool> sexLabValid{ false };
 std::atomic<bool> sexLabQueryPending{ false };
 std::atomic<std::int64_t> sexLabQueryStartedMs{ 0 };
 std::atomic<std::int64_t> sexLabEndedMs{ 0 };
+std::atomic<bool> sexLabEntryCBPC{ false };
+std::atomic<bool> sexLabEntryStateValid{ false };
+std::atomic<int> sexLabRole{ 0 };  // 0 unknown, 1 bottom/receiving, 2 top/penetrating
+std::atomic<bool> sexLabRoleValid{ false };
+std::atomic<bool> sexLabRoleQueryPending{ false };
+std::atomic<std::int64_t> sexLabRoleQueryStartedMs{ 0 };
+std::atomic<std::uint64_t> sexLabRoleGeneration{ 0 };
+std::atomic<bool> ppaApiConnected{ false };
+std::atomic<bool> ppaSceneActive{ false };
+std::atomic<int> ppaSceneRole{ 0 };
+std::atomic<bool> ppaSceneRoleValid{ false };
+std::atomic<std::int64_t> ppaLastUpdateMs{ 0 };
+std::atomic<std::int64_t> ppaLastTopMs{ 0 };
+std::atomic<std::int64_t> ppaBottomCandidateSinceMs{ 0 };
+std::atomic<std::int64_t> ppaIgnoreUntilMs{ 0 };
 std::atomic<bool> usingCBPC{ false };
 std::atomic<bool> stateKnown{ false };
 std::atomic<bool> polling{ false };
@@ -117,6 +142,9 @@ std::atomic<bool> cbpcConnected{ false };
 std::atomic<bool> sosConnected{ false };
 std::atomic<std::int64_t> lastSwitchMs{ 0 };
 std::atomic<std::int64_t> retryAfterMs{ 0 };
+std::atomic<std::int64_t> loadSMPResetDueMs{ 0 };
+std::atomic<std::int64_t> loadSMPResetRestoreDueMs{ 0 };
+std::atomic<std::int64_t> lastLoadSMPResetMs{ 0 };
 std::atomic<std::int64_t> lastBendApplyMs{ 0 };
 std::atomic<std::int64_t> bendSettleDueMs{ 0 };
 std::atomic<std::int64_t> bendConfirmationDueMs{ 0 };
@@ -140,15 +168,19 @@ std::atomic<std::uint64_t> erectionAnimationGeneration{ 0 };
 std::atomic<unsigned> switchSuccesses{ 0 };
 std::atomic<unsigned> switchFailures{ 0 };
 std::atomic<unsigned> bendRepairs{ 0 };
+std::atomic<unsigned> loadSMPResets{ 0 };
 std::atomic<std::int64_t> debugCaptureStartedMs{ 0 };
 std::atomic<std::int64_t> debugCaptureUntilMs{ 0 };
 std::atomic<std::uint64_t> debugCaptureGeneration{ 0 };
 std::jthread pollThread;
 std::jthread erectionAnimationThread;
 std::jthread debugCaptureThread;
+const SPS::PPA::InterfaceV1* ppaAPI{ nullptr };
+SPS::PPA::ListenerHandle ppaListener{ 0 };
 
 void Evaluate(bool force = false);
 void QuerySexLab();
+void QuerySexLabRole();
 void RefreshDiagnostics();
 void Save();
 bool SexLabHasPriority(const Settings& copy);
@@ -156,15 +188,134 @@ void ApplyRequestedBend(bool force, bool animate, bool automatic);
 void CancelErectionAnimation();
 std::string BuildReport();
 bool PluginLoaded(std::initializer_list<std::string_view> names);
+std::int64_t NowMs();
+void Record(std::string message, bool error = false);
+
+const char* SexLabRoleName(int role) {
+    switch (role) {
+    case 1: return "Bottom / receiving (keeps entry state)";
+    case 2: return "Top / penetrating (CBPC)";
+    default: return "Unknown / unregistered";
+    }
+}
 
 bool PPAOwnsPosition() {
-    return ::GetModuleHandleW(L"AccuratePenetration.dll") != nullptr &&
-        sexLabValid.load() && sexLabActive.load();
+    if (::GetModuleHandleW(SPS::PPA::kPluginDLL) == nullptr) return false;
+    // P+ knows the player's directional role. A receiving player keeps the
+    // state captured when the scene started; PPA owns scene alignment only
+    // when that locked state is CBPC/erect. Penetrating is always CBPC.
+    if (sexLabActive.load() && sexLabRoleValid.load()) {
+        if (sexLabRole.load() == 1) return usingCBPC.load();
+        if (sexLabRole.load() == 2) return true;
+        return usingCBPC.load();
+    }
+    // The listener gives exact scene state on current PPA builds. Retain the
+    // conservative SexLab fallback for older PPA versions without the export.
+    const bool recentPPAUpdate = ppaSceneActive.load() && NowMs() - ppaLastUpdateMs.load() < 3000;
+    return recentPPAUpdate || (sexLabValid.load() && sexLabActive.load());
 }
 
 std::int64_t NowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+void ResetPPASceneTracking(int ignoreMs = 0) {
+    ppaSceneActive.store(false);
+    ppaSceneRole.store(0);
+    ppaSceneRoleValid.store(false);
+    ppaLastUpdateMs.store(0);
+    ppaLastTopMs.store(0);
+    ppaBottomCandidateSinceMs.store(0);
+    ppaIgnoreUntilMs.store(ignoreMs > 0 ? NowMs() + ignoreMs : 0);
+}
+
+void __cdecl OnPPAUpdate(const SPS::PPA::AnimationUpdateEvent* event, void*) {
+    if (!event || event->apiVersion != SPS::PPA::kVersion ||
+        event->size < sizeof(SPS::PPA::AnimationUpdateEvent)) return;
+    if (event->actorCount > 0 && !event->actors) return;
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player) return;
+    const auto now = NowMs();
+    // PPA can publish the tail of its previous update cycle after a load or
+    // framework cleanup. Do not let that stale frame reclaim position.
+    if (!event->ending && now < ppaIgnoreUntilMs.load()) return;
+
+    const auto receiver = event->receiver.get();
+    const bool playerIsReceiver = receiver && receiver.get() == player;
+    bool playerIsPartner = false;
+    bool receiverHasPartner = false;
+    for (std::uint32_t i = 0; i < event->actorCount; ++i) {
+        if (playerIsReceiver && event->actors[i].actor) receiverHasPartner = true;
+        const auto partner = event->actors[i].actor.get();
+        if (partner && partner.get() == player) {
+            playerIsPartner = true;
+            break;
+        }
+    }
+    const bool playerSelfInteraction = playerIsReceiver && event->selfInteraction;
+    // A top actor can also receive an empty per-receiver update. Ignore that
+    // record so it cannot overwrite the meaningful partner update as bottom.
+    if (!playerIsPartner && !receiverHasPartner && !playerSelfInteraction) return;
+
+    const int observedRole = playerIsPartner || playerSelfInteraction ? 2 : 1;
+    bool changed = false;
+    if (event->ending) {
+        // PPA sends cleanup per receiver. A bottom-side cleanup must not clear
+        // a still-active penetrating role (and vice versa) in multi-actor scenes.
+        if (ppaSceneRoleValid.load() && ppaSceneRole.load() != observedRole) return;
+        ppaBottomCandidateSinceMs.store(0);
+        ppaLastUpdateMs.store(now);
+        changed = ppaSceneActive.exchange(false) || ppaSceneRoleValid.load();
+        ppaSceneRole.store(0);
+        ppaSceneRoleValid.store(false);
+    } else {
+        if (observedRole == 2) {
+            // One PPA update pass can describe the player as both a receiver
+            // and a penetrating partner. Penetrating wins, and suppresses the
+            // companion receiver record so SPS cannot alternate every frame.
+            ppaLastTopMs.store(now);
+            ppaBottomCandidateSinceMs.store(0);
+        } else {
+            if (now - ppaLastTopMs.load() < 500) return;
+            const auto candidateSince = ppaBottomCandidateSinceMs.load();
+            if (candidateSince == 0) {
+                ppaBottomCandidateSinceMs.store(now);
+                return;
+            }
+            // Require a short run of receiver-only updates before switching to
+            // SMP. This filters paired PPA records without delaying real scenes.
+            if (now - candidateSince < 100) return;
+        }
+
+        ppaLastUpdateMs.store(now);
+        const int previous = ppaSceneRole.exchange(observedRole);
+        const bool wasValid = ppaSceneRoleValid.exchange(true);
+        ppaSceneActive.store(true);
+        changed = !wasValid || previous != observedRole;
+        if (changed)
+            Record(fmt::format("PPA role update: {}", SexLabRoleName(observedRole)));
+    }
+    // PPA can publish on every animation update. Only schedule work when the
+    // effective role changes, avoiding a per-frame SKSE/Papyrus task flood.
+    if (changed)
+        if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { Evaluate(); });
+}
+
+void RegisterPPAAPI() {
+    const auto module = ::GetModuleHandleW(SPS::PPA::kPluginDLL);
+    const auto getAPI = module ? reinterpret_cast<SPS::PPA::GetAPIFn>(
+        ::GetProcAddress(module, SPS::PPA::kGetAPIFunctionNameV1)) : nullptr;
+    const auto* api = getAPI ? getAPI() : nullptr;
+    if (!api || api->version != SPS::PPA::kVersion || api->size < sizeof(SPS::PPA::InterfaceV1) ||
+        !api->RegisterAnimationUpdateListener || !api->UnregisterAnimationUpdateListener) {
+        ppaApiConnected.store(false);
+        return;
+    }
+    ppaAPI = api;
+    ppaListener = ppaAPI->RegisterAnimationUpdateListener(OnPPAUpdate, nullptr);
+    ppaApiConnected.store(ppaListener != 0);
+    if (ppaListener) Record("PPA V1 listener connected; live scene hand-off enabled");
 }
 
 std::string LoadedDllVersion(const wchar_t* name) {
@@ -232,7 +383,7 @@ void AppendCaptureLine(std::string_view type, const std::string& message) {
     debugCaptureLines.push_back(fmt::format("[+{:.1f}s] {}: {}", elapsed / 1000.0, type, message));
 }
 
-void Record(std::string message, bool error = false) {
+void Record(std::string message, bool error) {
     if (error) logger::error("{}", message);
     else logger::info("{}", message);
     AppendCaptureLine(error ? "ERROR" : "EVENT", message);
@@ -249,9 +400,10 @@ void CaptureState(std::string_view reason) {
     Settings copy;
     { std::scoped_lock lock(settingsLock); copy = settings; }
     const auto line = fmt::format(
-        "{} | engine={} arousal={:.1f}/{} provider={} connected={} SexLab={} SMP={} CBPC={} bend={}/{} method={} animating={} guard={} suspended={}",
+        "{} | engine={} arousal={:.1f}/{} provider={} connected={} SexLab={} role={} SMP={} CBPC={} bend={}/{} method={} animating={} guard={} suspended={}",
         reason, stateKnown.load() ? (usingCBPC.load() ? "CBPC" : "SMP") : "unknown",
         arousal.load(), arousalValid.load(), ArousalProviderName(), oslConnected.load(), sexLabActive.load(),
+        SexLabRoleName(sexLabRole.load()),
         smpConnected.load(), cbpcConnected.load(), requestedBend.load(), appliedBend.load(),
         lastBendMethod.load(), erectionAnimating.load(), NowMs() < bendGuardUntilMs.load(),
         positionAutoSuspended.load());
@@ -279,6 +431,10 @@ std::vector<std::pair<std::string, std::string>> SuggestedFixes(const Diagnostic
         fixes.emplace_back("SPS-008", "The bundled UBEPS01-UBEPS06 CBPC values are missing or overwritten. Reinstall the mod.");
     if (!d.sosScriptPresent && !d.sosPluginLoaded && !d.tngPluginLoaded)
         fixes.emplace_back("SPS-009", "No supported position backend was found. Install SOS AE-NG, legacy SOS, or The New Gentleman.");
+    if (d.sexLabModuleLoaded && d.sexLabPluginLoaded && !d.sexLabRoleBridgePresent)
+        fixes.emplace_back("SPS-013", "The SPS SexLab role bridge is missing. Reinstall version 1.7 so bottom/top scene switching can work.");
+    if (d.physicsEditorLoaded)
+        fixes.emplace_back("SPS-014", "Physics Editor is loaded and can control the same SMP/CBPC systems as SPS. Disable Physics Editor before using SPS.");
     if (switchFailures.load() > 0)
         fixes.emplace_back("SPS-010", "A physics handoff failed. Check SchlongPhysicsSwapper.log and confirm both FSMP and CBPC load correctly.");
     if (positionAutoSuspended.load() || (!lastBendSucceeded.load() && requestedBend.load() >= 0))
@@ -325,10 +481,25 @@ public:
             sexLabValid.store(true);
             sexLabConnected.store(true);
             if (previous && !active) {
-                sexLabEndedMs.store(NowMs());
+                const auto now = NowMs();
+                sexLabEndedMs.store(now);
+                sexLabEntryStateValid.store(false);
+                sexLabRoleGeneration.fetch_add(1);
+                sexLabRole.store(0);
+                sexLabRoleValid.store(false);
+                sexLabRoleQueryPending.store(false);
+                // SexLab is the authoritative scene lifetime. PPA may still
+                // publish the tail of its last frame, so release its position
+                // ownership and ignore that stale tail before restoring soft.
+                ResetPPASceneTracking(2000);
+                if (stateKnown.load() && !usingCBPC.load())
+                    softConfirmationDueMs.store(now + 250);
                 Record("SexLab scene ended; post-scene hold started");
             } else if (!previous && active) {
-                Record("SexLab scene detected; CBPC override requested");
+                sexLabEntryCBPC.store(usingCBPC.load());
+                sexLabEntryStateValid.store(stateKnown.load());
+                Record(fmt::format("SexLab scene detected; receiving state locked as {}",
+                    usingCBPC.load() ? "hard (CBPC)" : "flaccid (SMP)"));
             }
             if (previous != active && stateKnown.load() && usingCBPC.load()) {
                 CancelErectionAnimation();
@@ -344,9 +515,43 @@ public:
             sexLabValid.store(false);
         }
         sexLabQueryPending.store(false);
+        if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] {
+            if (sexLabActive.load()) QuerySexLabRole();
+            Evaluate();
+        });
+    }
+    void SetObject(const RE::BSTSmartPointer<RE::BSScript::Object>&) override {}
+};
+
+class SexLabRoleCallback final : public RE::BSScript::IStackCallbackFunctor {
+public:
+    explicit SexLabRoleCallback(std::uint64_t generation) : generation_(generation) {}
+
+    void operator()(RE::BSScript::Variable a_result) override {
+        if (generation_ != sexLabRoleGeneration.load()) return;
+        bool valid = false;
+        int role = 0;
+        if (a_result.IsInt()) {
+            role = std::clamp(a_result.GetSInt(), 0, 2);
+            valid = true;
+        }
+        const int previous = sexLabRole.exchange(role);
+        const bool wasValid = sexLabRoleValid.exchange(valid);
+        sexLabRoleQueryPending.store(false);
+        const bool roleChanged = valid && (!wasValid || previous != role);
+        if (roleChanged)
+            Record(fmt::format("SexLab role: {}", SexLabRoleName(role)));
+        // Do not send a position command merely because the player became the
+        // bottom. Evaluate decides from arousal/settings, and a real CBPC/SMP
+        // handoff schedules the one required position confirmation itself.
+        if (!valid)
+            logger::warn("SexLab role bridge returned an invalid value");
         if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { Evaluate(); });
     }
     void SetObject(const RE::BSTSmartPointer<RE::BSScript::Object>&) override {}
+
+private:
+    std::uint64_t generation_;
 };
 
 auto VM() { return RE::BSScript::Internal::VirtualMachine::GetSingleton(); }
@@ -396,8 +601,13 @@ void Load() {
         settings.erectBend = std::clamp(static_cast<int>(ini.GetLongValue("General", "ErectBend", 14)), 0, 20);
         settings.pollMs = std::clamp(static_cast<int>(ini.GetLongValue("General", "PollMilliseconds", 1000)), 250, 10000);
         settings.sexLabOverride = ini.GetBoolValue("Compatibility", "SexLabPPlusOverride", true);
+        settings.sexLabRoleSwitching = ini.GetBoolValue("Compatibility", "SexLabRoleSwitching", true);
+        settings.sexLabBottomBehavior = std::clamp(static_cast<int>(ini.GetLongValue("Compatibility", "SexLabBottomBehavior", 0)), 0, 3);
+        settings.sexLabUnknownRole = std::clamp(static_cast<int>(ini.GetLongValue("Compatibility", "SexLabUnknownRole", 0)), 0, 2);
         settings.sceneEndDelayMs = std::clamp(static_cast<int>(ini.GetLongValue("Compatibility", "SexLabEndDelayMilliseconds", 1500)), 0, 10000);
         settings.switchCooldownMs = std::clamp(static_cast<int>(ini.GetLongValue("Reliability", "SwitchCooldownMilliseconds", 750)), 0, 5000);
+        settings.resetSMPAfterLoad = ini.GetBoolValue("Reliability", "ResetSMPAfterLoad", true);
+        settings.loadResetDelayMs = std::clamp(static_cast<int>(ini.GetLongValue("Reliability", "SMPResetDelayMilliseconds", 10000)), 1000, 60000);
         settings.positionControl = ini.GetBoolValue("Position", "Enabled", true);
         settings.bendMethod = std::clamp(static_cast<int>(ini.GetLongValue("Position", "Method", 2)), 0, 2);
         settings.animatePosition = ini.GetBoolValue("Position", "AnimateChanges", true);
@@ -430,8 +640,13 @@ void Save() {
     ini.SetLongValue("General", "ErectBend", settings.erectBend);
     ini.SetLongValue("General", "PollMilliseconds", settings.pollMs);
     ini.SetBoolValue("Compatibility", "SexLabPPlusOverride", settings.sexLabOverride);
+    ini.SetBoolValue("Compatibility", "SexLabRoleSwitching", settings.sexLabRoleSwitching);
+    ini.SetLongValue("Compatibility", "SexLabBottomBehavior", settings.sexLabBottomBehavior);
+    ini.SetLongValue("Compatibility", "SexLabUnknownRole", settings.sexLabUnknownRole);
     ini.SetLongValue("Compatibility", "SexLabEndDelayMilliseconds", settings.sceneEndDelayMs);
     ini.SetLongValue("Reliability", "SwitchCooldownMilliseconds", settings.switchCooldownMs);
+    ini.SetBoolValue("Reliability", "ResetSMPAfterLoad", settings.resetSMPAfterLoad);
+    ini.SetLongValue("Reliability", "SMPResetDelayMilliseconds", settings.loadResetDelayMs);
     ini.SetBoolValue("Position", "Enabled", settings.positionControl);
     ini.SetLongValue("Position", "Method", settings.bendMethod);
     ini.SetBoolValue("Position", "AnimateChanges", settings.animatePosition);
@@ -721,6 +936,12 @@ void ApplyRequestedBend(bool force = false, bool animate = false, bool automatic
 
 void ConfirmSoftState() {
     if (!stateKnown.load() || usingCBPC.load()) return;
+    // A live PPA scene owns these transforms. Retry instead of consuming the
+    // only confirmation, otherwise the shaft can stay erect with SMP enabled.
+    if (PPAOwnsPosition()) {
+        softConfirmationDueMs.store(NowMs() + 500);
+        return;
+    }
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (!player) return;
     auto* actor = static_cast<RE::Actor*>(player);
@@ -735,6 +956,47 @@ void ConfirmSoftState() {
     }
     ApplyBend(actor, 0, true, true, false);
     Record("Soft state confirmed after physics handoff");
+}
+
+void RunLoadSMPReset() {
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player) {
+        Record("SPS-014: Delayed SMP reset skipped because the player was unavailable", true);
+        return;
+    }
+    if (::GetModuleHandleW(L"hdtsmp64.dll") == nullptr) {
+        Record("SPS-014: Delayed SMP reset skipped because Faster HDT-SMP was not loaded", true);
+        return;
+    }
+
+    // FSMP 4 exposes an actor-scoped native reset. This avoids opening the
+    // console and does not reload every SMP actor in the current cell.
+    const bool dispatched = Call("DynamicHDT", "ResetPhysics",
+        static_cast<RE::Actor*>(player), true);
+    if (!dispatched) {
+        Record("SPS-014: Faster HDT-SMP did not accept the delayed player reset", true);
+        return;
+    }
+
+    const auto now = NowMs();
+    lastLoadSMPResetMs.store(now);
+    ++loadSMPResets;
+    // ResetPhysics is executed by Papyrus and FSMP queues its mesh rebuild on
+    // the game thread. Give it time to finish before restoring SPS ownership.
+    loadSMPResetRestoreDueMs.store(now + 750);
+    Record("Player SMP reset completed after loading; physics state re-check queued");
+}
+
+void ScheduleLoadSMPReset() {
+    Settings copy;
+    { std::scoped_lock lock(settingsLock); copy = settings; }
+    loadSMPResetRestoreDueMs.store(0);
+    if (!copy.enabled || !copy.resetSMPAfterLoad) {
+        loadSMPResetDueMs.store(0);
+        return;
+    }
+    loadSMPResetDueMs.store(NowMs() + copy.loadResetDelayMs);
+    Record(fmt::format("Player SMP reset scheduled in {:.1f} seconds", copy.loadResetDelayMs / 1000.0F));
 }
 
 bool SetOwner(bool cbpc, bool force = false) {
@@ -817,7 +1079,7 @@ bool SetOwner(bool cbpc, bool force = false) {
         } else {
             bendSettleDueMs.store(0);
             bendConfirmationDueMs.store(0);
-            ApplyBend(actor, 0, true, true, false);
+            if (!PPAOwnsPosition()) ApplyBend(actor, 0, true, true, false);
         }
     }
     Record(fmt::format("Physics switched to {} ({})", cbpc ? "CBPC" : "SMP", cbpc ? "erect" : "soft"));
@@ -830,6 +1092,73 @@ bool SexLabHasPriority(const Settings& copy) {
     return sexLabEndedMs.load() > 0 && NowMs() - sexLabEndedMs.load() < copy.sceneEndDelayMs;
 }
 
+bool NormalSettingsWantCBPC(const Settings& copy) {
+    if (copy.mode == 1) return false;
+    if (copy.mode == 2) return true;
+    if (!arousalValid.load()) return stateKnown.load() ? usingCBPC.load() : false;
+    if (usingCBPC.load())
+        return arousal.load() > copy.threshold - copy.hysteresis;
+    return arousal.load() >= copy.threshold;
+}
+
+bool SexLabSceneWantsCBPC(const Settings& copy) {
+    // Preserve the old "always erect in scenes" behavior when role switching
+    // is disabled. During the post-scene delay, keep the confirmed owner so
+    // normal arousal control cannot cause an immediate visible pop.
+    if (!copy.sexLabRoleSwitching) return true;
+    if (!sexLabActive.load()) return usingCBPC.load();
+    // P+ is authoritative whenever its bridge replies, including Unknown.
+    // PPA may describe the player in reciprocal receiver/partner records and
+    // must not override the confirmed role or cause engine oscillation.
+    if (sexLabRoleValid.load()) {
+        // Receiving never changes the state merely because a scene started.
+        // Flaccid remains flaccid and erect remains erect until the role changes.
+        if (sexLabRole.load() == 1) {
+            if (copy.sexLabBottomBehavior == 1) return NormalSettingsWantCBPC(copy);
+            if (copy.sexLabBottomBehavior == 2) return false;
+            if (copy.sexLabBottomBehavior == 3) return true;
+            return sexLabEntryStateValid.load() ? sexLabEntryCBPC.load() : NormalSettingsWantCBPC(copy);
+        }
+        if (sexLabRole.load() == 2) return true;
+        if (copy.sexLabUnknownRole == 1) return false;
+        if (copy.sexLabUnknownRole == 2) return true;
+        return usingCBPC.load();
+    }
+    const bool recentPPAUpdate = ppaSceneRoleValid.load() &&
+        NowMs() - ppaLastUpdateMs.load() < 3000;
+    if (recentPPAUpdate) return ppaSceneRole.load() == 2;
+    if (copy.sexLabUnknownRole == 1) return false;
+    if (copy.sexLabUnknownRole == 2) return true;
+    return usingCBPC.load();
+}
+
+void QuerySexLabRole() {
+    if (!sexLabActive.load() || !fs::exists("Data/Scripts/SPS_SexLabBridge.pex")) {
+        sexLabRoleValid.store(false);
+        sexLabRoleQueryPending.store(false);
+        return;
+    }
+    if (sexLabRoleQueryPending.load()) {
+        if (NowMs() - sexLabRoleQueryStartedMs.load() < 3000) return;
+        sexLabRoleQueryPending.store(false);
+        sexLabRoleValid.store(false);
+    }
+    if (sexLabRoleQueryPending.exchange(true)) return;
+    sexLabRoleQueryStartedMs.store(NowMs());
+    auto* vm = VM();
+    if (!vm) {
+        sexLabRoleQueryPending.store(false);
+        return;
+    }
+    const auto generation = sexLabRoleGeneration.load();
+    auto* args = RE::MakeFunctionArguments();
+    RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{ new SexLabRoleCallback(generation) };
+    if (!vm->DispatchStaticCall("SPS_SexLabBridge", "GetPlayerRole", args, callback)) {
+        sexLabRoleQueryPending.store(false);
+        sexLabRoleValid.store(false);
+    }
+}
+
 void Evaluate(bool force) {
     Settings copy;
     { std::scoped_lock lock(settingsLock); copy = settings; }
@@ -840,17 +1169,9 @@ void Evaluate(bool force) {
 
     bool cbpc = usingCBPC.load();
     if (SexLabHasPriority(copy)) {
-        cbpc = true;
-    } else if (copy.mode == 1) {
-        cbpc = false;
-    } else if (copy.mode == 2) {
-        cbpc = true;
-    } else if (!arousalValid.load()) {
-        if (!stateKnown.load()) cbpc = false;
-    } else if (usingCBPC.load()) {
-        cbpc = arousal.load() > copy.threshold - copy.hysteresis;
+        cbpc = SexLabSceneWantsCBPC(copy);
     } else {
-        cbpc = arousal.load() >= copy.threshold;
+        cbpc = NormalSettingsWantCBPC(copy);
     }
     SetOwner(cbpc, force);
 }
@@ -861,10 +1182,29 @@ void Tick() {
     if (!copy.enabled) return;
     if (copy.mode == 0) QueryArousal();
     if (copy.sexLabOverride) QuerySexLab();
+    if (copy.sexLabOverride && copy.sexLabRoleSwitching && sexLabActive.load()) QuerySexLabRole();
     Evaluate();
     CaptureState("poll");
 
     const auto now = NowMs();
+    auto resetDue = loadSMPResetDueMs.load();
+    if (resetDue > 0 && now >= resetDue &&
+        loadSMPResetDueMs.compare_exchange_strong(resetDue, 0)) {
+        RunLoadSMPReset();
+    }
+
+    auto resetRestoreDue = loadSMPResetRestoreDueMs.load();
+    if (resetRestoreDue > 0 && now >= resetRestoreDue &&
+        loadSMPResetRestoreDueMs.compare_exchange_strong(resetRestoreDue, 0)) {
+        // A full FSMP rebuild can restore the XML's default dynamic state.
+        // Reapply the current arousal/scene decision and position exactly once.
+        appliedBend.store(-1);
+        Evaluate(true);
+        if (stateKnown.load() && !usingCBPC.load())
+            softConfirmationDueMs.store(now + 250);
+        Record("Physics state restored after the delayed SMP reset");
+    }
+
     auto softDue = softConfirmationDueMs.load();
     if (!usingCBPC.load() && softDue > 0 && now >= softDue &&
         softConfirmationDueMs.compare_exchange_strong(softDue, 0)) {
@@ -965,6 +1305,7 @@ void RefreshDiagnostics() {
     result.cbpcModuleLoaded = ::GetModuleHandleW(L"cbp.dll") != nullptr;
     result.sexLabModuleLoaded = ::GetModuleHandleW(L"SexLabUtil.dll") != nullptr;
     result.sexLabPluginLoaded = PluginLoaded({ "SexLab.esm" });
+    result.sexLabRoleBridgePresent = fs::exists("Data/Scripts/SPS_SexLabBridge.pex");
     result.oslPluginLoaded = PluginLoaded({ "OSLAroused.esp", "OAroused.esp", "SexLabAroused.esm" });
     result.tngPluginLoaded = TngLoaded();
     result.supportedAddonLoaded = PluginLoaded({
@@ -973,6 +1314,11 @@ void RefreshDiagnostics() {
     });
     result.sosPluginLoaded = LegacySosLoaded();
     result.sosScriptPresent = fs::exists("Data/Scripts/SOSAE_SKSE.pex");
+    result.physicsEditorLoaded = ::GetModuleHandleW(L"PhysicsEditor.dll") != nullptr;
+    result.autoPhysicsResetLoaded = ::GetModuleHandleW(L"AutoSMPReset.dll") != nullptr ||
+        ::GetModuleHandleW(L"AutoPhysicsReset.dll") != nullptr ||
+        ::GetModuleHandleW(L"AutoPhysicsResetNG.dll") != nullptr;
+    result.crashLoggerLoaded = ::GetModuleHandleW(L"CrashLogger.dll") != nullptr;
 
     if (auto* player = RE::PlayerCharacter::GetSingleton()) {
         if (auto* root = player->Get3D()) {
@@ -1041,7 +1387,12 @@ void UseRecommendedSettings(Settings& value) {
     value.hysteresis = 5.0F;
     value.pollMs = 1000;
     value.switchCooldownMs = 750;
+    value.resetSMPAfterLoad = true;
+    value.loadResetDelayMs = 10000;
     value.sexLabOverride = true;
+    value.sexLabRoleSwitching = true;
+    value.sexLabBottomBehavior = 0;
+    value.sexLabUnknownRole = 0;
     value.sceneEndDelayMs = 1500;
     value.positionControl = true;
     value.bendMethod = 2;
@@ -1129,7 +1480,7 @@ void __stdcall RenderMain() {
 
     ImGuiMCP::Separator();
     if (ImGuiMCP::Button("Refresh now"))
-        if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { QueryArousal(); QuerySexLab(); Evaluate(); });
+        if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { QueryArousal(); QuerySexLab(); QuerySexLabRole(); Evaluate(); });
     ImGuiMCP::SameLine();
     if (ImGuiMCP::Button("Use recommended settings")) { UseRecommendedSettings(copy); changed = true; }
     if (changed) SaveSettingsAndApply(copy, previous);
@@ -1147,13 +1498,35 @@ void __stdcall RenderAdvanced() {
     ImGuiMCP::TextWrapped("Returns to soft below %.0f arousal to prevent rapid switching.", std::max(0.0F, copy.threshold - copy.hysteresis));
     changed |= ImGuiMCP::SliderInt("Arousal check interval (ms)", &copy.pollMs, 250, 5000);
     changed |= ImGuiMCP::SliderInt("Switch cooldown (ms)", &copy.switchCooldownMs, 0, 5000);
+    changed |= ImGuiMCP::Checkbox("Reset player SMP once after loading", &copy.resetSMPAfterLoad);
+    ImGuiMCP::BeginDisabled(!copy.resetSMPAfterLoad);
+    float loadResetSeconds = copy.loadResetDelayMs / 1000.0F;
+    if (ImGuiMCP::SliderFloat("SMP reset delay after loading", &loadResetSeconds, 1.0F, 30.0F, "%.0f seconds")) {
+        copy.loadResetDelayMs = static_cast<int>(std::lround(loadResetSeconds * 1000.0F));
+        changed = true;
+    }
+    ImGuiMCP::EndDisabled();
+    ImGuiMCP::TextWrapped("Runs once after loading a save or starting a new game, then restores the correct SPS physics state.");
 
     ImGuiMCP::Separator();
     ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "SEXLAB P+");
-    changed |= ImGuiMCP::Checkbox("Keep erect during player scenes", &copy.sexLabOverride);
+    changed |= ImGuiMCP::Checkbox("Control physics during player scenes", &copy.sexLabOverride);
     ImGuiMCP::BeginDisabled(!copy.sexLabOverride);
+    changed |= ImGuiMCP::Checkbox("Use scene role (bottom configurable / top CBPC)", &copy.sexLabRoleSwitching);
+    ImGuiMCP::BeginDisabled(!copy.sexLabRoleSwitching);
+    const char* bottomBehaviors[]{
+        "Keep state from scene start (recommended)",
+        "Follow live arousal",
+        "Always flaccid (SMP)",
+        "Always hard (CBPC)"
+    };
+    changed |= ImGuiMCP::Combo("While bottom / receiving", &copy.sexLabBottomBehavior, bottomBehaviors, 4);
+    const char* unknownRoles[]{ "Keep current physics (recommended)", "Use SMP", "Use CBPC" };
+    changed |= ImGuiMCP::Combo("If scene role is unknown", &copy.sexLabUnknownRole, unknownRoles, 3);
+    ImGuiMCP::EndDisabled();
     changed |= ImGuiMCP::SliderInt("Return to normal after scene (ms)", &copy.sceneEndDelayMs, 0, 10000);
     ImGuiMCP::EndDisabled();
+    ImGuiMCP::TextWrapped("When a scene starts, receiving keeps the current state: flaccid stays flaccid and hard stays hard. Penetrating always uses CBPC. PPA controls live position while erect.");
     const bool sexLabPositionChanged = ImGuiMCP::Checkbox("Use a different position during SexLab", &copy.useSexLabBend);
     changed |= sexLabPositionChanged;
     if (sexLabPositionChanged && copy.useSexLabBend) copy.sexLabOverride = true;
@@ -1202,27 +1575,29 @@ std::string BuildReport() {
         "Schlong Physics Swapper {} diagnostics\n"
         "SkyrimRuntime={} SKSE={}\n"
         "DLLs: MenuFramework={} OSL={} SLO={} FSMP={} CBPC={} SexLab={} SOSAE={}\n"
-        "Compatibility: TNG={} PositionBackend={} ClassicSexLabAroused={}\n"
-        "Engine={} StateKnown={} Arousal={:.1f} Provider={} ProviderConnected={} SexLabActive={} SexLabConnected={}\n"
+        "Compatibility: TNG={} PositionBackend={} ClassicSexLabAroused={} SexLabRoleBridge={} PPA={} PhysicsEditor={} AutoPhysicsReset={} CrashLogger={}\n"
+        "Engine={} StateKnown={} Arousal={:.1f} Provider={} ProviderConnected={} SexLabActive={} SexLabConnected={} SexLabRole={} RoleValid={}\n"
         "MenuFramework={} ArousalProvider={} FSMP={} CBPC={} SexLabPPlus={} PositionBackendReady={} SupportedAddon={}\n"
         "PlayerBones={}/6 XML={}/{} [{}]\nCBPCMap={}/{} [{}]\nCBPCParameters={}/{} [{}]\n"
-        "SwitchSuccesses={} SwitchFailures={} BendApplies={} LastAction={} LastError={}\n"
+        "SwitchSuccesses={} SwitchFailures={} BendApplies={} LoadSMPResets={} LastLoadSMPResetMs={} LastAction={} LastError={}\n"
         "Position: Enabled={} Requested={} Applied={} LastMethod={} LastSucceeded={} AutoSuspended={} GuardRemainingMs={}\n"
-        "Settings: Enabled={} Mode={} Threshold={:.0f} Hysteresis={:.0f} Bend={} PollMs={} SexLabOverride={} EndDelayMs={} CooldownMs={} BendMethod={} Animate={} Gradual={} ErectionMs={} BounceGuard={} SettleMs={} SeparateSexLabBend={} SexLabBend={} MaxFailures={} PPA={} VerboseLogging={}\n"
+        "Settings: Enabled={} Mode={} Threshold={:.0f} Hysteresis={:.0f} Bend={} PollMs={} SexLabOverride={} SexLabRoleSwitching={} BottomBehavior={} UnknownRole={} EndDelayMs={} CooldownMs={} ResetSMPAfterLoad={} LoadResetDelayMs={} BendMethod={} Animate={} Gradual={} ErectionMs={} BounceGuard={} SettleMs={} SeparateSexLabBend={} SexLabBend={} MaxFailures={} PPA={} VerboseLogging={}\n"
         "\nSuggested fixes\n{}",
         kVersion, runtimeVersion, skseVersion,
         LoadedDllVersion(L"SKSEMenuFramework.dll"), LoadedDllVersion(L"OSLAroused.dll"),
         LoadedDllVersion(L"SexlabArousedNG.dll"),
         LoadedDllVersion(L"hdtsmp64.dll"), LoadedDllVersion(L"cbp.dll"),
         LoadedDllVersion(L"SexLabUtil.dll"), LoadedDllVersion(L"SOSAE.dll"),
-        d.tngPluginLoaded, PositionBackendName(), d.classicArousedPluginLoaded,
-        stateKnown.load() ? (usingCBPC.load() ? "CBPC" : "SMP") : "unknown", stateKnown.load(), arousal.load(), ArousalProviderName(), oslConnected.load(), sexLabActive.load(), sexLabConnected.load(),
+        d.tngPluginLoaded, PositionBackendName(), d.classicArousedPluginLoaded, d.sexLabRoleBridgePresent,
+        ::GetModuleHandleW(L"AccuratePenetration.dll") != nullptr, d.physicsEditorLoaded,
+        d.autoPhysicsResetLoaded, d.crashLoggerLoaded,
+        stateKnown.load() ? (usingCBPC.load() ? "CBPC" : "SMP") : "unknown", stateKnown.load(), arousal.load(), ArousalProviderName(), oslConnected.load(), sexLabActive.load(), sexLabConnected.load(), SexLabRoleName(sexLabRole.load()), sexLabRoleValid.load(),
         d.menuFrameworkLoaded, d.oslModuleLoaded && d.oslPluginLoaded, d.fsmpModuleLoaded, d.cbpcModuleLoaded, d.sexLabModuleLoaded && d.sexLabPluginLoaded,
         d.sosScriptPresent || d.sosPluginLoaded || d.tngPluginLoaded || sosConnected.load(), d.supportedAddonLoaded,
         d.playerBonesFound, d.compatibleXmlFiles, d.xmlFiles, d.xmlSummary, d.compatibleCbpcMaps, d.cbpcMapFiles, d.cbpcMapSummary,
-        d.compatibleCbpcParameters, d.cbpcParameterFiles, d.cbpcParameterSummary, switchSuccesses.load(), switchFailures.load(), bendRepairs.load(), recent, error.empty() ? "none" : error,
+        d.compatibleCbpcParameters, d.cbpcParameterFiles, d.cbpcParameterSummary, switchSuccesses.load(), switchFailures.load(), bendRepairs.load(), loadSMPResets.load(), lastLoadSMPResetMs.load(), recent, error.empty() ? "none" : error,
         s.positionControl, requestedBend.load(), appliedBend.load(), BendMethodName(lastBendMethod.load()), lastBendSucceeded.load(), positionAutoSuspended.load(), std::max<std::int64_t>(0, bendGuardUntilMs.load() - NowMs()),
-        s.enabled, s.mode, s.threshold, s.hysteresis, s.erectBend, s.pollMs, s.sexLabOverride, s.sceneEndDelayMs, s.switchCooldownMs,
+        s.enabled, s.mode, s.threshold, s.hysteresis, s.erectBend, s.pollMs, s.sexLabOverride, s.sexLabRoleSwitching, s.sexLabBottomBehavior, s.sexLabUnknownRole, s.sceneEndDelayMs, s.switchCooldownMs, s.resetSMPAfterLoad, s.loadResetDelayMs,
         s.bendMethod, s.animatePosition, s.gradualErection, s.erectionDurationMs, s.bounceGuard, s.settleDelayMs, s.useSexLabBend, s.sexLabBend, s.maxBendFailures,
         ::GetModuleHandleW(L"AccuratePenetration.dll") != nullptr, s.verboseLogging, fixes);
 }
@@ -1300,7 +1675,8 @@ void __stdcall RenderDebug() {
 
     const bool coreReady = d.menuFrameworkLoaded && d.oslModuleLoaded && d.oslPluginLoaded &&
         d.fsmpModuleLoaded && d.cbpcModuleLoaded && d.playerBonesFound == 6 &&
-        d.compatibleXmlFiles > 0 && d.compatibleCbpcMaps > 0 && d.compatibleCbpcParameters > 0;
+        d.compatibleXmlFiles > 0 && d.compatibleCbpcMaps > 0 && d.compatibleCbpcParameters > 0 &&
+        !d.physicsEditorLoaded;
     ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "TROUBLESHOOTING");
     ImGuiMCP::Text("Mod version: %s | Skyrim: %s | SKSE: %s", kVersion, runtimeVersion.c_str(), skseVersion.c_str());
     StatusLine("Overall health", d.checkedAtMs == 0 ? "Not checked yet" : (coreReady ? "Everything required was found" : "One or more items need attention"), d.checkedAtMs == 0 ? 1 : (coreReady ? 2 : 0));
@@ -1344,8 +1720,18 @@ void __stdcall RenderDebug() {
     StatusLine("Six-bone schlong addon", d.supportedAddonLoaded ? fmt::format("Loaded; {}/6 live bones", d.playerBonesFound).c_str() : fmt::format("Plugin not identified; {}/6 live bones", d.playerBonesFound).c_str(), d.playerBonesFound == 6 ? 2 : 1);
     StatusLine("SexLab P+", d.sexLabModuleLoaded && d.sexLabPluginLoaded ? (sexLabConnected.load() ? "Connected and running" : "Loaded; waiting for response") : "Not installed", d.sexLabModuleLoaded && d.sexLabPluginLoaded ? (sexLabConnected.load() ? 2 : 1) : 1);
     StatusLine("Player SexLab scene", sexLabValid.load() ? (sexLabActive.load() ? "Active" : "Not active") : "Unknown", sexLabValid.load() ? 2 : 1);
+    StatusLine("SexLab role bridge", d.sexLabRoleBridgePresent ? (sexLabRoleValid.load() ? SexLabRoleName(sexLabRole.load()) : "Ready; waiting for scene data") : "Missing", d.sexLabRoleBridgePresent ? (sexLabRoleValid.load() ? 2 : 1) : 0);
     const bool ppaLoaded = ::GetModuleHandleW(L"AccuratePenetration.dll") != nullptr;
-    StatusLine("Procedural Penis Animations", ppaLoaded ? (PPAOwnsPosition() ? "Controlling scene position" : "Loaded; compatible hand-off ready") : "Not installed", ppaLoaded ? 2 : 1);
+    StatusLine("Procedural Penis Animations", ppaLoaded ? (ppaApiConnected.load() ? (PPAOwnsPosition() ? "V1 API active; controls scene position" : "V1 API connected; hand-off ready") : "Loaded; legacy hand-off ready") : "Not installed", ppaLoaded ? 2 : 1);
+    if (ppaLoaded && PPAOwnsPosition())
+        ImGuiMCP::TextWrapped("PPA controls the live angle; SPS only chooses SMP or CBPC.");
+    StatusLine("Physics Editor", d.physicsEditorLoaded ? "Conflict detected - disable it" : "Not loaded", d.physicsEditorLoaded ? 0 : 2);
+    if (d.physicsEditorLoaded)
+        ImGuiMCP::TextWrapped("Physics Editor can take control of the same SMP and CBPC systems. It should not be used alongside SPS.");
+    StatusLine("Auto Physics Reset", d.autoPhysicsResetLoaded ? "Loaded - overlapping reset features" : "Not installed", d.autoPhysicsResetLoaded ? 1 : 2);
+    if (d.autoPhysicsResetLoaded)
+        ImGuiMCP::TextWrapped("SPS already performs a player-only reset after loading. If physics changes unexpectedly, disable the other mod's load, cell or scene reset triggers.");
+    StatusLine("Crash Logger", d.crashLoggerLoaded ? "Loaded - ready if a crash occurs" : "Optional; not installed", d.crashLoggerLoaded ? 2 : 1);
 
     ImGuiMCP::Separator();
     ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "CONFIGURATION HEALTH");
@@ -1418,8 +1804,17 @@ public:
     RE::BSEventNotifyControl ProcessEvent(const SKSE::ModCallbackEvent* event, RE::BSTEventSource<SKSE::ModCallbackEvent>*) override {
         if (!event) return RE::BSEventNotifyControl::kContinue;
         const std::string_view name = event->eventName.c_str();
-        if (name == "HookAnimationStart" || name == "HookAnimationStarting" || name == "HookAnimationEnd" || name == "AnimationStart" || name == "AnimationEnd") {
-            if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { QuerySexLab(); });
+        if (name == "HookAnimationStart" || name == "HookAnimationStarting" ||
+            name == "HookStageStart" || name == "HookStageEnd" ||
+            name == "HookActorsRelocated" || name == "HookActorChangeEnd" ||
+            name == "HookAnimationEnding" || name == "HookAnimationEnd" ||
+            name == "AnimationStart" || name == "AnimationEnd") {
+            sexLabRoleGeneration.fetch_add(1);
+            sexLabRoleQueryPending.store(false);
+            if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] {
+                QuerySexLab();
+                if (sexLabActive.load()) QuerySexLabRole();
+            });
         } else if (name == "OSLA_ActorArousalUpdated" && event->sender == RE::PlayerCharacter::GetSingleton()) {
             // The callback query will evaluate the new value. Arousal updates
             // must not invalidate an already-applied bend or they create a
@@ -1432,6 +1827,14 @@ public:
         } else if (name == "SexLabDisabled") {
             sexLabActive.store(false);
             sexLabValid.store(false);
+            sexLabEntryStateValid.store(false);
+            sexLabRoleGeneration.fetch_add(1);
+            sexLabRole.store(0);
+            sexLabRoleValid.store(false);
+            sexLabRoleQueryPending.store(false);
+            ResetPPASceneTracking(2000);
+            if (stateKnown.load() && !usingCBPC.load())
+                softConfirmationDueMs.store(NowMs() + 250);
         } else if (name == "SexLabEnabled" || name == "SexLabGameLoaded") {
             if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { QuerySexLab(); RefreshDiagnostics(); });
         }
@@ -1456,6 +1859,7 @@ void OnMessage(SKSE::MessagingInterface::Message* message) {
     if (message->type == SKSE::MessagingInterface::kDataLoaded) {
         Load();
         RegisterMenu();
+        RegisterPPAAPI();
         if (auto* source = SKSE::GetModCallbackEventSource()) source->AddEventSink(&modEventSink);
         if (auto* source = SKSE::GetNiNodeUpdateEventSource()) source->AddEventSink(&niNodeSink);
         RefreshDiagnostics();
@@ -1466,7 +1870,14 @@ void OnMessage(SKSE::MessagingInterface::Message* message) {
         StartPolling();
         arousalValid.store(false);
         sexLabValid.store(false);
+        sexLabEntryStateValid.store(false);
+        sexLabRoleGeneration.fetch_add(1);
+        sexLabRole.store(0);
+        sexLabRoleValid.store(false);
+        sexLabRoleQueryPending.store(false);
+        ResetPPASceneTracking(2000);
         stateKnown.store(false);
+        ScheduleLoadSMPReset();
         if (auto* tasks = SKSE::GetTaskInterface()) {
             tasks->AddTask([] {
                 SetOwner(false, true);

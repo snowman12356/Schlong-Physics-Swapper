@@ -12,7 +12,7 @@ body:
     id: mod-version
     attributes:
       label: Mod version
-      placeholder: 1.6.2
+      placeholder: 1.7.1
     validations:
       required: true
   - type: input
@@ -74,7 +74,12 @@ body:
     id: conflicts
     attributes:
       label: Relevant conflicts or overrides
-      description: Mention anything overwriting the SPS INI, CBPC configs or OSL compatibility script.
+      description: Mention anything overwriting the SPS INI, CBPC configs or OSL compatibility script. Say whether Physics Editor or Auto Physics Reset is installed.
+  - type: textarea
+    id: crash-log
+    attributes:
+      label: Crash log (only if Skyrim crashed)
+      description: Attach the newest Crash Logger file from the same play session. Leave this blank for non-crash bugs.
   - type: checkboxes
     id: checklist
     attributes:

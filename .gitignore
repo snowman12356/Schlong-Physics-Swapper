@@ -7,9 +7,18 @@ build*/
 dist/
 vcpkg_installed/
 
-# Local experiments
-scripts/
+# Local experiments. Keep the SPS-owned P+ bridge and build declarations.
+scripts/*
+!scripts/SPS_SexLabBridge.pex
+!scripts/Source/
+scripts/Source/*
+!scripts/Source/SPS_SexLabBridge.psc
+!scripts/BuildStubs/
+scripts/BuildStubs/*
+!scripts/BuildStubs/SexLabFramework.psc
+!scripts/BuildStubs/sslThreadController.psc
 *.pex
+!scripts/SPS_SexLabBridge.pex
 MaleGenitals*.xml
 UBE-Amazing*.xml
 audit-bodyslide.ps1

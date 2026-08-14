@@ -12,6 +12,15 @@ Please include enough information to reproduce the problem:
 5. Say which schlong addon, Skyrim runtime and mod manager you use, what you
    expected, what actually happened, and the shortest steps that reproduce it.
 
+If Skyrim crashed, also attach the newest crash log. Crash Logger SSE AE VR is
+recommended for this, but it is not required for SPS to run. Do not attach an
+old crash log from a different play session.
+
+Please also say whether **Physics Editor** or **Auto Physics Reset** is installed.
+Physics Editor controls the same SMP/CBPC systems and should be disabled while
+using SPS. Auto Physics Reset is optional, but its load, cell or scene triggers
+may overlap SPS's own player reset if physics changes unexpectedly.
+
 The reports contain mod state, versions, settings and relevant filenames. They
 do not contain your Windows username, save name, or full computer paths. Please
 check any file yourself before uploading it.
@@ -32,6 +41,8 @@ check any file yourself before uploading it.
 - `SPS-010`: A physics handoff failed.
 - `SPS-011`: A position update failed or recovery stopped.
 - `SPS-012`: A report or capture file could not be saved.
+- `SPS-013`: The SPS SexLab role bridge is missing.
+- `SPS-014`: Physics Editor is loaded and conflicts with SPS physics control.
 
 ## Suggested pinned Nexus post
 

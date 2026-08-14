@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
+  <moduleName>Schlong Physics Swapper 1.7.1</moduleName>
+  <requiredInstallFiles>
+    <file source="SKSE\Plugins\SchlongPhysicsSwapper.dll" destination="SKSE\Plugins\SchlongPhysicsSwapper.dll" priority="0" />
+    <file source="SKSE\Plugins\CBPCMasterConfig_ZZZ_SchlongPhysicsSwapper.txt" destination="SKSE\Plugins\CBPCMasterConfig_ZZZ_SchlongPhysicsSwapper.txt" priority="0" />
+    <file source="SKSE\Plugins\CBPConfig_ZZZ_SchlongPhysicsSwapper.txt" destination="SKSE\Plugins\CBPConfig_ZZZ_SchlongPhysicsSwapper.txt" priority="0" />
+    <file source="Scripts\SPS_SexLabBridge.pex" destination="Scripts\SPS_SexLabBridge.pex" priority="0" />
+    <file source="Source\Scripts\SPS_SexLabBridge.psc" destination="Source\Scripts\SPS_SexLabBridge.psc" priority="0" />
+    <folder source="docs" destination="docs" priority="0" />
+    <folder source="Licenses" destination="Licenses" priority="0" />
+    <file source="README.md" destination="README.md" priority="0" />
+    <file source="LICENSE" destination="LICENSE" priority="0" />
+    <file source="THIRD_PARTY.md" destination="THIRD_PARTY.md" priority="0" />
+  </requiredInstallFiles>
+  <installSteps order="Explicit">
+    <installStep name="Settings">
+      <optionalFileGroups order="Explicit">
+        <group name="Choose a settings option" type="SelectExactlyOne">
+          <plugins order="Explicit">
+            <plugin name="Install recommended settings">
+              <description>Best for a new installation. Installs the tested defaults.</description>
+              <files>
+                <file source="SKSE\Plugins\SchlongPhysicsSwapper.ini" destination="SKSE\Plugins\SchlongPhysicsSwapper.ini" priority="10" />
+              </files>
+              <typeDescriptor><type name="Recommended" /></typeDescriptor>
+            </plugin>
+            <plugin name="Keep my existing settings">
+              <description>For updates only. Does not replace your existing SchlongPhysicsSwapper.ini.</description>
+              <files />
+              <typeDescriptor><type name="Optional" /></typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+  </installSteps>
+  <conditionalFileInstalls>
+    <patterns>
+      <pattern>
+        <dependencies operator="And">
+          <fileDependency file="SKSE\Plugins\OSLAroused.dll" state="Active" />
+        </dependencies>
+        <files>
+          <file source="Scripts\OSLAroused_Main.pex" destination="Scripts\OSLAroused_Main.pex" priority="10" />
+          <folder source="Source\OSL Aroused Compatibility" destination="Source\OSL Aroused Compatibility" priority="0" />
+        </files>
+      </pattern>
+    </patterns>
+  </conditionalFileInstalls>
+</config>
