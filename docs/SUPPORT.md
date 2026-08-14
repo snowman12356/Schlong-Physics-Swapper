@@ -2,9 +2,9 @@
 
 Please include enough information to reproduce the problem:
 
-1. Open **SKSE Menu Framework > Schlong Physics Swapper > Troubleshooting**.
-2. Press **Run health check**.
-3. If the problem happens on demand, press **Start 30-second debug capture** and
+1. Open **SKSE Menu Framework > Schlong Physics Swapper > Help and reports**.
+2. Press **Check my setup again**.
+3. If the problem happens on demand, press **Record the next 30 seconds** and
    reproduce it before the timer finishes.
 4. Attach `SchlongPhysicsSwapper_DebugCapture.txt` from
    `Data/SKSE/Plugins`. If no capture was needed, attach
@@ -46,9 +46,9 @@ check any file yourself before uploading it.
 
 ## Suggested pinned Nexus post
 
-If something is not working, please open the mod's **Troubleshooting** page,
-run the health check and save a diagnostic report. For problems you can repeat,
-start the 30-second debug capture and reproduce the issue before the timer ends.
+If something is not working, please open the mod's **Help and reports** page,
+check the setup and save a report. For problems you can repeat, record the next
+30 seconds and reproduce the issue before the timer ends.
 Attach the resulting text file with your schlong addon, Skyrim version and a
 short description of what happened. Screenshots are welcome, but the report is
 usually much more useful.

@@ -27,7 +27,7 @@ namespace Mod {
 namespace fs = std::filesystem;
 
 constexpr auto kName = "Schlong Physics Swapper";
-constexpr auto kVersion = "1.7.1";
+constexpr auto kVersion = "1.7.2";
 constexpr auto kIni = "Data/SKSE/Plugins/SchlongPhysicsSwapper.ini";
 constexpr auto kLegacyIni = "Data/SKSE/Plugins/UBEPhysicsSwitch.ini";
 constexpr auto kReport = "Data/SKSE/Plugins/SchlongPhysicsSwapper_Diagnostics.txt";
@@ -193,9 +193,9 @@ void Record(std::string message, bool error = false);
 
 const char* SexLabRoleName(int role) {
     switch (role) {
-    case 1: return "Bottom / receiving (keeps entry state)";
-    case 2: return "Top / penetrating (CBPC)";
-    default: return "Unknown / unregistered";
+    case 1: return "Receiving / bottom";
+    case 2: return "Penetrating / top";
+    default: return "Not identified";
     }
 }
 
@@ -420,15 +420,15 @@ std::vector<std::pair<std::string, std::string>> SuggestedFixes(const Diagnostic
     if (!d.fsmpModuleLoaded)
         fixes.emplace_back("SPS-003", "Install Faster HDT-SMP and its requirements.");
     if (!d.cbpcModuleLoaded)
-        fixes.emplace_back("SPS-004", "Install CBPC and make sure cbp.dll loads without errors.");
+        fixes.emplace_back("SPS-004", "Install or update CBPC, then fully restart Skyrim.");
     if (d.playerBonesFound != 6)
-        fixes.emplace_back("SPS-005", fmt::format("Only {}/6 Gen01-Gen06 player bones are live. Rebuild or reinstall the compatible schlong addon.", d.playerBonesFound));
+        fixes.emplace_back("SPS-005", fmt::format("Only {}/6 required physics bones were found. Rebuild or reinstall the compatible schlong addon.", d.playerBonesFound));
     if (d.compatibleXmlFiles == 0)
-        fixes.emplace_back("SPS-006", "No complete Gen01-Gen06 SMP XML was found. Check the active mesh's XML path and winning MO2 files.");
+        fixes.emplace_back("SPS-006", "No compatible SMP setup was found. Reinstall the schlong's SMP files and check which mod wins conflicts.");
     if (d.compatibleCbpcMaps == 0)
-        fixes.emplace_back("SPS-007", "The Gen01-Gen06 CBPC map is missing or overwritten. Let this mod's ZZZ master config win conflicts.");
+        fixes.emplace_back("SPS-007", "SPS's CBPC bone file is missing or overwritten. Let SPS win this file conflict.");
     if (d.compatibleCbpcParameters == 0)
-        fixes.emplace_back("SPS-008", "The bundled UBEPS01-UBEPS06 CBPC values are missing or overwritten. Reinstall the mod.");
+        fixes.emplace_back("SPS-008", "SPS's CBPC movement file is missing or overwritten. Reinstall SPS and let it win the conflict.");
     if (!d.sosScriptPresent && !d.sosPluginLoaded && !d.tngPluginLoaded)
         fixes.emplace_back("SPS-009", "No supported position backend was found. Install SOS AE-NG, legacy SOS, or The New Gentleman.");
     if (d.sexLabModuleLoaded && d.sexLabPluginLoaded && !d.sexLabRoleBridgePresent)
@@ -438,9 +438,9 @@ std::vector<std::pair<std::string, std::string>> SuggestedFixes(const Diagnostic
     if (switchFailures.load() > 0)
         fixes.emplace_back("SPS-010", "A physics handoff failed. Check SchlongPhysicsSwapper.log and confirm both FSMP and CBPC load correctly.");
     if (positionAutoSuspended.load() || (!lastBendSucceeded.load() && requestedBend.load() >= 0))
-        fixes.emplace_back("SPS-011", "SOS rejected position updates. Use Repair physics, then check for another mod controlling the same angle.");
+        fixes.emplace_back("SPS-011", "The erect angle could not be applied. Use Repair current state, then check for another mod controlling the angle.");
     if (fixes.empty())
-        fixes.emplace_back("SPS-000", "No known problem detected. Use Start 30-second debug capture and reproduce the issue.");
+        fixes.emplace_back("SPS-000", "Everything appears ready.");
     return fixes;
 }
 
@@ -1440,38 +1440,49 @@ void __stdcall RenderMain() {
     const bool healthChecked = d.checkedAtMs > 0;
     const bool coreReady = d.menuFrameworkLoaded && d.oslModuleLoaded && d.oslPluginLoaded &&
         d.fsmpModuleLoaded && d.cbpcModuleLoaded && d.playerBonesFound == 6 &&
-        d.compatibleXmlFiles > 0 && d.compatibleCbpcMaps > 0 && d.compatibleCbpcParameters > 0;
+        d.compatibleXmlFiles > 0 && d.compatibleCbpcMaps > 0 && d.compatibleCbpcParameters > 0 &&
+        !d.physicsEditorLoaded;
 
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "STATUS");
-    StatusLine("Overall", !healthChecked ? "Checking..." : (coreReady ? (stateKnown.load() ? "Working" : "Waiting for game") : "Needs attention"), !healthChecked || !stateKnown.load() ? 1 : (coreReady ? 2 : 0));
-    const auto arousalText = arousalValid.load() ? fmt::format("Arousal: {:.0f} / 100", arousal.load()) : "Arousal: waiting for provider";
+    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "RIGHT NOW");
+    StatusLine("SPS", !healthChecked ? "Checking your setup..." : (coreReady ? (stateKnown.load() ? "Ready" : "Waiting for the player") : "Needs attention"), !healthChecked || !stateKnown.load() ? 1 : (coreReady ? 2 : 0));
+    const auto arousalText = arousalValid.load() ? fmt::format("Current arousal: {:.0f} / 100", arousal.load()) : "Waiting for your arousal mod";
     ImGuiMCP::ProgressBar(arousalValid.load() ? arousal.load() / 100.0F : 0.0F, ImGuiMCP::ImVec2(-1.0F, 0.0F), arousalText.c_str());
-    StatusLine("Current physics", stateKnown.load() ? (usingCBPC.load() ? "CBPC (erect)" : "SMP (soft)") : "Waiting", stateKnown.load() ? 2 : 1);
+    StatusLine("Current state", stateKnown.load() ? (usingCBPC.load() ? "Erect - CBPC" : "Soft - SMP") : "Not decided yet", stateKnown.load() ? 2 : 1);
+    if (sexLabActive.load())
+        StatusLine("Current scene role", sexLabRoleValid.load() ? SexLabRoleName(sexLabRole.load()) : "Checking...", sexLabRoleValid.load() ? 2 : 1);
+    if (healthChecked && !coreReady)
+        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F), "Open Help and reports to see what needs attention.");
 
     ImGuiMCP::Separator();
-    changed |= ImGuiMCP::Checkbox("Enable physics switching", &copy.enabled);
-    const char* modes[]{ "Automatic (recommended)", "Always soft (SMP)", "Always erect (CBPC)" };
-    changed |= ImGuiMCP::Combo("Physics mode", &copy.mode, modes, 3);
+    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "EVERYDAY SETTINGS");
+    changed |= ImGuiMCP::Checkbox("Turn SPS on", &copy.enabled);
+    const char* modes[]{ "Automatic - follow arousal", "Keep soft - SMP", "Keep erect - CBPC" };
+    changed |= ImGuiMCP::Combo("What should SPS do?", &copy.mode, modes, 3);
 
     ImGuiMCP::BeginDisabled(copy.mode != 0);
-    changed |= ImGuiMCP::SliderFloat("Become erect at arousal", &copy.threshold, 0, 100, "%.0f");
+    changed |= ImGuiMCP::SliderFloat("Arousal needed to become erect", &copy.threshold, 0, 100, "%.0f");
     ImGuiMCP::EndDisabled();
-    ImGuiMCP::TextWrapped("Automatic mode uses SMP below %.0f and CBPC at %.0f or above.", copy.threshold, copy.threshold);
+    if (copy.mode == 0)
+        ImGuiMCP::TextWrapped("Becomes erect at %.0f arousal. Returns to soft below %.0f.", copy.threshold, std::max(0.0F, copy.threshold - copy.hysteresis));
 
+    ImGuiMCP::Separator();
+    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "ERECT LOOK");
     ImGuiMCP::BeginDisabled(!copy.positionControl);
-    changed |= ImGuiMCP::SliderInt("Erect upward position", &copy.erectBend, 0, 20);
+    changed |= ImGuiMCP::SliderInt("How high when erect", &copy.erectBend, 0, 20);
     ImGuiMCP::EndDisabled();
-    changed |= ImGuiMCP::Checkbox("Gradually become erect", &copy.gradualErection);
+    ImGuiMCP::TextWrapped("0 is straight out. 20 is the highest position.");
+    if (!copy.positionControl)
+        ImGuiMCP::TextWrapped("Angle control is turned off on the Fine tuning page.");
+    changed |= ImGuiMCP::Checkbox("Raise gradually instead of popping up", &copy.gradualErection);
     ImGuiMCP::BeginDisabled(!copy.gradualErection);
     float erectionSeconds = copy.erectionDurationMs / 1000.0F;
-    if (ImGuiMCP::SliderFloat("Time to become fully erect", &erectionSeconds, 0.5F, 10.0F, "%.1f seconds")) {
+    if (ImGuiMCP::SliderFloat("Time to fully raise", &erectionSeconds, 0.5F, 10.0F, "%.1f seconds")) {
         copy.erectionDurationMs = static_cast<int>(std::lround(erectionSeconds * 1000.0F));
         changed = true;
     }
     ImGuiMCP::EndDisabled();
-    ImGuiMCP::TextWrapped("Automatic mode smoothly raises the position after CBPC takes control. TNG uses its available SOS-style animation stages.");
     ImGuiMCP::BeginDisabled(!copy.positionControl || !stateKnown.load() || !usingCBPC.load());
-    if (ImGuiMCP::Button("Test position now")) {
+    if (ImGuiMCP::Button("Apply this angle now")) {
         ResetPositionRecovery();
         appliedBend.store(-1);
         if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { ApplyRequestedBend(true, true, false); });
@@ -1479,10 +1490,68 @@ void __stdcall RenderMain() {
     ImGuiMCP::EndDisabled();
 
     ImGuiMCP::Separator();
-    if (ImGuiMCP::Button("Refresh now"))
+    if (ImGuiMCP::Button("Check now"))
         if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { QueryArousal(); QuerySexLab(); QuerySexLabRole(); Evaluate(); });
     ImGuiMCP::SameLine();
-    if (ImGuiMCP::Button("Use recommended settings")) { UseRecommendedSettings(copy); changed = true; }
+    if (ImGuiMCP::Button("Reset to recommended settings")) { UseRecommendedSettings(copy); changed = true; }
+    if (changed) SaveSettingsAndApply(copy, previous);
+}
+
+void __stdcall RenderScenes() {
+    Settings copy;
+    { std::scoped_lock lock(settingsLock); copy = settings; }
+    const Settings previous = copy;
+    bool changed = false;
+
+    Diagnostics d;
+    { std::scoped_lock lock(diagnosticsLock); d = diagnostics; }
+    const bool sexLabLoaded = d.sexLabModuleLoaded && d.sexLabPluginLoaded;
+    const bool ppaLoaded = ::GetModuleHandleW(L"AccuratePenetration.dll") != nullptr;
+
+    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "SCENE STATUS");
+    StatusLine("SexLab P+", sexLabLoaded ? (sexLabConnected.load() ? "Ready" : "Loading...") : "Not installed (optional)", sexLabLoaded ? (sexLabConnected.load() ? 2 : 1) : 1);
+    StatusLine("Player scene", sexLabActive.load() ? (sexLabRoleValid.load() ? SexLabRoleName(sexLabRole.load()) : "Running - checking role") : "Not running", sexLabActive.load() ? (sexLabRoleValid.load() ? 2 : 1) : 2);
+    StatusLine("PPA", ppaLoaded ? (PPAOwnsPosition() ? "Controlling the scene angle" : "Ready") : "Not installed (optional)", ppaLoaded ? 2 : 1);
+
+    ImGuiMCP::Separator();
+    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "HOW SPS HANDLES SCENES");
+    changed |= ImGuiMCP::Checkbox("Let SPS manage physics during player scenes", &copy.sexLabOverride);
+    ImGuiMCP::BeginDisabled(!copy.sexLabOverride);
+    changed |= ImGuiMCP::Checkbox("Use the player's role in the scene", &copy.sexLabRoleSwitching);
+    ImGuiMCP::BeginDisabled(!copy.sexLabRoleSwitching);
+    const char* bottomBehaviors[]{
+        "Keep whatever state I had (recommended)",
+        "Follow live arousal",
+        "Always stay soft (SMP)",
+        "Always stay erect (CBPC)"
+    };
+    changed |= ImGuiMCP::Combo("When receiving / bottom", &copy.sexLabBottomBehavior, bottomBehaviors, 4);
+    ImGuiMCP::EndDisabled();
+    float returnDelaySeconds = copy.sceneEndDelayMs / 1000.0F;
+    if (ImGuiMCP::SliderFloat("Wait before returning to normal", &returnDelaySeconds, 0.0F, 10.0F, "%.1f seconds")) {
+        copy.sceneEndDelayMs = static_cast<int>(std::lround(returnDelaySeconds * 1000.0F));
+        changed = true;
+    }
+    ImGuiMCP::EndDisabled();
+    ImGuiMCP::TextWrapped("Recommended: receiving keeps the state from just before the scene. Penetrating uses CBPC.");
+
+    ImGuiMCP::Separator();
+    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "SCENE ANGLE");
+    const bool sexLabPositionChanged = ImGuiMCP::Checkbox("Use a different erect angle in scenes", &copy.useSexLabBend);
+    changed |= sexLabPositionChanged;
+    if (sexLabPositionChanged && copy.useSexLabBend) copy.sexLabOverride = true;
+    ImGuiMCP::BeginDisabled(!copy.useSexLabBend || !copy.positionControl);
+    changed |= ImGuiMCP::SliderInt("Scene erect angle", &copy.sexLabBend, 0, 20);
+    ImGuiMCP::EndDisabled();
+    if (ppaLoaded)
+        ImGuiMCP::TextWrapped("PPA controls the live angle during its scenes. SPS only decides whether physics should be soft or erect.");
+
+    if (ImGuiMCP::CollapsingHeader("Unusual or unrecognised scenes")) {
+        const char* unknownRoles[]{ "Keep the current state (recommended)", "Use soft physics", "Use erect physics" };
+        changed |= ImGuiMCP::Combo("If SPS cannot identify the role", &copy.sexLabUnknownRole, unknownRoles, 3);
+        ImGuiMCP::TextWrapped("Keeping the current state avoids a sudden visible change when a scene does not report a clear role.");
+    }
+
     if (changed) SaveSettingsAndApply(copy, previous);
 }
 
@@ -1492,70 +1561,66 @@ void __stdcall RenderAdvanced() {
     const Settings previous = copy;
     bool changed = false;
 
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "ADVANCED PHYSICS");
-    ImGuiMCP::TextWrapped("The recommended defaults work for most setups. Change these only when troubleshooting or tuning.");
-    changed |= ImGuiMCP::SliderFloat("Switch buffer", &copy.hysteresis, 0, 25, "%.0f");
-    ImGuiMCP::TextWrapped("Returns to soft below %.0f arousal to prevent rapid switching.", std::max(0.0F, copy.threshold - copy.hysteresis));
-    changed |= ImGuiMCP::SliderInt("Arousal check interval (ms)", &copy.pollMs, 250, 5000);
-    changed |= ImGuiMCP::SliderInt("Switch cooldown (ms)", &copy.switchCooldownMs, 0, 5000);
-    changed |= ImGuiMCP::Checkbox("Reset player SMP once after loading", &copy.resetSMPAfterLoad);
+    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "FINE TUNING");
+    ImGuiMCP::TextWrapped("Most people can leave this page alone. The recommended settings are designed to work without extra tuning.");
+
+    ImGuiMCP::Separator();
+    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "AFTER LOADING A SAVE");
+    changed |= ImGuiMCP::Checkbox("Fix player physics once after loading", &copy.resetSMPAfterLoad);
     ImGuiMCP::BeginDisabled(!copy.resetSMPAfterLoad);
     float loadResetSeconds = copy.loadResetDelayMs / 1000.0F;
-    if (ImGuiMCP::SliderFloat("SMP reset delay after loading", &loadResetSeconds, 1.0F, 30.0F, "%.0f seconds")) {
+    if (ImGuiMCP::SliderFloat("Wait before the load fix", &loadResetSeconds, 1.0F, 30.0F, "%.0f seconds")) {
         copy.loadResetDelayMs = static_cast<int>(std::lround(loadResetSeconds * 1000.0F));
         changed = true;
     }
     ImGuiMCP::EndDisabled();
-    ImGuiMCP::TextWrapped("Runs once after loading a save or starting a new game, then restores the correct SPS physics state.");
+    ImGuiMCP::TextWrapped("SPS resets the player's SMP once, then restores the correct soft or erect state.");
+
+    if (ImGuiMCP::CollapsingHeader("Arousal switching timing")) {
+        changed |= ImGuiMCP::SliderFloat("Soft return gap", &copy.hysteresis, 0, 25, "%.0f arousal");
+        ImGuiMCP::TextWrapped("After becoming erect, SPS waits until arousal falls below %.0f before returning to soft. This prevents rapid switching.", std::max(0.0F, copy.threshold - copy.hysteresis));
+        float pollSeconds = copy.pollMs / 1000.0F;
+        if (ImGuiMCP::SliderFloat("How often SPS checks", &pollSeconds, 0.25F, 5.0F, "%.2f seconds")) {
+            copy.pollMs = static_cast<int>(std::lround(pollSeconds * 1000.0F));
+            changed = true;
+        }
+        float cooldownSeconds = copy.switchCooldownMs / 1000.0F;
+        if (ImGuiMCP::SliderFloat("Minimum time between changes", &cooldownSeconds, 0.0F, 5.0F, "%.2f seconds")) {
+            copy.switchCooldownMs = static_cast<int>(std::lround(cooldownSeconds * 1000.0F));
+            changed = true;
+        }
+    }
 
     ImGuiMCP::Separator();
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "SEXLAB P+");
-    changed |= ImGuiMCP::Checkbox("Control physics during player scenes", &copy.sexLabOverride);
-    ImGuiMCP::BeginDisabled(!copy.sexLabOverride);
-    changed |= ImGuiMCP::Checkbox("Use scene role (bottom configurable / top CBPC)", &copy.sexLabRoleSwitching);
-    ImGuiMCP::BeginDisabled(!copy.sexLabRoleSwitching);
-    const char* bottomBehaviors[]{
-        "Keep state from scene start (recommended)",
-        "Follow live arousal",
-        "Always flaccid (SMP)",
-        "Always hard (CBPC)"
-    };
-    changed |= ImGuiMCP::Combo("While bottom / receiving", &copy.sexLabBottomBehavior, bottomBehaviors, 4);
-    const char* unknownRoles[]{ "Keep current physics (recommended)", "Use SMP", "Use CBPC" };
-    changed |= ImGuiMCP::Combo("If scene role is unknown", &copy.sexLabUnknownRole, unknownRoles, 3);
-    ImGuiMCP::EndDisabled();
-    changed |= ImGuiMCP::SliderInt("Return to normal after scene (ms)", &copy.sceneEndDelayMs, 0, 10000);
-    ImGuiMCP::EndDisabled();
-    ImGuiMCP::TextWrapped("When a scene starts, receiving keeps the current state: flaccid stays flaccid and hard stays hard. Penetrating always uses CBPC. PPA controls live position while erect.");
-    const bool sexLabPositionChanged = ImGuiMCP::Checkbox("Use a different position during SexLab", &copy.useSexLabBend);
-    changed |= sexLabPositionChanged;
-    if (sexLabPositionChanged && copy.useSexLabBend) copy.sexLabOverride = true;
-    ImGuiMCP::BeginDisabled(!copy.useSexLabBend || !copy.positionControl);
-    changed |= ImGuiMCP::SliderInt("SexLab erect position", &copy.sexLabBend, 0, 20);
-    ImGuiMCP::EndDisabled();
-
-    ImGuiMCP::Separator();
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "POSITION BEHAVIOR");
-    changed |= ImGuiMCP::Checkbox("Let this mod control the erect position", &copy.positionControl);
-    ImGuiMCP::TextWrapped("Turn this off if another mod should control the angle. Physics switching will continue.");
+    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "ANGLE CONTROL");
+    changed |= ImGuiMCP::Checkbox("Let SPS control the erect angle", &copy.positionControl);
+    ImGuiMCP::TextWrapped("Turn this off only when another mod should control the angle. Soft/erect physics switching will still work.");
     ImGuiMCP::BeginDisabled(!copy.positionControl);
-    const char* bendMethods[]{ "Native API (SOS AE)", "Animation events (SOS / TNG)", "Compatibility (recommended)" };
-    changed |= ImGuiMCP::Combo("Position method", &copy.bendMethod, bendMethods, 3);
-    changed |= ImGuiMCP::Checkbox("Animate real position changes", &copy.animatePosition);
-    changed |= ImGuiMCP::Checkbox("Prevent repeated bouncing", &copy.bounceGuard);
-    changed |= ImGuiMCP::SliderInt("Wait for CBPC to settle (ms)", &copy.settleDelayMs, 0, 5000);
-    changed |= ImGuiMCP::SliderInt("Stop recovery after failures", &copy.maxBendFailures, 1, 10);
+    const char* bendMethods[]{ "SOS AE direct control", "SOS / TNG animation stages", "Choose automatically (recommended)" };
+    changed |= ImGuiMCP::Combo("How SPS sets the angle", &copy.bendMethod, bendMethods, 3);
+    changed |= ImGuiMCP::Checkbox("Smooth angle changes", &copy.animatePosition);
+    changed |= ImGuiMCP::Checkbox("Stop repeated bouncing", &copy.bounceGuard);
     ImGuiMCP::EndDisabled();
-    ImGuiMCP::Text("Last method used: %s", BendMethodName(lastBendMethod.load()));
 
     if (positionAutoSuspended.load() && ImGuiMCP::Button("Resume position recovery")) {
         ResetPositionRecovery();
         appliedBend.store(-1);
     }
+
+    if (ImGuiMCP::CollapsingHeader("Angle recovery timing")) {
+        ImGuiMCP::BeginDisabled(!copy.positionControl);
+        float settleSeconds = copy.settleDelayMs / 1000.0F;
+        if (ImGuiMCP::SliderFloat("Wait before setting the angle", &settleSeconds, 0.0F, 5.0F, "%.2f seconds")) {
+            copy.settleDelayMs = static_cast<int>(std::lround(settleSeconds * 1000.0F));
+            changed = true;
+        }
+        changed |= ImGuiMCP::SliderInt("Failures before repairs pause", &copy.maxBendFailures, 1, 10);
+        ImGuiMCP::EndDisabled();
+        ImGuiMCP::TextWrapped("Only change these if the angle repeatedly fails or bounces.");
+    }
+
     ImGuiMCP::Separator();
-    if (ImGuiMCP::Button("Apply recommended advanced settings")) { UseRecommendedSettings(copy); changed = true; }
-    ImGuiMCP::SameLine();
-    if (ImGuiMCP::Button("Restore defaults")) { copy = Settings{}; changed = true; }
+    if (ImGuiMCP::Button("Reset fine tuning to recommended")) { UseRecommendedSettings(copy); changed = true; }
 
     if (changed) SaveSettingsAndApply(copy, previous);
 }
@@ -1677,126 +1742,141 @@ void __stdcall RenderDebug() {
         d.fsmpModuleLoaded && d.cbpcModuleLoaded && d.playerBonesFound == 6 &&
         d.compatibleXmlFiles > 0 && d.compatibleCbpcMaps > 0 && d.compatibleCbpcParameters > 0 &&
         !d.physicsEditorLoaded;
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "TROUBLESHOOTING");
-    ImGuiMCP::Text("Mod version: %s | Skyrim: %s | SKSE: %s", kVersion, runtimeVersion.c_str(), skseVersion.c_str());
-    StatusLine("Overall health", d.checkedAtMs == 0 ? "Not checked yet" : (coreReady ? "Everything required was found" : "One or more items need attention"), d.checkedAtMs == 0 ? 1 : (coreReady ? 2 : 0));
-    if (ImGuiMCP::Button("Run health check"))
+    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "HELP AND REPORTS");
+    StatusLine("Setup", d.checkedAtMs == 0 ? "Not checked yet" : (coreReady ? "Everything looks good" : "Something needs attention"), d.checkedAtMs == 0 ? 1 : (coreReady ? 2 : 0));
+    if (ImGuiMCP::Button("Check my setup again"))
         if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask(RefreshDiagnostics);
     ImGuiMCP::SameLine();
-    if (ImGuiMCP::Button("Fix recommended settings")) {
+    if (ImGuiMCP::Button("Repair settings")) {
         Settings fixed;
         { std::scoped_lock lock(settingsLock); fixed = settings; }
         const Settings previous = fixed;
         UseRecommendedSettings(fixed);
         SaveSettingsAndApply(fixed, previous);
     }
-    ImGuiMCP::TextWrapped("Red items usually indicate a missing dependency or configuration. The settings button repairs this mod's safe defaults but does not install missing mods.");
+    ImGuiMCP::TextWrapped("Green means ready, yellow means optional or still checking, and red means something needs fixing. Repair settings restores SPS's safe choices but cannot install missing mods.");
     ImGuiMCP::Separator();
 
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "QUICK TESTS");
-    if (ImGuiMCP::Button("Test soft (SMP)"))
+    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "QUICK FIXES");
+    if (ImGuiMCP::Button("Show soft physics"))
         if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { TestPhysicsState(false); });
     ImGuiMCP::SameLine();
-    if (ImGuiMCP::Button("Test erect (CBPC)"))
+    if (ImGuiMCP::Button("Show erect physics"))
         if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { TestPhysicsState(true); });
     ImGuiMCP::SameLine();
-    if (ImGuiMCP::Button("Repair physics"))
+    if (ImGuiMCP::Button("Repair current state"))
         if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask(RepairPhysics);
-    ImGuiMCP::TextWrapped("Tests are temporary. Automatic control resumes on the next normal check.");
+    ImGuiMCP::TextWrapped("The two test buttons are temporary. Automatic control takes over again on the next check.");
     ImGuiMCP::Separator();
 
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "DEPENDENCIES AND CONNECTIONS");
-    StatusLine("SKSE Menu Framework", d.menuFrameworkLoaded ? "Loaded" : "Missing", d.menuFrameworkLoaded ? 2 : 0);
+    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "WHAT SPS FOUND");
     const auto providerName = ArousalProviderName();
-    StatusLine("Arousal provider", d.oslModuleLoaded && d.oslPluginLoaded ? (oslConnected.load() ? fmt::format("{} connected", providerName).c_str() : fmt::format("{} loaded; waiting", providerName).c_str()) : "Missing", d.oslModuleLoaded && d.oslPluginLoaded ? (oslConnected.load() ? 2 : 1) : 0);
-    if (SloArousedLoaded())
-        ImGuiMCP::TextWrapped("SLO users: leave SLO's Use SOS option off so it does not fight this mod's position control.");
-    if (d.classicArousedPluginLoaded)
-        ImGuiMCP::TextWrapped("Classic SexLab Aroused users: leave Enable SOS off so it does not fight this mod's position control.");
-    StatusLine("Faster HDT-SMP", d.fsmpModuleLoaded ? (smpConnected.load() ? "Connected and running" : "Loaded; not tested yet") : "Missing", d.fsmpModuleLoaded ? (smpConnected.load() ? 2 : 1) : 0);
-    StatusLine("CBPC", d.cbpcModuleLoaded ? (cbpcConnected.load() ? "Connected and running" : "Loaded; not tested yet") : "Missing", d.cbpcModuleLoaded ? (cbpcConnected.load() ? 2 : 1) : 0);
+    StatusLine("Arousal mod", d.oslModuleLoaded && d.oslPluginLoaded ? (oslConnected.load() ? fmt::format("{} - ready", providerName).c_str() : fmt::format("{} - still checking", providerName).c_str()) : "Missing", d.oslModuleLoaded && d.oslPluginLoaded ? (oslConnected.load() ? 2 : 1) : 0);
+    StatusLine("Soft physics", d.fsmpModuleLoaded ? (smpConnected.load() ? "SMP - ready" : "SMP found - not tested yet") : "Faster HDT-SMP is missing", d.fsmpModuleLoaded ? (smpConnected.load() ? 2 : 1) : 0);
+    StatusLine("Erect physics", d.cbpcModuleLoaded ? (cbpcConnected.load() ? "CBPC - ready" : "CBPC found - not tested yet") : "CBPC is missing", d.cbpcModuleLoaded ? (cbpcConnected.load() ? 2 : 1) : 0);
+    StatusLine("Compatible schlong", d.playerBonesFound == 6 ? "All 6 physics bones found" : fmt::format("Only {}/6 physics bones found", d.playerBonesFound).c_str(), d.playerBonesFound == 6 ? 2 : 0);
     const bool positionBackendFound = d.sosScriptPresent || d.sosPluginLoaded || d.tngPluginLoaded;
-    StatusLine("Position backend", positionBackendFound ? PositionBackendName().c_str() : "Missing", positionBackendFound ? (lastBendSucceeded.load() ? 2 : 1) : 0);
-    StatusLine("Six-bone schlong addon", d.supportedAddonLoaded ? fmt::format("Loaded; {}/6 live bones", d.playerBonesFound).c_str() : fmt::format("Plugin not identified; {}/6 live bones", d.playerBonesFound).c_str(), d.playerBonesFound == 6 ? 2 : 1);
-    StatusLine("SexLab P+", d.sexLabModuleLoaded && d.sexLabPluginLoaded ? (sexLabConnected.load() ? "Connected and running" : "Loaded; waiting for response") : "Not installed", d.sexLabModuleLoaded && d.sexLabPluginLoaded ? (sexLabConnected.load() ? 2 : 1) : 1);
-    StatusLine("Player SexLab scene", sexLabValid.load() ? (sexLabActive.load() ? "Active" : "Not active") : "Unknown", sexLabValid.load() ? 2 : 1);
-    StatusLine("SexLab role bridge", d.sexLabRoleBridgePresent ? (sexLabRoleValid.load() ? SexLabRoleName(sexLabRole.load()) : "Ready; waiting for scene data") : "Missing", d.sexLabRoleBridgePresent ? (sexLabRoleValid.load() ? 2 : 1) : 0);
-    const bool ppaLoaded = ::GetModuleHandleW(L"AccuratePenetration.dll") != nullptr;
-    StatusLine("Procedural Penis Animations", ppaLoaded ? (ppaApiConnected.load() ? (PPAOwnsPosition() ? "V1 API active; controls scene position" : "V1 API connected; hand-off ready") : "Loaded; legacy hand-off ready") : "Not installed", ppaLoaded ? 2 : 1);
-    if (ppaLoaded && PPAOwnsPosition())
-        ImGuiMCP::TextWrapped("PPA controls the live angle; SPS only chooses SMP or CBPC.");
-    StatusLine("Physics Editor", d.physicsEditorLoaded ? "Conflict detected - disable it" : "Not loaded", d.physicsEditorLoaded ? 0 : 2);
+    StatusLine("Erect angle control", positionBackendFound ? fmt::format("{} - ready", PositionBackendName()).c_str() : "SOS AE, SOS or TNG not found", positionBackendFound ? 2 : 0);
+
+    if (SloArousedLoaded())
+        ImGuiMCP::TextWrapped("SLO Aroused users: leave SLO's Use SOS option off so both mods do not change the angle.");
+    if (d.classicArousedPluginLoaded)
+        ImGuiMCP::TextWrapped("SexLab Aroused Redux users: leave Enable SOS off so both mods do not change the angle.");
+
     if (d.physicsEditorLoaded)
-        ImGuiMCP::TextWrapped("Physics Editor can take control of the same SMP and CBPC systems. It should not be used alongside SPS.");
-    StatusLine("Auto Physics Reset", d.autoPhysicsResetLoaded ? "Loaded - overlapping reset features" : "Not installed", d.autoPhysicsResetLoaded ? 1 : 2);
+        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.35F, 0.35F, 1.0F), "Physics Editor is running. Disable it because it controls the same physics as SPS.");
     if (d.autoPhysicsResetLoaded)
-        ImGuiMCP::TextWrapped("SPS already performs a player-only reset after loading. If physics changes unexpectedly, disable the other mod's load, cell or scene reset triggers.");
-    StatusLine("Crash Logger", d.crashLoggerLoaded ? "Loaded - ready if a crash occurs" : "Optional; not installed", d.crashLoggerLoaded ? 2 : 1);
+        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F), "Auto Physics Reset is also running. Turn off its load, cell or scene resets if the state changes unexpectedly.");
+
+    if (ImGuiMCP::CollapsingHeader("Optional scene mods")) {
+        StatusLine("SexLab P+", d.sexLabModuleLoaded && d.sexLabPluginLoaded ? (sexLabConnected.load() ? "Ready" : "Found - still checking") : "Not installed", d.sexLabModuleLoaded && d.sexLabPluginLoaded ? (sexLabConnected.load() ? 2 : 1) : 1);
+        if (sexLabActive.load())
+            StatusLine("Current scene role", sexLabRoleValid.load() ? SexLabRoleName(sexLabRole.load()) : "Checking...", sexLabRoleValid.load() ? 2 : 1);
+        const bool ppaLoaded = ::GetModuleHandleW(L"AccuratePenetration.dll") != nullptr;
+        StatusLine("PPA", ppaLoaded ? (PPAOwnsPosition() ? "Controlling the scene angle" : "Ready") : "Not installed", ppaLoaded ? 2 : 1);
+        if (d.sexLabModuleLoaded && d.sexLabPluginLoaded)
+            StatusLine("Scene role support", d.sexLabRoleBridgePresent ? "Ready" : "Missing - reinstall SPS", d.sexLabRoleBridgePresent ? 2 : 0);
+    }
+
+    if (ImGuiMCP::CollapsingHeader("Physics file details")) {
+        StatusLine("SMP XML", d.compatibleXmlFiles > 0 ? fmt::format("Ready - {} compatible", d.compatibleXmlFiles).c_str() : "No compatible file found", d.compatibleXmlFiles > 0 ? 2 : 0);
+        ImGuiMCP::TextWrapped("Found: %s", d.xmlSummary.c_str());
+        StatusLine("CBPC bone list", d.compatibleCbpcMaps > 0 ? "Ready" : "Missing Gen01-Gen06 bones", d.compatibleCbpcMaps > 0 ? 2 : 0);
+        ImGuiMCP::TextWrapped("Found: %s", d.cbpcMapSummary.c_str());
+        StatusLine("CBPC movement settings", d.compatibleCbpcParameters > 0 ? "Ready" : "Missing", d.compatibleCbpcParameters > 0 ? 2 : 0);
+        ImGuiMCP::TextWrapped("Found: %s", d.cbpcParameterSummary.c_str());
+        if (d.compatibleXmlFiles > 1)
+            ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F), "More than one compatible SMP XML is visible. The schlong mesh decides which one is used.");
+    }
+
+    if (ImGuiMCP::CollapsingHeader("Technical activity")) {
+        ImGuiMCP::Text("Successful physics changes: %u", switchSuccesses.load());
+        ImGuiMCP::Text("Failed physics changes: %u", switchFailures.load());
+        ImGuiMCP::Text("Erect angle applications: %u", bendRepairs.load());
+        ImGuiMCP::Text("Requested / applied angle: %d / %d", requestedBend.load(), appliedBend.load());
+        ImGuiMCP::Text("Last angle method: %s", BendMethodName(lastBendMethod.load()));
+        StatusLine("Gradual erection", erectionAnimating.load() ? fmt::format("Moving: {}/{}", appliedBend.load(), erectionAnimationTargetBend.load()).c_str() : "Not moving", erectionAnimating.load() ? 1 : 2);
+        StatusLine("Angle repair", positionAutoSuspended.load() ? "Paused after failures" : (NowMs() < bendGuardUntilMs.load() ? "Waiting for bouncing to stop" : "Ready"), positionAutoSuspended.load() ? 0 : (NowMs() < bendGuardUntilMs.load() ? 1 : 2));
+    }
 
     ImGuiMCP::Separator();
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "CONFIGURATION HEALTH");
-    StatusLine("SMP genital XML", d.compatibleXmlFiles > 0 ? fmt::format("Valid ({})", d.compatibleXmlFiles).c_str() : "No valid Gen01-Gen06 XML", d.compatibleXmlFiles > 0 ? 2 : 0);
-    ImGuiMCP::TextWrapped("Found: %s", d.xmlSummary.c_str());
-    StatusLine("CBPC bone map", d.compatibleCbpcMaps > 0 ? "Valid Gen01-Gen06 map" : "Missing Gen01-Gen06 map", d.compatibleCbpcMaps > 0 ? 2 : 0);
-    ImGuiMCP::TextWrapped("Found: %s", d.cbpcMapSummary.c_str());
-    StatusLine("CBPC physics values", d.compatibleCbpcParameters > 0 ? "Valid bundled values" : "Missing bundled physics values", d.compatibleCbpcParameters > 0 ? 2 : 0);
-    ImGuiMCP::TextWrapped("Found: %s", d.cbpcParameterSummary.c_str());
-    if (d.compatibleXmlFiles > 1)
-        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F), "Note: multiple compatible XML files are visible. The mesh path decides which one FSMP uses.");
-
-    ImGuiMCP::Separator();
-    ImGuiMCP::Text("Successful handoffs: %u", switchSuccesses.load());
-    ImGuiMCP::Text("Failed handoffs: %u", switchFailures.load());
-    ImGuiMCP::Text("Erect position applications: %u", bendRepairs.load());
-    ImGuiMCP::Text("Requested / applied position: %d / %d", requestedBend.load(), appliedBend.load());
-    ImGuiMCP::Text("Last position method: %s", BendMethodName(lastBendMethod.load()));
-    StatusLine("Gradual erection", erectionAnimating.load() ? fmt::format("Animating: {}/{}", appliedBend.load(), erectionAnimationTargetBend.load()).c_str() : "Idle", erectionAnimating.load() ? 1 : 2);
-    StatusLine("Position recovery", positionAutoSuspended.load() ? "Stopped after failures" : (NowMs() < bendGuardUntilMs.load() ? "Bounce guard pause" : "Ready"), positionAutoSuspended.load() ? 0 : (NowMs() < bendGuardUntilMs.load() ? 1 : 2));
-    ImGuiMCP::Separator();
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "SUGGESTED FIXES");
-    for (const auto& [code, suggestion] : SuggestedFixes(d))
-        ImGuiMCP::TextWrapped("%s: %s", code.c_str(), suggestion.c_str());
+    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "WHAT TO DO NEXT");
+    const auto suggestions = SuggestedFixes(d);
+    if (suggestions.size() == 1 && suggestions.front().first == "SPS-000")
+        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.35F, 1.0F, 0.45F, 1.0F), "No fixes are currently needed.");
+    else {
+        for (const auto& item : suggestions)
+            ImGuiMCP::TextWrapped("- %s", item.second.c_str());
+    }
     {
         std::scoped_lock lock(activityLock);
-        ImGuiMCP::TextWrapped("Last action: %s", lastAction.c_str());
-        if (!lastError.empty()) ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.45F, 0.35F, 1.0F), "Last problem: %s", lastError.c_str());
-        if (ImGuiMCP::CollapsingHeader("Recent events"))
+        if (!lastError.empty())
+            ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.45F, 0.35F, 1.0F), "Most recent problem: %s", lastError.c_str());
+        if (ImGuiMCP::CollapsingHeader("Recent SPS activity")) {
+            ImGuiMCP::TextWrapped("Last action: %s", lastAction.c_str());
             for (const auto& entry : activity) ImGuiMCP::TextWrapped("- %s", entry.c_str());
+        }
     }
 
     ImGuiMCP::Separator();
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "SUPPORT REPORT");
-    if (ImGuiMCP::Checkbox("Verbose logging", &debugSettings.verboseLogging)) {
-        SaveSettingsAndApply(debugSettings, previousDebugSettings);
-        Record(debugSettings.verboseLogging ? "Verbose logging enabled" : "Verbose logging disabled");
-    }
+    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "NEED HELP?");
+    ImGuiMCP::TextWrapped("If you can repeat a problem, record the next 30 seconds, close the menu, make it happen, then return here and save the report.");
     if (DebugCaptureActive()) {
         const auto remaining = std::max<std::int64_t>(0, debugCaptureUntilMs.load() - NowMs());
-        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F), "Capturing... reproduce the problem now (%lld seconds left)", (remaining + 999) / 1000);
-    } else if (ImGuiMCP::Button("Start 30-second debug capture")) {
+        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F), "Recording... reproduce the problem now (%lld seconds left)", (remaining + 999) / 1000);
+    } else if (ImGuiMCP::Button("Record the next 30 seconds")) {
         StartDebugCapture();
     }
-    if (ImGuiMCP::Button("Copy diagnostic report")) {
+    if (ImGuiMCP::Button("Copy report")) {
         const auto report = BuildReport();
         ImGuiMCP::SetClipboardText(report.c_str());
         Record("Diagnostic report copied to the clipboard");
     }
     ImGuiMCP::SameLine();
-    if (ImGuiMCP::Button("Save report to file")) {
+    if (ImGuiMCP::Button("Save report")) {
         if (WriteTextFile(kReport, BuildReport()))
             Record(fmt::format("Diagnostic report saved to {}", kReport));
         else
             Record("SPS-012: Could not save the diagnostic report file", true);
     }
-    ImGuiMCP::TextWrapped("Reports contain mod state and filenames only. They do not include your Windows username, save name, or full computer paths.");
+    ImGuiMCP::TextWrapped("The report contains SPS settings, detected mods and relevant filenames. It does not include your Windows username, save name or full computer paths.");
+
+    if (ImGuiMCP::CollapsingHeader("Extra logging")) {
+        if (ImGuiMCP::Checkbox("Write more detail to the log", &debugSettings.verboseLogging)) {
+            SaveSettingsAndApply(debugSettings, previousDebugSettings);
+            Record(debugSettings.verboseLogging ? "Verbose logging enabled" : "Verbose logging disabled");
+        }
+        ImGuiMCP::TextWrapped("Only enable this while investigating a problem. It creates a larger log file.");
+    }
 }
 
 void RegisterMenu() {
     if (!SKSEMenuFramework::IsInstalled()) { Record("SKSE Menu Framework not found", true); return; }
     SKSEMenuFramework::SetSection(kName);
-    SKSEMenuFramework::AddSectionItem("Main settings", RenderMain);
-    SKSEMenuFramework::AddSectionItem("Advanced", RenderAdvanced);
-    SKSEMenuFramework::AddSectionItem("Troubleshooting", RenderDebug);
+    SKSEMenuFramework::AddSectionItem("Home", RenderMain);
+    SKSEMenuFramework::AddSectionItem("Scene behaviour", RenderScenes);
+    SKSEMenuFramework::AddSectionItem("Fine tuning", RenderAdvanced);
+    SKSEMenuFramework::AddSectionItem("Help and reports", RenderDebug);
 }
 
 class ModEventSink final : public RE::BSTEventSink<SKSE::ModCallbackEvent> {

@@ -1,4 +1,4 @@
-# Schlong Physics Swapper 1.7.1
+# Schlong Physics Swapper 1.7.2
 
 Native SKSE plugin for compatible SOS six-bone schlongs. Faster HDT-SMP owns
 Gen01-Gen06 while arousal is below a configurable threshold; CBPC owns them
@@ -83,7 +83,7 @@ the state from immediately before the scene is retained: flaccid stays flaccid
 and hard stays hard. The player uses CBPC while penetrating or having their
 penis serviced.
 
-The Advanced page can change bottom/receiving behaviour to follow live arousal,
+The Scene behaviour page can change bottom/receiving behaviour to follow live arousal,
 always use SMP, or always use CBPC. Keeping the pre-scene state is the default.
 Unknown or unregistered stages keep the current engine by default, preventing
 visible pops. Normal arousal control resumes after a configurable delay.
@@ -97,24 +97,19 @@ position after the scene instead of sending competing bend events.
 ## Settings
 
 Open SKSE Menu Framework in game, then select **Schlong Physics Swapper**.
-The streamlined **Main settings** page provides only everyday controls:
+The streamlined **Home** page provides only everyday controls:
 
 - live arousal, current physics engine, and overall health
 - plain-language Automatic, Always Soft, and Always Erect modes
 - immediate erect vertical-position control from 0 to 20
 - optional gradual erection with an adjustable transition time
-- advanced hysteresis, polling, cooldown, position safety, and SexLab P+ options
-- an optional one-time player SMP reset about 10 seconds after loading
-- selectable native, animation-event, or compatibility position method
-- bounce guard, recovery limit, settle delay, and suspend-position-control mode
-- optional separate SexLab erect angle and a one-click position test
-- requested/applied angle, last method, and recovery status diagnostics
+- a simple recommended-settings button and immediate angle test
 
-Technical controls now live on their own **Advanced** page. A separate
-**Troubleshooting** page gives one overall health result, plain-language status
-for each dependency/configuration, quick soft/erect tests, one-click recovery,
-suggested fixes with stable error codes, and support-report controls.
-- refresh and restore-default buttons
+SexLab controls now have their own **Scene behaviour** page. Rare timing,
+recovery and compatibility controls live on **Fine tuning** and are collapsed
+until needed. **Help and reports** shows the important setup results first,
+keeps file names and counters inside optional detail sections, and uses normal
+language for quick fixes and support reports.
 
 Defaults are threshold 60, hysteresis 5, bend 14, and a 1000 ms polling
 interval. Settings are saved to
@@ -128,7 +123,7 @@ SOS and TNG all use the same SPS core DLL, so there is no pointless backend
 choice. New users can install the recommended settings; updating users can
 choose **Keep my existing settings** so their INI is not replaced. Physics
 Editor and Auto Physics Reset conflicts are reported by the in-game
-Troubleshooting page, where they cannot block installation.
+Help and reports page, where they cannot block installation.
 
 ## Behavior
 
@@ -144,7 +139,7 @@ Troubleshooting page, where they cannot block installation.
 - A 5-point default hysteresis keeps ownership stable around the threshold.
 - About 10 seconds after loading a save or starting a new game, SPS resets the
   player's SMP once and then restores the correct soft/erect state. This can be
-  turned off or delayed on the Advanced page.
+  turned off or delayed on the Fine tuning page.
 - Handoffs are only marked successful when both external Papyrus APIs accept
   every request. Failed handoffs are retried and the last confirmed state is
   restored on a best-effort basis.
@@ -187,9 +182,9 @@ The public archive contains the SKSE DLL, INI template, dedicated CBPC files,
 and attributed OSL compatibility override. It does not contain an ESP, body
 meshes, SMP XML, or any other OSL files.
 
-## Troubleshooting page
+## Help and reports page
 
-The troubleshooting page shows loaded and live connection state for:
+The Help and reports page shows loaded and live connection state for:
 
 - SKSE Menu Framework
 - Arousal provider (OSL, SLO NG, or classic SexLab Aroused)
@@ -201,7 +196,7 @@ The troubleshooting page shows loaded and live connection state for:
 - SexLab P+
 - Procedural Penis Animations
 
-Its health check scans the active MO2 virtual `Data` directory for SMP XMLs
+Its setup check scans the active MO2 virtual `Data` directory for SMP XMLs
 with a complete `<system>` and all six genital bones. It also checks CBPC
 master maps for Gen01-Gen06 and CBPC parameter files for UBEPS01-UBEPS06.
 The page shows recent handoffs/errors and can copy or save a privacy-safe
@@ -215,7 +210,7 @@ The log is written to the normal SKSE log directory as
 `SchlongPhysicsSwapper.log`. The plugin is compiled for Address Library based SE/AE
 runtime independence. External APIs are called dynamically through Papyrus,
 so missing optional SOS bend APIs fall back safely without a hard DLL link.
-Saved health reports are written to
+Saved reports are written to
 `Data/SKSE/Plugins/SchlongPhysicsSwapper_Diagnostics.txt`.
 Debug captures are written to
 `Data/SKSE/Plugins/SchlongPhysicsSwapper_DebugCapture.txt`. Reports include
@@ -226,6 +221,19 @@ computer paths.
 When reporting a problem, attach the diagnostic report or 30-second capture and
 include the schlong addon, Skyrim runtime, mod-manager name, expected result,
 actual result, and short reproduction steps. See [SUPPORT.md](docs/SUPPORT.md).
+
+## 1.7.2 changes
+
+- Rebuilt the menu around Home, Scene behaviour, Fine tuning, and Help and
+  reports pages.
+- Moved SexLab options out of the general advanced page so scene behaviour is
+  easier to understand.
+- Reworded controls and status messages in normal language.
+- Changed millisecond sliders to seconds where people actually adjust them.
+- Hid rare timing, file and activity details inside optional sections.
+- Removed duplicate reset buttons, repeated status rows and technical clutter
+  from the everyday pages.
+- Simplified the troubleshooting flow and made support-report tools clearer.
 
 ## 1.7.1 changes
 
