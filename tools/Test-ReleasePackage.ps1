@@ -37,8 +37,8 @@ try {
     throw "FOMOD XML is not well formed: $($_.Exception.Message)"
 }
 
-if ($info.fomod.Version -ne '1.8.0' -or $module.config.moduleName -notmatch '1\.8\.0') {
-    throw 'FOMOD version does not match the 1.8.0 release.'
+if ($info.fomod.Version -ne '1.8.1' -or $module.config.moduleName -notmatch '1\.8\.1') {
+    throw 'FOMOD version does not match the 1.8.1 release.'
 }
 
 $sourceNodes = $module.SelectNodes('//*[@source]')

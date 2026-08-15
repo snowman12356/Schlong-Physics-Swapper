@@ -1,4 +1,4 @@
-# Schlong Physics Swapper 1.8.0
+# Schlong Physics Swapper 1.8.1
 
 Native SKSE plugin for compatible SOS six-bone schlongs. Faster HDT-SMP owns
 Gen01-Gen06 while arousal is below a configurable threshold; CBPC owns them
@@ -237,6 +237,11 @@ computer paths.
 When reporting a problem, attach the diagnostic report or 30-second capture and
 include the schlong addon, Skyrim runtime, mod-manager name, expected result,
 actual result, and short reproduction steps. See [SUPPORT.md](docs/SUPPORT.md).
+
+## 1.8.1 changes
+
+- Fixed the remaining Skyrim 1.5.97 crash when gradual erection was enabled.
+- Made every SOS AE bend call use the same safety check.
 
 ## 1.8.0 changes
 

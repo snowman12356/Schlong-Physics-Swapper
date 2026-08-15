@@ -30,7 +30,7 @@ namespace Mod {
 namespace fs = std::filesystem;
 
 constexpr auto kName = "Schlong Physics Swapper";
-constexpr auto kVersion = "1.8.0";
+constexpr auto kVersion = "1.8.1";
 constexpr auto kIni = "Data/SKSE/Plugins/SchlongPhysicsSwapper.ini";
 constexpr auto kLegacyIni = "Data/SKSE/Plugins/UBEPhysicsSwitch.ini";
 constexpr auto kReport = "Data/SKSE/Plugins/SchlongPhysicsSwapper_Diagnostics.txt";
@@ -875,6 +875,14 @@ bool Call(const char* script, const char* function, Args... values) {
     return vm->DispatchStaticCall(script, function, args, callback);
 }
 
+bool CallSosAeBend(RE::Actor* actor, int bend) {
+    // Never dispatch the native SOS AE Papyrus function unless its DLL is
+    // actually loaded. A loose SOSAE_SKSE.pex can exist on legacy setups and
+    // dispatching its unregistered native function can crash the Papyrus VM.
+    return actor && SosAeNativeLoaded() &&
+        Call("SOSAE_SKSE", "SetSchlongBend", actor, std::clamp(bend, 0, 20));
+}
+
 bool SetCBPCPhysics(RE::Actor* actor, bool enabled) {
     bool ok = true;
     for (const auto& bone : PhysicsBones()) {
@@ -1191,7 +1199,7 @@ bool ApplyBend(RE::Actor* actor, int bend, bool flaccid = false, bool animate = 
             ? actor->NotifyAnimationGraph("SOSFlaccid")
             : actor->NotifyAnimationGraph(RE::BSFixedString(fmt::format("SOSBend{}", legacyBend)));
     }
-    const bool nativeOK = useNative && Call("SOSAE_SKSE", "SetSchlongBend", actor, bend);
+    const bool nativeOK = useNative && CallSosAeBend(actor, bend);
     lastBendMethod.store(useGraph && useNative ? 2 : (useGraph ? 1 : 0));
     if (nativeOK) {
         sosConnected.store(true);
@@ -1232,10 +1240,11 @@ void StartGradualErection(int targetBend, int durationMs) {
     appliedBend.store(-1);
     Settings copy;
     { std::scoped_lock lock(settingsLock); copy = settings; }
-    const bool useTngEvents = TngLoaded() &&
-        (!fs::exists("Data/Scripts/SOSAE_SKSE.pex") || copy.bendMethod == 1);
+    const bool nativeBackend = SosAeNativeLoaded();
+    const bool useGraphEvents = (TngLoaded() || LegacySosLoaded()) &&
+        (!nativeBackend || copy.bendMethod == 1);
 
-    erectionAnimationThread = std::jthread([generation, targetBend, durationMs, useTngEvents](std::stop_token token) {
+    erectionAnimationThread = std::jthread([generation, targetBend, durationMs, useGraphEvents](std::stop_token token) {
         while (!token.stop_requested() && erectionAnimating.load() &&
             generation == erectionAnimationGeneration.load()) {
             const auto elapsed = std::max<std::int64_t>(0, NowMs() - erectionAnimationStartMs.load());
@@ -1243,18 +1252,18 @@ void StartGradualErection(int targetBend, int durationMs) {
             const float eased = t * t * (3.0F - 2.0F * t);
             const int bend = std::clamp(static_cast<int>(std::lround(targetBend * eased)), 0, targetBend);
             const int eventBend = std::clamp(static_cast<int>(std::lround(bend * 9.0 / 20.0)), 0, 9);
-            const int queueKey = useTngEvents ? eventBend : bend;
+            const int queueKey = useGraphEvents ? eventBend : bend;
             const int previousQueueKey = erectionAnimationLastQueuedBend.exchange(queueKey);
             if (queueKey != previousQueueKey || t >= 1.0F) {
                 if (auto* tasks = SKSE::GetTaskInterface()) {
-                    tasks->AddTask([generation, bend, eventBend, targetBend, useTngEvents] {
+                    tasks->AddTask([generation, bend, eventBend, targetBend, useGraphEvents] {
                         if (!erectionAnimating.load() || generation != erectionAnimationGeneration.load() ||
                             !stateKnown.load() || !usingCBPC.load()) return;
                         auto* player = RE::PlayerCharacter::GetSingleton();
                         if (!player) return;
-                        const bool ok = useTngEvents
+                        const bool ok = useGraphEvents
                             ? player->NotifyAnimationGraph(RE::BSFixedString(fmt::format("SOSBend{}", eventBend)))
-                            : Call("SOSAE_SKSE", "SetSchlongBend", static_cast<RE::Actor*>(player), bend);
+                            : CallSosAeBend(static_cast<RE::Actor*>(player), bend);
                         if (!ok) {
                             CancelErectionAnimation();
                             appliedBend.store(-1);
@@ -1262,9 +1271,9 @@ void StartGradualErection(int targetBend, int durationMs) {
                             ApplyRequestedBend(true, true, false);
                             return;
                         }
-                        if (!useTngEvents) sosConnected.store(true);
+                        if (!useGraphEvents) sosConnected.store(true);
                         appliedBend.store(bend);
-                        lastBendMethod.store(useTngEvents ? 1 : 0);
+                        lastBendMethod.store(useGraphEvents ? 1 : 0);
                         lastBendSucceeded.store(true);
                         lastBendApplyMs.store(NowMs());
                         ignoreNodeEventsUntilMs.store(NowMs() + 2000);
