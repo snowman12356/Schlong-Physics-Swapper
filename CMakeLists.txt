@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(SchlongPhysicsSwapper VERSION 1.7.2 LANGUAGES CXX)
+project(SchlongPhysicsSwapper VERSION 1.8.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(NOT DEFINED ENV{COMMONLIB_SSE_FOLDER})
@@ -19,11 +19,23 @@ add_subdirectory("$ENV{COMMONLIB_SSE_FOLDER}" "${CMAKE_BINARY_DIR}/commonlib")
 list(APPEND CMAKE_MODULE_PATH "$ENV{COMMONLIB_SSE_FOLDER}/cmake")
 include(CommonLibSSE)
 find_package(SimpleIni CONFIG REQUIRED)
-add_commonlibsse_plugin(${PROJECT_NAME} AUTHOR "snowman12356" SOURCES src/plugin.cpp)
+option(SPS_BUILD_API_TEST_PLUGIN "Build the developer-only SPS API smoke-test plugin" OFF)
+
+add_commonlibsse_plugin(${PROJECT_NAME} AUTHOR "snowman12356" SOURCES src/plugin.cpp src/SPSAPI.h)
 target_include_directories(${PROJECT_NAME} PRIVATE "${mcp_sdk_SOURCE_DIR}/include")
 target_compile_definitions(${PROJECT_NAME} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_precompile_headers(${PROJECT_NAME} PRIVATE src/PCH.h)
 target_link_libraries(${PROJECT_NAME} PRIVATE SimpleIni::SimpleIni)
+
+if(SPS_BUILD_API_TEST_PLUGIN)
+  add_commonlibsse_plugin(SPSAPITestPlugin
+      AUTHOR "snowman12356"
+      SOURCES tests/SPSAPITestPlugin.cpp src/SPSAPI.h)
+  target_include_directories(SPSAPITestPlugin PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_compile_definitions(SPSAPITestPlugin PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+  target_precompile_headers(SPSAPITestPlugin PRIVATE src/PCH.h)
+endif()
+
 install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION "SKSE/Plugins")
 install(FILES
     config/SchlongPhysicsSwapper.ini

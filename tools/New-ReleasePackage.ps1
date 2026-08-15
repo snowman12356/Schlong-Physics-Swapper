@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '1.7.2',
+    [string]$Version = '1.8.0',
     [string]$BuildDirectory = 'build-static',
     [switch]$CreateZip
 )
@@ -76,6 +76,8 @@ Copy-ReleaseFile 'THIRD_PARTY.md' 'THIRD_PARTY.md'
 Copy-ReleaseFile 'THIRD_PARTY_LICENSES.txt' 'Licenses\Third-Party-Software-Licenses.txt'
 Copy-ReleaseFile '.github\ISSUE_TEMPLATE\bug_report.yml' 'docs\bug-report-template.yml'
 Copy-ReleaseFile 'docs\SUPPORT.md' 'docs\SUPPORT.md'
+Copy-ReleaseFile 'docs\MOD_AUTHOR_API.md' 'Mod Author API\README.md'
+Copy-ReleaseFile 'src\SPSAPI.h' 'Mod Author API\SPSAPI.h'
 Copy-ReleaseDirectory 'fomod' 'fomod'
 
 & (Join-Path $PSScriptRoot 'Test-ReleasePackage.ps1') -PackagePath $stage

@@ -1,4 +1,4 @@
-# Schlong Physics Swapper 1.7.2
+# Schlong Physics Swapper 1.8.0
 
 Native SKSE plugin for compatible SOS six-bone schlongs. Faster HDT-SMP owns
 Gen01-Gen06 while arousal is below a configurable threshold; CBPC owns them
@@ -67,10 +67,11 @@ only skips OSL's player SOS-position event; OSL arousal, integrations, UI, and
 NPC behavior remain unchanged. OSL Aroused is distributed under the Unlicense;
 the upstream license, patched source, and attribution are included.
 
-SLO Aroused NG is also supported through its built-in `OSLArousedNative`
-compatibility API. When using SLO, leave its **Use SOS** option disabled so it
-does not send competing `SOSFlaccid`/`SOSBend` events. The packaged OSL script
-override is only used by OSL Aroused and does not replace SLO's native DLL.
+SLO Aroused NG is supported by reading its standard cached `sla_Arousal`
+value. This avoids adding a repeating Papyrus request to busy load orders. When
+using SLO, leave its **Use SOS** option disabled so it does not send competing
+`SOSFlaccid`/`SOSBend` events. The packaged OSL script override is only used by
+OSL Aroused and does not replace SLO's native DLL.
 
 Classic SexLab Aroused Redux is supported as a fallback by reading the
 player's public `sla_Arousal` faction rank. OSL and SLO remain higher-priority
@@ -93,6 +94,20 @@ versions are detected through its [documented V1 listener API](https://asdasdduc
 fallback for older builds. During a PPA scene, PPA owns genital position and
 SPS changes only the SMP/CBPC physics owner. SPS restores the selected erect
 position after the scene instead of sending competing bend events.
+
+## Mod-author compatibility API
+
+SPS now exposes an optional native V1 API for other SKSE plugins. A mod can
+detect SPS at runtime, read the current physics state, temporarily ask SPS to
+hold SMP or CBPC, receive state-change notifications, and then release control
+back to normal arousal handling. A cooperating mod can also notify SPS after a
+physics reset so the selected owner is restored once the rebuild settles. No
+new requirement is added for players.
+
+The API uses actor FormIDs from the beginning, but V1 intentionally supports
+only the player. That leaves room for selected-NPC support later without
+replacing the interface. The public header and examples are in
+[SPSAPI.h](src/SPSAPI.h) and the [mod-author guide](docs/MOD_AUTHOR_API.md).
 
 ## Settings
 
@@ -117,13 +132,14 @@ interval. Settings are saved to
 automatically imports an existing `UBEPhysicsSwitch.ini` once, preserving the
 old settings even when both files are initially present.
 
-The Nexus archive includes a simple FOMOD. It automatically installs the OSL
-player compatibility override only when OSL Aroused is detected. SOS AE, legacy
-SOS and TNG all use the same SPS core DLL, so there is no pointless backend
-choice. New users can install the recommended settings; updating users can
-choose **Keep my existing settings** so their INI is not replaced. Physics
-Editor and Auto Physics Reset conflicts are reported by the in-game
-Help and reports page, where they cannot block installation.
+The Nexus archive includes a simple FOMOD. You manually choose OSL Aroused,
+SLO Aroused NG or SexLab Aroused Redux, so the installer does not have to guess.
+The OSL choice installs its player compatibility file; SLO NG and Redux need no
+extra SPS file. SOS AE, legacy SOS and TNG all use the same SPS core DLL. New
+users can install the recommended settings; updating users can choose **Keep my
+existing settings** so their INI is not replaced. Physics Editor and Auto
+Physics Reset notices are shown on the in-game **Help and reports** page and do
+not block installation.
 
 ## Behavior
 
@@ -221,6 +237,16 @@ computer paths.
 When reporting a problem, attach the diagnostic report or 30-second capture and
 include the schlong addon, Skyrim runtime, mod-manager name, expected result,
 actual result, and short reproduction steps. See [SUPPORT.md](docs/SUPPORT.md).
+
+## 1.8.0 changes
+
+- Added a small compatibility API so other mods can work with SPS safely.
+- Added protection and recovery for outside physics resets.
+- Improved SexLab scene switching so the physics do not fight each other.
+- Improved SLO Aroused NG and SexLab Aroused Redux support.
+- Added a manual FOMOD choice for OSL, SLO NG or Aroused Redux.
+- Fixed a crash on Skyrim 1.5.97 with legacy SOS.
+- Added safer handling while loading saves or when Papyrus is overloaded.
 
 ## 1.7.2 changes
 

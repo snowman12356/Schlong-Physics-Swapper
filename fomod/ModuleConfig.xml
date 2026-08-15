@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
-  <moduleName>Schlong Physics Swapper 1.7.2</moduleName>
+  <moduleName>Schlong Physics Swapper 1.8.0</moduleName>
   <requiredInstallFiles>
     <file source="SKSE\Plugins\SchlongPhysicsSwapper.dll" destination="SKSE\Plugins\SchlongPhysicsSwapper.dll" priority="0" />
     <file source="SKSE\Plugins\CBPCMasterConfig_ZZZ_SchlongPhysicsSwapper.txt" destination="SKSE\Plugins\CBPCMasterConfig_ZZZ_SchlongPhysicsSwapper.txt" priority="0" />
@@ -14,6 +14,32 @@
     <file source="THIRD_PARTY.md" destination="THIRD_PARTY.md" priority="0" />
   </requiredInstallFiles>
   <installSteps order="Explicit">
+    <installStep name="Arousal mod">
+      <optionalFileGroups order="Explicit">
+        <group name="Which arousal mod do you use?" type="SelectExactlyOne">
+          <plugins order="Explicit">
+            <plugin name="OSL Aroused">
+              <description>Choose this if you use OSL Aroused. SPS will install its player compatibility file.</description>
+              <files>
+                <file source="Scripts\OSLAroused_Main.pex" destination="Scripts\OSLAroused_Main.pex" priority="10" />
+                <folder source="Source\OSL Aroused Compatibility" destination="Source\OSL Aroused Compatibility" priority="0" />
+              </files>
+              <typeDescriptor><type name="Optional" /></typeDescriptor>
+            </plugin>
+            <plugin name="SLO Aroused NG">
+              <description>Choose this if you use SLO Aroused NG. No extra SPS file is needed. Leave SLO's Use SOS option off.</description>
+              <files />
+              <typeDescriptor><type name="Optional" /></typeDescriptor>
+            </plugin>
+            <plugin name="SexLab Aroused Redux">
+              <description>Choose this if you use SexLab Aroused Redux. No extra SPS file is needed. Leave Redux's Enable SOS option off.</description>
+              <files />
+              <typeDescriptor><type name="Optional" /></typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
     <installStep name="Settings">
       <optionalFileGroups order="Explicit">
         <group name="Choose a settings option" type="SelectExactlyOne">
@@ -35,17 +61,4 @@
       </optionalFileGroups>
     </installStep>
   </installSteps>
-  <conditionalFileInstalls>
-    <patterns>
-      <pattern>
-        <dependencies operator="And">
-          <fileDependency file="SKSE\Plugins\OSLAroused.dll" state="Active" />
-        </dependencies>
-        <files>
-          <file source="Scripts\OSLAroused_Main.pex" destination="Scripts\OSLAroused_Main.pex" priority="10" />
-          <folder source="Source\OSL Aroused Compatibility" destination="Source\OSL Aroused Compatibility" priority="0" />
-        </files>
-      </pattern>
-    </patterns>
-  </conditionalFileInstalls>
 </config>

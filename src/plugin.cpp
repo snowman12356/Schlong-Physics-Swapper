@@ -7,6 +7,7 @@
 #include <spdlog/sinks/basic_file_sink.h>
 #include <Windows.h>
 #include "PPAInterface.h"
+#include "SPSAPI.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -17,8 +18,10 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace logger = SKSE::log;
@@ -27,7 +30,7 @@ namespace Mod {
 namespace fs = std::filesystem;
 
 constexpr auto kName = "Schlong Physics Swapper";
-constexpr auto kVersion = "1.7.2";
+constexpr auto kVersion = "1.8.0";
 constexpr auto kIni = "Data/SKSE/Plugins/SchlongPhysicsSwapper.ini";
 constexpr auto kLegacyIni = "Data/SKSE/Plugins/UBEPhysicsSwitch.ini";
 constexpr auto kReport = "Data/SKSE/Plugins/SchlongPhysicsSwapper_Diagnostics.txt";
@@ -95,6 +98,18 @@ struct Diagnostics {
     std::int64_t checkedAtMs{ 0 };
 };
 
+struct ExternalPhysicsRequest {
+    SPS::API::RequestHandle handle{ 0 };
+    SPS::API::PhysicsState state{ SPS::API::PhysicsState::Unknown };
+    std::int64_t expiresAtMs{ 0 };
+    std::string requester{ "Unnamed plugin" };
+};
+
+struct APIStateListener {
+    SPS::API::StateChangedCallback callback{ nullptr };
+    void* userData{ nullptr };
+};
+
 Settings settings;
 Diagnostics diagnostics;
 std::mutex settingsLock;
@@ -107,15 +122,22 @@ std::string runtimeVersion{ "unknown" };
 std::string skseVersion{ "unknown" };
 std::mutex debugCaptureLock;
 std::vector<std::string> debugCaptureLines;
+std::mutex apiLock;
+std::unordered_map<SPS::API::RequestHandle, ExternalPhysicsRequest> apiRequests;
+std::unordered_map<SPS::API::ListenerHandle, APIStateListener> apiListeners;
 
 std::atomic<float> arousal{ 0.0F };
 std::atomic<bool> arousalValid{ false };
 std::atomic<bool> queryPending{ false };
 std::atomic<std::int64_t> queryStartedMs{ 0 };
+std::atomic<std::int64_t> arousalRetryAfterMs{ 0 };
+std::atomic<std::uint64_t> arousalQueryGeneration{ 0 };
 std::atomic<bool> sexLabActive{ false };
 std::atomic<bool> sexLabValid{ false };
 std::atomic<bool> sexLabQueryPending{ false };
 std::atomic<std::int64_t> sexLabQueryStartedMs{ 0 };
+std::atomic<std::int64_t> sexLabQueryRetryAfterMs{ 0 };
+std::atomic<std::uint64_t> sexLabQueryGeneration{ 0 };
 std::atomic<std::int64_t> sexLabEndedMs{ 0 };
 std::atomic<bool> sexLabEntryCBPC{ false };
 std::atomic<bool> sexLabEntryStateValid{ false };
@@ -123,6 +145,9 @@ std::atomic<int> sexLabRole{ 0 };  // 0 unknown, 1 bottom/receiving, 2 top/penet
 std::atomic<bool> sexLabRoleValid{ false };
 std::atomic<bool> sexLabRoleQueryPending{ false };
 std::atomic<std::int64_t> sexLabRoleQueryStartedMs{ 0 };
+std::atomic<std::int64_t> sexLabRoleRetryAfterMs{ 0 };
+std::atomic<std::int64_t> sexLabLastTopMs{ 0 };
+std::atomic<std::int64_t> sexLabBottomCandidateSinceMs{ 0 };
 std::atomic<std::uint64_t> sexLabRoleGeneration{ 0 };
 std::atomic<bool> ppaApiConnected{ false };
 std::atomic<bool> ppaSceneActive{ false };
@@ -149,11 +174,15 @@ std::atomic<std::int64_t> lastBendApplyMs{ 0 };
 std::atomic<std::int64_t> bendSettleDueMs{ 0 };
 std::atomic<std::int64_t> bendConfirmationDueMs{ 0 };
 std::atomic<std::int64_t> softConfirmationDueMs{ 0 };
+std::atomic<std::int64_t> cbpcConfirmationDueMs{ 0 };
 std::atomic<std::int64_t> erectionAnimationStartMs{ 0 };
 std::atomic<std::int64_t> bendGuardUntilMs{ 0 };
 std::atomic<std::int64_t> bendGuardWindowStartMs{ 0 };
 std::atomic<std::int64_t> nodeRefreshDueMs{ 0 };
+std::atomic<std::int64_t> externalOwnerRepairDueMs{ 0 };
+std::atomic<std::int64_t> lastExternalOwnerRepairMs{ 0 };
 std::atomic<std::int64_t> ignoreNodeEventsUntilMs{ 0 };
+std::atomic<std::int64_t> papyrusDispatchAllowedAfterMs{ 0 };
 std::atomic<int> appliedBend{ -1 };
 std::atomic<int> requestedBend{ -1 };
 std::atomic<int> erectionAnimationTargetBend{ 0 };
@@ -172,6 +201,12 @@ std::atomic<unsigned> loadSMPResets{ 0 };
 std::atomic<std::int64_t> debugCaptureStartedMs{ 0 };
 std::atomic<std::int64_t> debugCaptureUntilMs{ 0 };
 std::atomic<std::uint64_t> debugCaptureGeneration{ 0 };
+std::atomic<SPS::API::RequestHandle> nextAPIRequestHandle{ 1 };
+std::atomic<SPS::API::ListenerHandle> nextAPIListenerHandle{ 1 };
+std::atomic<unsigned> apiRequestsAccepted{ 0 };
+std::atomic<unsigned> apiRequestsReleased{ 0 };
+std::atomic<unsigned> externalResetNotices{ 0 };
+std::atomic<unsigned> externalOwnerRepairs{ 0 };
 std::jthread pollThread;
 std::jthread erectionAnimationThread;
 std::jthread debugCaptureThread;
@@ -190,6 +225,9 @@ std::string BuildReport();
 bool PluginLoaded(std::initializer_list<std::string_view> names);
 std::int64_t NowMs();
 void Record(std::string message, bool error = false);
+std::optional<ExternalPhysicsRequest> ActiveAPIRequest();
+void ClearAPIRequests();
+void ScheduleExternalOwnerRepair(int delayMs, std::string_view reason);
 
 const char* SexLabRoleName(int role) {
     switch (role) {
@@ -218,6 +256,206 @@ bool PPAOwnsPosition() {
 std::int64_t NowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+void ScheduleExternalOwnerRepair(int delayMs, std::string_view reason) {
+    if (!stateKnown.load()) return;
+    const auto due = NowMs() + std::clamp(delayMs, 100, 5000);
+    externalOwnerRepairDueMs.store(due);
+    ++externalResetNotices;
+    logger::info("Physics owner re-check scheduled after {}", reason);
+}
+
+std::optional<ExternalPhysicsRequest> ActiveAPIRequest() {
+    const auto now = NowMs();
+    std::scoped_lock lock(apiLock);
+    for (auto it = apiRequests.begin(); it != apiRequests.end();) {
+        if (it->second.expiresAtMs > 0 && now >= it->second.expiresAtMs) {
+            ++apiRequestsReleased;
+            it = apiRequests.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    if (apiRequests.empty()) return std::nullopt;
+    const auto selected = std::ranges::max_element(apiRequests, {}, [](const auto& entry) {
+        return entry.first;
+    });
+    return selected->second;
+}
+
+void ClearAPIRequests() {
+    std::size_t cleared = 0;
+    {
+        std::scoped_lock lock(apiLock);
+        cleared = apiRequests.size();
+        apiRequests.clear();
+    }
+    if (cleared > 0) {
+        apiRequestsReleased.fetch_add(static_cast<unsigned>(cleared));
+        Record(fmt::format("Compatibility API released {} request(s) for the new game session", cleared));
+    }
+}
+
+SPS::API::ControlSource CurrentAPIControlSource() {
+    if (ActiveAPIRequest()) return SPS::API::ControlSource::ExternalAPI;
+    Settings copy;
+    { std::scoped_lock lock(settingsLock); copy = settings; }
+    if (SexLabHasPriority(copy)) return SPS::API::ControlSource::Scene;
+    if (stateKnown.load()) return SPS::API::ControlSource::SPS;
+    return SPS::API::ControlSource::None;
+}
+
+void QueueAPIEvaluation(bool force) {
+    if (auto* tasks = SKSE::GetTaskInterface()) {
+        tasks->AddTask([force] {
+            if (force) {
+                const auto request = ActiveAPIRequest();
+                const bool alreadyApplied = request && stateKnown.load() &&
+                    usingCBPC.load() == (request->state == SPS::API::PhysicsState::CBPC);
+                if (alreadyApplied) {
+                    Evaluate(false);
+                    return;
+                }
+            }
+            Evaluate(force);
+        });
+    }
+}
+
+void NotifyAPIStateChanged(SPS::API::PhysicsState previousState, SPS::API::PhysicsState currentState) {
+    std::vector<APIStateListener> listeners;
+    {
+        std::scoped_lock lock(apiLock);
+        listeners.reserve(apiListeners.size());
+        for (const auto& [_, listener] : apiListeners) listeners.push_back(listener);
+    }
+    if (listeners.empty()) return;
+    const auto request = ActiveAPIRequest();
+    SPS::API::StateChangedEvent event;
+    event.previousState = previousState;
+    event.currentState = currentState;
+    event.source = request ? SPS::API::ControlSource::ExternalAPI : CurrentAPIControlSource();
+    event.activeRequest = request ? request->handle : 0;
+    for (const auto& listener : listeners) {
+        if (!listener.callback) continue;
+        try {
+            listener.callback(&event, listener.userData);
+        } catch (...) {
+            Record("SPS-API-001: A compatibility API state listener threw an exception", true);
+        }
+    }
+}
+
+std::uint32_t __cdecl APIGetCapabilities() {
+    using SPS::API::Capability;
+    return static_cast<std::uint32_t>(Capability::Player) |
+        static_cast<std::uint32_t>(Capability::TimedRequests) |
+        static_cast<std::uint32_t>(Capability::StateListeners) |
+        static_cast<std::uint32_t>(Capability::ActorAwareABI) |
+        static_cast<std::uint32_t>(Capability::ResetNotification);
+}
+
+bool __cdecl APIIsActorSupported(std::uint32_t actorFormID) {
+    return actorFormID == SPS::API::kPlayerFormID;
+}
+
+SPS::API::Result __cdecl APIGetState(std::uint32_t actorFormID, SPS::API::StateSnapshot* snapshot) {
+    if (!snapshot || snapshot->apiVersion != SPS::API::kVersion ||
+        snapshot->size < sizeof(SPS::API::StateSnapshot))
+        return SPS::API::Result::InvalidArgument;
+    if (!APIIsActorSupported(actorFormID)) return SPS::API::Result::UnsupportedActor;
+    const auto request = ActiveAPIRequest();
+    snapshot->actorFormID = actorFormID;
+    snapshot->state = stateKnown.load() ?
+        (usingCBPC.load() ? SPS::API::PhysicsState::CBPC : SPS::API::PhysicsState::SMP) :
+        SPS::API::PhysicsState::Unknown;
+    snapshot->source = request ? SPS::API::ControlSource::ExternalAPI : CurrentAPIControlSource();
+    snapshot->arousal = arousalValid.load() ? arousal.load() : 0.0F;
+    snapshot->activeRequest = request ? request->handle : 0;
+    {
+        std::scoped_lock lock(apiLock);
+        snapshot->activeRequestCount = static_cast<std::uint32_t>(apiRequests.size());
+    }
+    return stateKnown.load() ? SPS::API::Result::Success : SPS::API::Result::NotReady;
+}
+
+SPS::API::RequestHandle __cdecl APIRequestPhysics(const SPS::API::PhysicsRequest* request) {
+    if (!request || request->apiVersion != SPS::API::kVersion ||
+        request->size < sizeof(SPS::API::PhysicsRequest) ||
+        !APIIsActorSupported(request->actorFormID) ||
+        (request->state != SPS::API::PhysicsState::SMP && request->state != SPS::API::PhysicsState::CBPC))
+        return 0;
+    {
+        std::scoped_lock lock(settingsLock);
+        if (!settings.enabled) return 0;
+    }
+
+    ExternalPhysicsRequest stored;
+    stored.handle = nextAPIRequestHandle.fetch_add(1);
+    if (stored.handle == 0) stored.handle = nextAPIRequestHandle.fetch_add(1);
+    stored.state = request->state;
+    stored.expiresAtMs = request->durationMilliseconds > 0 ?
+        NowMs() + request->durationMilliseconds : 0;
+    if (request->requesterName && request->requesterName[0] != '\0') {
+        stored.requester = request->requesterName;
+        if (stored.requester.size() > 64) stored.requester.resize(64);
+    }
+    {
+        std::scoped_lock lock(apiLock);
+        apiRequests.emplace(stored.handle, stored);
+    }
+    ++apiRequestsAccepted;
+    Record(fmt::format("Compatibility API: {} requested {} for the player{}",
+        stored.requester,
+        stored.state == SPS::API::PhysicsState::CBPC ? "CBPC" : "SMP",
+        request->durationMilliseconds > 0 ? fmt::format(" for {} ms", request->durationMilliseconds) : " until released"));
+    QueueAPIEvaluation(true);
+    return stored.handle;
+}
+
+SPS::API::Result __cdecl APIReleasePhysics(SPS::API::RequestHandle request) {
+    if (request == 0) return SPS::API::Result::InvalidArgument;
+    std::string requester;
+    {
+        std::scoped_lock lock(apiLock);
+        const auto it = apiRequests.find(request);
+        if (it == apiRequests.end()) return SPS::API::Result::NotFound;
+        requester = it->second.requester;
+        apiRequests.erase(it);
+    }
+    ++apiRequestsReleased;
+    Record(fmt::format("Compatibility API: {} released player physics control", requester));
+    QueueAPIEvaluation(false);
+    return SPS::API::Result::Success;
+}
+
+SPS::API::Result __cdecl APINotifyPhysicsReset(std::uint32_t actorFormID) {
+    if (!APIIsActorSupported(actorFormID)) return SPS::API::Result::UnsupportedActor;
+    {
+        std::scoped_lock lock(settingsLock);
+        if (!settings.enabled) return SPS::API::Result::NotReady;
+    }
+    if (!stateKnown.load()) return SPS::API::Result::NotReady;
+    ScheduleExternalOwnerRepair(750, "a compatibility API reset notification");
+    return SPS::API::Result::Success;
+}
+
+SPS::API::ListenerHandle __cdecl APIRegisterStateListener(
+    SPS::API::StateChangedCallback callback, void* userData) {
+    if (!callback) return 0;
+    auto handle = nextAPIListenerHandle.fetch_add(1);
+    if (handle == 0) handle = nextAPIListenerHandle.fetch_add(1);
+    std::scoped_lock lock(apiLock);
+    apiListeners.emplace(handle, APIStateListener{ callback, userData });
+    return handle;
+}
+
+SPS::API::Result __cdecl APIUnregisterStateListener(SPS::API::ListenerHandle listener) {
+    if (listener == 0) return SPS::API::Result::InvalidArgument;
+    std::scoped_lock lock(apiLock);
+    return apiListeners.erase(listener) > 0 ?
+        SPS::API::Result::Success : SPS::API::Result::NotFound;
 }
 
 void ResetPPASceneTracking(int ignoreMs = 0) {
@@ -337,6 +575,10 @@ bool OslArousedLoaded() {
     return ::GetModuleHandleW(L"OSLAroused.dll") != nullptr;
 }
 
+bool SosAeNativeLoaded() {
+    return ::GetModuleHandleW(L"SOSAE.dll") != nullptr;
+}
+
 bool ClassicArousedLoaded() {
     return !SloArousedLoaded() && !OslArousedLoaded() &&
         PluginLoaded({ "SexLabAroused.esm" });
@@ -364,7 +606,7 @@ bool LegacySosLoaded() {
 }
 
 std::string PositionBackendName() {
-    const bool sosAe = fs::exists("Data/Scripts/SOSAE_SKSE.pex") || sosConnected.load();
+    const bool sosAe = SosAeNativeLoaded();
     if (TngLoaded() && sosAe) return "SOS AE native + TNG events";
     if (TngLoaded()) return "TNG animation events";
     if (sosAe) return "SOS AE native / events";
@@ -446,7 +688,10 @@ std::vector<std::pair<std::string, std::string>> SuggestedFixes(const Diagnostic
 
 class ArousalCallback final : public RE::BSScript::IStackCallbackFunctor {
 public:
+    explicit ArousalCallback(std::uint64_t generation) : generation_(generation) {}
+
     void operator()(RE::BSScript::Variable a_result) override {
+        if (generation_ != arousalQueryGeneration.load()) return;
         bool valid = false;
         float value = 0.0F;
         if (a_result.IsFloat()) {
@@ -464,17 +709,24 @@ public:
                 logger::info("{} arousal: {:.1f}", ArousalProviderName(), value);
         } else {
             arousalValid.store(false);
+            arousalRetryAfterMs.store(NowMs() + 5000);
             Record("SPS-002: Arousal provider returned an invalid value", true);
         }
         queryPending.store(false);
         if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { Evaluate(); });
     }
     void SetObject(const RE::BSTSmartPointer<RE::BSScript::Object>&) override {}
+
+private:
+    std::uint64_t generation_;
 };
 
 class SexLabCallback final : public RE::BSScript::IStackCallbackFunctor {
 public:
+    explicit SexLabCallback(std::uint64_t generation) : generation_(generation) {}
+
     void operator()(RE::BSScript::Variable a_result) override {
+        if (generation_ != sexLabQueryGeneration.load()) return;
         if (a_result.IsBool()) {
             const bool active = a_result.GetBool();
             const bool previous = sexLabActive.exchange(active);
@@ -488,6 +740,8 @@ public:
                 sexLabRole.store(0);
                 sexLabRoleValid.store(false);
                 sexLabRoleQueryPending.store(false);
+                sexLabLastTopMs.store(0);
+                sexLabBottomCandidateSinceMs.store(0);
                 // SexLab is the authoritative scene lifetime. PPA may still
                 // publish the tail of its last frame, so release its position
                 // ownership and ignore that stale tail before restoring soft.
@@ -498,6 +752,8 @@ public:
             } else if (!previous && active) {
                 sexLabEntryCBPC.store(usingCBPC.load());
                 sexLabEntryStateValid.store(stateKnown.load());
+                sexLabLastTopMs.store(0);
+                sexLabBottomCandidateSinceMs.store(0);
                 Record(fmt::format("SexLab scene detected; receiving state locked as {}",
                     usingCBPC.load() ? "hard (CBPC)" : "flaccid (SMP)"));
             }
@@ -513,6 +769,7 @@ public:
             }
         } else {
             sexLabValid.store(false);
+            sexLabQueryRetryAfterMs.store(NowMs() + 5000);
         }
         sexLabQueryPending.store(false);
         if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] {
@@ -521,6 +778,9 @@ public:
         });
     }
     void SetObject(const RE::BSTSmartPointer<RE::BSScript::Object>&) override {}
+
+private:
+    std::uint64_t generation_;
 };
 
 class SexLabRoleCallback final : public RE::BSScript::IStackCallbackFunctor {
@@ -534,6 +794,27 @@ public:
         if (a_result.IsInt()) {
             role = std::clamp(a_result.GetSInt(), 0, 2);
             valid = true;
+        }
+        const auto now = NowMs();
+        if (valid && role == 2) {
+            sexLabLastTopMs.store(now);
+            sexLabBottomCandidateSinceMs.store(0);
+        } else if (valid && role == 1 && sexLabRoleValid.load() && sexLabRole.load() == 2) {
+            // P+ can briefly describe the player as receiving while a stage is
+            // rebuilding, then report penetrating again on the next update.
+            // Require a stable bottom result before giving SMP control back.
+            auto candidateSince = sexLabBottomCandidateSinceMs.load();
+            if (candidateSince == 0) {
+                sexLabBottomCandidateSinceMs.store(now);
+                sexLabRoleQueryPending.store(false);
+                return;
+            }
+            if (now - candidateSince < 1250 || now - sexLabLastTopMs.load() < 1250) {
+                sexLabRoleQueryPending.store(false);
+                return;
+            }
+        } else if (!valid || role != 1) {
+            sexLabBottomCandidateSinceMs.store(0);
         }
         const int previous = sexLabRole.exchange(role);
         const bool wasValid = sexLabRoleValid.exchange(valid);
@@ -556,6 +837,30 @@ private:
 
 auto VM() { return RE::BSScript::Internal::VirtualMachine::GetSingleton(); }
 
+bool PapyrusReadyForDispatch() {
+    if (NowMs() < papyrusDispatchAllowedAfterMs.load()) return false;
+    const auto* main = RE::Main::GetSingleton();
+    if (!main || !main->GetRuntimeData().gameActive) return false;
+    if (auto* ui = RE::UI::GetSingleton();
+        ui && ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME)) return false;
+    const auto* vm = VM();
+    return vm && vm->initialized && !vm->overstressed && vm->handlePolicy && vm->objectBindPolicy &&
+        !vm->IsCompletelyFrozen();
+}
+
+void InvalidatePapyrusQueries(int delayMs) {
+    papyrusDispatchAllowedAfterMs.store(NowMs() + std::max(delayMs, 0));
+    arousalQueryGeneration.fetch_add(1);
+    sexLabQueryGeneration.fetch_add(1);
+    sexLabRoleGeneration.fetch_add(1);
+    queryPending.store(false);
+    sexLabQueryPending.store(false);
+    sexLabRoleQueryPending.store(false);
+    arousalRetryAfterMs.store(0);
+    sexLabQueryRetryAfterMs.store(0);
+    sexLabRoleRetryAfterMs.store(0);
+}
+
 const std::vector<RE::BSFixedString>& PhysicsBones() {
     static const std::vector<RE::BSFixedString> bones(kBones.begin(), kBones.end());
     return bones;
@@ -564,7 +869,7 @@ const std::vector<RE::BSFixedString>& PhysicsBones() {
 template <class... Args>
 bool Call(const char* script, const char* function, Args... values) {
     auto* vm = VM();
-    if (!vm) return false;
+    if (!vm || !PapyrusReadyForDispatch()) return false;
     auto* args = RE::MakeFunctionArguments(std::move(values)...);
     RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
     return vm->DispatchStaticCall(script, function, args, callback);
@@ -576,6 +881,48 @@ bool SetCBPCPhysics(RE::Actor* actor, bool enabled) {
         ok &= Call("CBPCPluginScript", enabled ? "StartPhysics" : "StopPhysics", actor, bone);
     }
     return ok;
+}
+
+bool ConfirmCurrentPhysicsOwner(std::string_view reason) {
+    externalOwnerRepairDueMs.store(0);
+    if (!PapyrusReadyForDispatch()) {
+        externalOwnerRepairDueMs.store(NowMs() + 1000);
+        return false;
+    }
+    Settings copy;
+    { std::scoped_lock lock(settingsLock); copy = settings; }
+    if (!copy.enabled || !stateKnown.load()) return false;
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player) return false;
+
+    auto* actor = static_cast<RE::Actor*>(player);
+    const bool expectCBPC = usingCBPC.load();
+    bool smpOK = false;
+    bool cbpcOK = false;
+    if (expectCBPC) {
+        smpOK = Call("DynamicHDT", "TogglePhysics", actor, PhysicsBones(), false);
+        cbpcOK = SetCBPCPhysics(actor, true);
+    } else {
+        cbpcOK = SetCBPCPhysics(actor, false);
+        smpOK = Call("DynamicHDT", "TogglePhysics", actor, PhysicsBones(), true);
+    }
+    smpConnected.store(smpOK);
+    cbpcConnected.store(cbpcOK);
+    if (!smpOK || !cbpcOK) {
+        Record(fmt::format("SPS-015: Could not restore {} after {} (FSMP: {}, CBPC: {})",
+            expectCBPC ? "CBPC" : "SMP", reason,
+            smpOK ? "OK" : "no response", cbpcOK ? "OK" : "no response"), true);
+        return false;
+    }
+
+    const auto now = NowMs();
+    lastExternalOwnerRepairMs.store(now);
+    ignoreNodeEventsUntilMs.store(now + 2000);
+    if (expectCBPC) cbpcConfirmationDueMs.store(now + 750);
+    ++externalOwnerRepairs;
+    Record(fmt::format("{} ownership restored after {}",
+        expectCBPC ? "CBPC" : "SMP", reason));
+    return true;
 }
 
 void Load() {
@@ -663,50 +1010,72 @@ void Save() {
 }
 
 void QueryArousal() {
-    if (queryPending.load()) {
-        if (NowMs() - queryStartedMs.load() < 5000) return;
-        Record("SPS-002: Arousal provider query timed out; retrying", true);
-        queryPending.store(false);
-        arousalValid.store(false);
-    }
-    if (queryPending.exchange(true)) return;
-    queryStartedMs.store(NowMs());
+    const auto now = NowMs();
     auto* player = RE::PlayerCharacter::GetSingleton();
-    auto* vm = VM();
-    if (!player || !vm) { queryPending.store(false); return; }
+    if (!player) return;
 
-    // Classic SexLab Aroused has no native DLL or global Papyrus function.
-    // Its public compatibility value is the player's sla_Arousal faction rank.
-    // OSL/SLO remain higher priority whenever either native provider is loaded.
-    if (ClassicArousedLoaded()) {
+    // SLO Aroused NG and classic SexLab Aroused keep the public cached value
+    // in sla_Arousal. Reading it directly avoids queueing a Papyrus call every
+    // second and remains compatible with their normal update event.
+    if (SloArousedLoaded() || ClassicArousedLoaded()) {
+        arousalQueryGeneration.fetch_add(1);
+        queryPending.store(false);
+        arousalRetryAfterMs.store(0);
         auto* faction = RE::TESForm::LookupByEditorID<RE::TESFaction>("sla_Arousal");
         if (!faction) {
-            queryPending.store(false);
             arousalValid.store(false);
             oslConnected.store(false);
-            Record("SPS-002: SexLab Aroused is loaded but sla_Arousal was not found", true);
+            Record("SPS-002: The arousal faction was not found", true);
             return;
         }
         const float value = static_cast<float>(std::clamp(player->GetFactionRank(faction, true), 0, 100));
         const auto previous = arousal.exchange(value);
         const auto wasValid = arousalValid.exchange(true);
         oslConnected.store(true);
-        queryPending.store(false);
         if (!wasValid || std::abs(previous - value) >= 0.5F)
             logger::info("{} arousal: {:.1f}", ArousalProviderName(), value);
         if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { Evaluate(); });
         return;
     }
 
-    const auto dispatch = [&](const char* script) {
-        auto* args = RE::MakeFunctionArguments(static_cast<RE::Actor*>(player));
-        RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{ new ArousalCallback() };
-        return vm->DispatchStaticCall(script, "GetArousal", args, callback);
-    };
-    if (!dispatch("OSLAroused_ModInterface") && !dispatch("OSLArousedNative")) {
+    if (!OslArousedLoaded()) {
         queryPending.store(false);
         arousalValid.store(false);
         oslConnected.store(false);
+        return;
+    }
+    if (now < arousalRetryAfterMs.load()) return;
+    if (queryPending.load()) {
+        if (now - queryStartedMs.load() < 5000) return;
+        arousalQueryGeneration.fetch_add(1);
+        queryPending.store(false);
+        arousalValid.store(false);
+        arousalRetryAfterMs.store(now + 5000);
+        Record("SPS-002: Arousal check timed out; waiting before trying again", true);
+        return;
+    }
+    if (!PapyrusReadyForDispatch()) {
+        arousalRetryAfterMs.store(now + 1000);
+        return;
+    }
+    if (queryPending.exchange(true)) return;
+    queryStartedMs.store(now);
+    auto* vm = VM();
+    if (!player || !vm) { queryPending.store(false); return; }
+    const auto generation = arousalQueryGeneration.fetch_add(1) + 1;
+
+    const auto dispatch = [&](const char* script) {
+        auto* args = RE::MakeFunctionArguments(static_cast<RE::Actor*>(player));
+        RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{ new ArousalCallback(generation) };
+        return vm->DispatchStaticCall(script, "GetArousal", args, callback);
+    };
+    // Use OSL's native API first. The older scripted wrapper is retained only
+    // as a fallback for unusual OSL installations.
+    if (!dispatch("OSLArousedNative") && !dispatch("OSLAroused_ModInterface")) {
+        queryPending.store(false);
+        arousalValid.store(false);
+        oslConnected.store(false);
+        arousalRetryAfterMs.store(now + 5000);
         Record("SPS-002: Could not connect to an arousal provider", true);
     }
 }
@@ -717,22 +1086,33 @@ void QuerySexLab() {
         sexLabConnected.store(false);
         return;
     }
+    const auto now = NowMs();
+    if (now < sexLabQueryRetryAfterMs.load()) return;
     if (sexLabQueryPending.load()) {
-        if (NowMs() - sexLabQueryStartedMs.load() < 5000) return;
+        if (now - sexLabQueryStartedMs.load() < 5000) return;
+        sexLabQueryGeneration.fetch_add(1);
         sexLabQueryPending.store(false);
         sexLabValid.store(false);
+        sexLabQueryRetryAfterMs.store(now + 5000);
+        return;
+    }
+    if (!PapyrusReadyForDispatch()) {
+        sexLabQueryRetryAfterMs.store(now + 1000);
+        return;
     }
     if (sexLabQueryPending.exchange(true)) return;
-    sexLabQueryStartedMs.store(NowMs());
+    sexLabQueryStartedMs.store(now);
     auto* player = RE::PlayerCharacter::GetSingleton();
     auto* vm = VM();
     if (!player || !vm) { sexLabQueryPending.store(false); return; }
+    const auto generation = sexLabQueryGeneration.fetch_add(1) + 1;
     auto* args = RE::MakeFunctionArguments(static_cast<RE::Actor*>(player));
-    RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{ new SexLabCallback() };
+    RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{ new SexLabCallback(generation) };
     if (!vm->DispatchStaticCall("SexLabUtil", "IsActorActive", args, callback)) {
         sexLabQueryPending.store(false);
         sexLabValid.store(false);
         sexLabConnected.store(false);
+        sexLabQueryRetryAfterMs.store(now + 5000);
     }
 }
 
@@ -789,13 +1169,15 @@ bool ApplyBend(RE::Actor* actor, int bend, bool flaccid = false, bool animate = 
     }
 
     const auto legacyBend = std::clamp(static_cast<int>(std::lround(bend * 9.0 / 20.0)), 0, 9);
-    // A clean TNG install has no SOSAE_SKSE script. If both frameworks are
-    // present, compatibility mode can still try both normal paths rather than
-    // forcing every SOS AE user through TNG's graph.
-    const bool tngEventBackend = TngLoaded() && !fs::exists("Data/Scripts/SOSAE_SKSE.pex");
-    const bool useGraph = tngEventBackend ||
-        (copy.bendMethod != 0 && animate && copy.animatePosition);
-    const bool useNative = !tngEventBackend &&
+    // A loose SOSAE_SKSE.pex does not prove that its native functions were
+    // registered. Calling it without SOSAE.dll loaded can crash the Papyrus VM,
+    // particularly on 1.5.97 legacy SOS setups. Legacy SOS and TNG use their
+    // normal animation events instead.
+    const bool nativeBackend = SosAeNativeLoaded();
+    const bool eventBackend = TngLoaded() || LegacySosLoaded() || nativeBackend;
+    const bool useGraph = eventBackend && (!nativeBackend ||
+        (copy.bendMethod != 0 && animate && copy.animatePosition));
+    const bool useNative = nativeBackend &&
         (copy.bendMethod != 1 || (copy.bendMethod == 1 && !copy.animatePosition));
     if (!useGraph && !useNative) {
         // Event-only mode intentionally has no periodic repair because replaying
@@ -936,6 +1318,10 @@ void ApplyRequestedBend(bool force = false, bool animate = false, bool automatic
 
 void ConfirmSoftState() {
     if (!stateKnown.load() || usingCBPC.load()) return;
+    if (!PapyrusReadyForDispatch()) {
+        softConfirmationDueMs.store(NowMs() + 1000);
+        return;
+    }
     // A live PPA scene owns these transforms. Retry instead of consuming the
     // only confirmation, otherwise the shaft can stay erect with SMP enabled.
     if (PPAOwnsPosition()) {
@@ -958,7 +1344,36 @@ void ConfirmSoftState() {
     Record("Soft state confirmed after physics handoff");
 }
 
+void ConfirmCBPCState() {
+    if (!stateKnown.load() || !usingCBPC.load()) return;
+    if (!PapyrusReadyForDispatch()) {
+        cbpcConfirmationDueMs.store(NowMs() + 1000);
+        return;
+    }
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player) {
+        cbpcConfirmationDueMs.store(NowMs() + 1000);
+        return;
+    }
+
+    // SetOwner reasserts SMP-off before this delayed pass. Starting CBPC on a
+    // later game tick avoids the two asynchronous Papyrus calls racing while
+    // FSMP or a SexLab/PPA skeleton rebuild is still settling.
+    const bool cbpcOK = SetCBPCPhysics(static_cast<RE::Actor*>(player), true);
+    cbpcConnected.store(cbpcOK);
+    if (!cbpcOK) {
+        cbpcConfirmationDueMs.store(NowMs() + 1000);
+        Record("SPS-010: Erect-state confirmation failed; retry queued", true);
+        return;
+    }
+    Record("CBPC state confirmed after physics handoff");
+}
+
 void RunLoadSMPReset() {
+    if (!PapyrusReadyForDispatch()) {
+        loadSMPResetDueMs.store(NowMs() + 1000);
+        return;
+    }
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (!player) {
         Record("SPS-014: Delayed SMP reset skipped because the player was unavailable", true);
@@ -1001,6 +1416,10 @@ void ScheduleLoadSMPReset() {
 
 bool SetOwner(bool cbpc, bool force = false) {
     const auto now = NowMs();
+    if (!PapyrusReadyForDispatch()) {
+        retryAfterMs.store(now + 1000);
+        return false;
+    }
     if (!force && stateKnown.load() && usingCBPC.load() == cbpc) {
         if (cbpc) {
             // `smp reset` reloads FSMP meshes and restores their bones to the
@@ -1022,6 +1441,9 @@ bool SetOwner(bool cbpc, bool force = false) {
 
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (!player) return false;
+    const auto previousState = stateKnown.load() ?
+        (usingCBPC.load() ? SPS::API::PhysicsState::CBPC : SPS::API::PhysicsState::SMP) :
+        SPS::API::PhysicsState::Unknown;
     CancelErectionAnimation();
     auto* actor = static_cast<RE::Actor*>(player);
     const auto& bones = PhysicsBones();
@@ -1065,6 +1487,7 @@ bool SetOwner(bool cbpc, bool force = false) {
     ++switchSuccesses;
     appliedBend.store(-1);
     softConfirmationDueMs.store(cbpc ? 0 : now + 750);
+    cbpcConfirmationDueMs.store(cbpc ? now + 750 : 0);
     if (copy.positionControl) {
         if (cbpc) {
             requestedBend.store(DesiredBend(copy));
@@ -1083,6 +1506,9 @@ bool SetOwner(bool cbpc, bool force = false) {
         }
     }
     Record(fmt::format("Physics switched to {} ({})", cbpc ? "CBPC" : "SMP", cbpc ? "erect" : "soft"));
+    const auto currentState = cbpc ? SPS::API::PhysicsState::CBPC : SPS::API::PhysicsState::SMP;
+    if (previousState != currentState)
+        NotifyAPIStateChanged(previousState, currentState);
     return true;
 }
 
@@ -1107,26 +1533,31 @@ bool SexLabSceneWantsCBPC(const Settings& copy) {
     // normal arousal control cannot cause an immediate visible pop.
     if (!copy.sexLabRoleSwitching) return true;
     if (!sexLabActive.load()) return usingCBPC.load();
-    // P+ is authoritative whenever its bridge replies, including Unknown.
-    // PPA may describe the player in reciprocal receiver/partner records and
-    // must not override the confirmed role or cause engine oscillation.
+    const auto bottomWantsCBPC = [&copy] {
+        if (copy.sexLabBottomBehavior == 1) return NormalSettingsWantCBPC(copy);
+        if (copy.sexLabBottomBehavior == 2) return false;
+        if (copy.sexLabBottomBehavior == 3) return true;
+        return sexLabEntryStateValid.load() ? sexLabEntryCBPC.load() : NormalSettingsWantCBPC(copy);
+    };
+    const bool recentPPAUpdate = ppaSceneRoleValid.load() &&
+        NowMs() - ppaLastUpdateMs.load() < 3000;
+
+    // Penetrating wins when either bridge can positively identify it. During
+    // stage changes P+ can briefly report bottom while PPA still has an exact
+    // penetrating relationship; accepting that transient value caused the
+    // visible CBPC -> SMP -> CBPC fight seen in the 1.8 test report.
+    if (recentPPAUpdate && ppaSceneRole.load() == 2) return true;
     if (sexLabRoleValid.load()) {
         // Receiving never changes the state merely because a scene started.
         // Flaccid remains flaccid and erect remains erect until the role changes.
-        if (sexLabRole.load() == 1) {
-            if (copy.sexLabBottomBehavior == 1) return NormalSettingsWantCBPC(copy);
-            if (copy.sexLabBottomBehavior == 2) return false;
-            if (copy.sexLabBottomBehavior == 3) return true;
-            return sexLabEntryStateValid.load() ? sexLabEntryCBPC.load() : NormalSettingsWantCBPC(copy);
-        }
+        if (sexLabRole.load() == 1) return bottomWantsCBPC();
         if (sexLabRole.load() == 2) return true;
+        if (recentPPAUpdate && ppaSceneRole.load() == 1) return bottomWantsCBPC();
         if (copy.sexLabUnknownRole == 1) return false;
         if (copy.sexLabUnknownRole == 2) return true;
         return usingCBPC.load();
     }
-    const bool recentPPAUpdate = ppaSceneRoleValid.load() &&
-        NowMs() - ppaLastUpdateMs.load() < 3000;
-    if (recentPPAUpdate) return ppaSceneRole.load() == 2;
+    if (recentPPAUpdate && ppaSceneRole.load() == 1) return bottomWantsCBPC();
     if (copy.sexLabUnknownRole == 1) return false;
     if (copy.sexLabUnknownRole == 2) return true;
     return usingCBPC.load();
@@ -1138,13 +1569,22 @@ void QuerySexLabRole() {
         sexLabRoleQueryPending.store(false);
         return;
     }
+    const auto now = NowMs();
+    if (now < sexLabRoleRetryAfterMs.load()) return;
     if (sexLabRoleQueryPending.load()) {
-        if (NowMs() - sexLabRoleQueryStartedMs.load() < 3000) return;
+        if (now - sexLabRoleQueryStartedMs.load() < 3000) return;
+        sexLabRoleGeneration.fetch_add(1);
         sexLabRoleQueryPending.store(false);
         sexLabRoleValid.store(false);
+        sexLabRoleRetryAfterMs.store(now + 3000);
+        return;
+    }
+    if (!PapyrusReadyForDispatch()) {
+        sexLabRoleRetryAfterMs.store(now + 1000);
+        return;
     }
     if (sexLabRoleQueryPending.exchange(true)) return;
-    sexLabRoleQueryStartedMs.store(NowMs());
+    sexLabRoleQueryStartedMs.store(now);
     auto* vm = VM();
     if (!vm) {
         sexLabRoleQueryPending.store(false);
@@ -1156,6 +1596,7 @@ void QuerySexLabRole() {
     if (!vm->DispatchStaticCall("SPS_SexLabBridge", "GetPlayerRole", args, callback)) {
         sexLabRoleQueryPending.store(false);
         sexLabRoleValid.store(false);
+        sexLabRoleRetryAfterMs.store(now + 3000);
     }
 }
 
@@ -1164,6 +1605,11 @@ void Evaluate(bool force) {
     { std::scoped_lock lock(settingsLock); copy = settings; }
     if (!copy.enabled) {
         if (force && stateKnown.load()) SetOwner(false, true);
+        return;
+    }
+
+    if (const auto request = ActiveAPIRequest()) {
+        SetOwner(request->state == SPS::API::PhysicsState::CBPC, force);
         return;
     }
 
@@ -1187,6 +1633,12 @@ void Tick() {
     CaptureState("poll");
 
     const auto now = NowMs();
+    auto ownerRepairDue = externalOwnerRepairDueMs.load();
+    if (ownerRepairDue > 0 && now >= ownerRepairDue &&
+        externalOwnerRepairDueMs.compare_exchange_strong(ownerRepairDue, 0)) {
+        ConfirmCurrentPhysicsOwner("an external physics reset");
+    }
+
     auto resetDue = loadSMPResetDueMs.load();
     if (resetDue > 0 && now >= resetDue &&
         loadSMPResetDueMs.compare_exchange_strong(resetDue, 0)) {
@@ -1209,6 +1661,12 @@ void Tick() {
     if (!usingCBPC.load() && softDue > 0 && now >= softDue &&
         softConfirmationDueMs.compare_exchange_strong(softDue, 0)) {
         ConfirmSoftState();
+    }
+
+    auto cbpcDue = cbpcConfirmationDueMs.load();
+    if (usingCBPC.load() && cbpcDue > 0 && now >= cbpcDue &&
+        cbpcConfirmationDueMs.compare_exchange_strong(cbpcDue, 0)) {
+        ConfirmCBPCState();
     }
 
     bool settledNow = false;
@@ -1239,8 +1697,9 @@ void Tick() {
     auto nodeDue = nodeRefreshDueMs.load();
     if (nodeDue > 0 && now >= nodeDue && nodeRefreshDueMs.compare_exchange_strong(nodeDue, 0)) {
         // A real later rebuild may discard the bend, but it does not justify a
-        // complete physics hand-off. Reapply the position once and keep the
-        // already-confirmed SMP/CBPC owner unchanged.
+        // state decision. Re-confirm the existing owner once, then restore only
+        // the position data that the rebuilt skeleton may have discarded.
+        if (stateKnown.load()) ConfirmCurrentPhysicsOwner("a player skeleton rebuild");
         if (stateKnown.load() && usingCBPC.load() && copy.positionControl) {
             CancelErectionAnimation();
             appliedBend.store(-1);
@@ -1411,6 +1870,10 @@ void SaveSettingsAndApply(const Settings& copy, const Settings& previous) {
         copy.animatePosition != previous.animatePosition || copy.gradualErection != previous.gradualErection ||
         copy.erectionDurationMs != previous.erectionDurationMs;
     { std::scoped_lock lock(settingsLock); settings = copy; }
+    if (previous.enabled && !copy.enabled) {
+        ClearAPIRequests();
+        externalOwnerRepairDueMs.store(0);
+    }
     spdlog::set_level(copy.verboseLogging ? spdlog::level::debug : spdlog::level::info);
     Save();
     if (positionChanged) {
@@ -1634,6 +2097,9 @@ std::string BuildReport() {
     std::string error;
     { std::scoped_lock lock(activityLock); recent = lastAction; error = lastError; }
     std::string fixes;
+    const auto activeAPIRequest = ActiveAPIRequest();
+    std::size_t activeAPIRequestCount = 0;
+    { std::scoped_lock lock(apiLock); activeAPIRequestCount = apiRequests.size(); }
     for (const auto& [code, suggestion] : SuggestedFixes(d))
         fixes += fmt::format("{}: {}\n", code, suggestion);
     return fmt::format(
@@ -1642,6 +2108,7 @@ std::string BuildReport() {
         "DLLs: MenuFramework={} OSL={} SLO={} FSMP={} CBPC={} SexLab={} SOSAE={}\n"
         "Compatibility: TNG={} PositionBackend={} ClassicSexLabAroused={} SexLabRoleBridge={} PPA={} PhysicsEditor={} AutoPhysicsReset={} CrashLogger={}\n"
         "Engine={} StateKnown={} Arousal={:.1f} Provider={} ProviderConnected={} SexLabActive={} SexLabConnected={} SexLabRole={} RoleValid={}\n"
+        "CompatibilityAPI=V{} ActiveRequests={} ActiveRequester={} Accepted={} Released={} ResetNotices={} OwnerRepairs={} LastOwnerRepairMs={}\n"
         "MenuFramework={} ArousalProvider={} FSMP={} CBPC={} SexLabPPlus={} PositionBackendReady={} SupportedAddon={}\n"
         "PlayerBones={}/6 XML={}/{} [{}]\nCBPCMap={}/{} [{}]\nCBPCParameters={}/{} [{}]\n"
         "SwitchSuccesses={} SwitchFailures={} BendApplies={} LoadSMPResets={} LastLoadSMPResetMs={} LastAction={} LastError={}\n"
@@ -1657,6 +2124,8 @@ std::string BuildReport() {
         ::GetModuleHandleW(L"AccuratePenetration.dll") != nullptr, d.physicsEditorLoaded,
         d.autoPhysicsResetLoaded, d.crashLoggerLoaded,
         stateKnown.load() ? (usingCBPC.load() ? "CBPC" : "SMP") : "unknown", stateKnown.load(), arousal.load(), ArousalProviderName(), oslConnected.load(), sexLabActive.load(), sexLabConnected.load(), SexLabRoleName(sexLabRole.load()), sexLabRoleValid.load(),
+        SPS::API::kVersion, activeAPIRequestCount, activeAPIRequest ? activeAPIRequest->requester : "none", apiRequestsAccepted.load(), apiRequestsReleased.load(),
+        externalResetNotices.load(), externalOwnerRepairs.load(), lastExternalOwnerRepairMs.load(),
         d.menuFrameworkLoaded, d.oslModuleLoaded && d.oslPluginLoaded, d.fsmpModuleLoaded, d.cbpcModuleLoaded, d.sexLabModuleLoaded && d.sexLabPluginLoaded,
         d.sosScriptPresent || d.sosPluginLoaded || d.tngPluginLoaded || sosConnected.load(), d.supportedAddonLoaded,
         d.playerBonesFound, d.compatibleXmlFiles, d.xmlFiles, d.xmlSummary, d.compatibleCbpcMaps, d.cbpcMapFiles, d.cbpcMapSummary,
@@ -1810,6 +2279,11 @@ void __stdcall RenderDebug() {
     }
 
     if (ImGuiMCP::CollapsingHeader("Technical activity")) {
+        std::size_t activeRequests = 0;
+        { std::scoped_lock lock(apiLock); activeRequests = apiRequests.size(); }
+        StatusLine("Mod compatibility API", "V1 - ready", 2);
+        ImGuiMCP::Text("Other mods currently controlling physics: %zu", activeRequests);
+        ImGuiMCP::Text("External reset repairs: %u", externalOwnerRepairs.load());
         ImGuiMCP::Text("Successful physics changes: %u", switchSuccesses.load());
         ImGuiMCP::Text("Failed physics changes: %u", switchFailures.load());
         ImGuiMCP::Text("Erect angle applications: %u", bendRepairs.load());
@@ -1912,6 +2386,8 @@ public:
             sexLabRole.store(0);
             sexLabRoleValid.store(false);
             sexLabRoleQueryPending.store(false);
+            sexLabLastTopMs.store(0);
+            sexLabBottomCandidateSinceMs.store(0);
             ResetPPASceneTracking(2000);
             if (stateKnown.load() && !usingCBPC.load())
                 softConfirmationDueMs.store(NowMs() + 250);
@@ -1936,6 +2412,17 @@ ModEventSink modEventSink;
 NiNodeSink niNodeSink;
 
 void OnMessage(SKSE::MessagingInterface::Message* message) {
+    if (message->type == SKSE::MessagingInterface::kPreLoadGame) {
+        // Any callback still queued belongs to the old game state. Give the VM
+        // time to finish rebuilding before SPS sends another scripted request.
+        InvalidatePapyrusQueries(3000);
+        arousalValid.store(false);
+        sexLabValid.store(false);
+        sexLabRoleValid.store(false);
+        sexLabLastTopMs.store(0);
+        sexLabBottomCandidateSinceMs.store(0);
+        return;
+    }
     if (message->type == SKSE::MessagingInterface::kDataLoaded) {
         Load();
         RegisterMenu();
@@ -1947,14 +2434,17 @@ void OnMessage(SKSE::MessagingInterface::Message* message) {
     }
     if (message->type == SKSE::MessagingInterface::kPostLoadGame ||
         message->type == SKSE::MessagingInterface::kNewGame) {
+        InvalidatePapyrusQueries(3000);
+        ClearAPIRequests();
+        externalOwnerRepairDueMs.store(0);
         StartPolling();
         arousalValid.store(false);
         sexLabValid.store(false);
         sexLabEntryStateValid.store(false);
-        sexLabRoleGeneration.fetch_add(1);
         sexLabRole.store(0);
         sexLabRoleValid.store(false);
-        sexLabRoleQueryPending.store(false);
+        sexLabLastTopMs.store(0);
+        sexLabBottomCandidateSinceMs.store(0);
         ResetPPASceneTracking(2000);
         stateKnown.store(false);
         ScheduleLoadSMPReset();
@@ -1968,6 +2458,23 @@ void OnMessage(SKSE::MessagingInterface::Message* message) {
         }
     }
 }
+}
+
+extern "C" __declspec(dllexport) const SPS::API::InterfaceV1* __cdecl
+SchlongPhysicsSwapper_GetAPI_V1() {
+    static const SPS::API::InterfaceV1 api{
+        SPS::API::kVersion,
+        sizeof(SPS::API::InterfaceV1),
+        Mod::APIGetCapabilities,
+        Mod::APIIsActorSupported,
+        Mod::APIGetState,
+        Mod::APIRequestPhysics,
+        Mod::APIReleasePhysics,
+        Mod::APINotifyPhysicsReset,
+        Mod::APIRegisterStateListener,
+        Mod::APIUnregisterStateListener
+    };
+    return &api;
 }
 
 SKSEPluginLoad(const SKSE::LoadInterface* skse) {
