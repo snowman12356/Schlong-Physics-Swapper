@@ -1,4 +1,4 @@
-# Schlong Physics Swapper 1.8.1
+# Schlong Physics Swapper 1.8.2
 
 Native SKSE plugin for compatible SOS six-bone schlongs. Faster HDT-SMP owns
 Gen01-Gen06 while arousal is below a configurable threshold; CBPC owns them
@@ -33,7 +33,7 @@ with it.
 
 ## Requirements
 
-- Skyrim SE 1.5.97 or AE 1.6.x, with the matching SKSE64
+- Skyrim SE 1.5.97, AE 1.6.x, or Skyrim VR 1.4.15, with the matching SKSE
 - Address Library for SKSE Plugins
 - SKSE Menu Framework 3
 - Faster HDT-SMP
@@ -238,6 +238,17 @@ When reporting a problem, attach the diagnostic report or 30-second capture and
 include the schlong addon, Skyrim runtime, mod-manager name, expected result,
 actual result, and short reproduction steps. See [SUPPORT.md](docs/SUPPORT.md).
 
+## 1.8.2 changes
+
+- Added Skyrim VR support to the universal SKSE plugin build.
+- Made OSL Aroused connect sooner after loading a save.
+- Fixed SOS AE-NG being mistaken for legacy SOS, while keeping Skyrim 1.5.97
+  on the safe legacy route.
+- Fixed the help page showing a false erect-angle error or reporting
+  `none - ready`.
+- Stopped gradual erection from trying to run when no compatible angle
+  controller is available.
+
 ## 1.8.1 changes
 
 - Fixed the remaining Skyrim 1.5.97 crash when gradual erection was enabled.
@@ -319,7 +330,8 @@ The project requires Visual Studio 2022, CMake 3.24 or newer, vcpkg, and the
 [CharmedBaryon/CommonLibSSE-NG](https://github.com/CharmedBaryon/CommonLibSSE-NG)
 checkout. Set `COMMONLIB_SSE_FOLDER` to that checkout, configure with the vcpkg
 toolchain, then build the `SchlongPhysicsSwapper` target. The Menu Framework SDK
-headers are fetched during configuration.
+headers are fetched during configuration. For a VR-capable build, initialise
+CommonLibSSE-NG's `extern/openvr` submodule before configuring.
 
 The OSL compatibility override is stored in `compat/OSL Aroused` with its
 patched Papyrus source and upstream Unlicense. It is not compiled by CMake.

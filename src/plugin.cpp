@@ -30,7 +30,7 @@ namespace Mod {
 namespace fs = std::filesystem;
 
 constexpr auto kName = "Schlong Physics Swapper";
-constexpr auto kVersion = "1.8.1";
+constexpr auto kVersion = "1.8.2";
 constexpr auto kIni = "Data/SKSE/Plugins/SchlongPhysicsSwapper.ini";
 constexpr auto kLegacyIni = "Data/SKSE/Plugins/UBEPhysicsSwitch.ini";
 constexpr auto kReport = "Data/SKSE/Plugins/SchlongPhysicsSwapper_Diagnostics.txt";
@@ -575,8 +575,25 @@ bool OslArousedLoaded() {
     return ::GetModuleHandleW(L"OSLAroused.dll") != nullptr;
 }
 
+const wchar_t* SosAeNativeModuleName() {
+    // Some native builds use an explicit SOSAE.dll, which is safe evidence that
+    // SOSAE_SKSE was registered on every supported runtime.
+    if (::GetModuleHandleW(L"SOSAE.dll") != nullptr)
+        return L"SOSAE.dll";
+
+    // SOS AE-NG on modern Skyrim registers SOSAE_SKSE from
+    // SchlongsOfSkyrim.dll. Legacy SOS uses that same DLL filename on 1.5.97
+    // without registering SOSAE_SKSE, so the runtime check is essential. Never
+    // use the presence of a loose .pex here: calling an unregistered native
+    // script can crash the Papyrus VM.
+    if (REL::Module::get().version() >= REL::Version{ 1, 6, 0, 0 } &&
+        ::GetModuleHandleW(L"SchlongsOfSkyrim.dll") != nullptr)
+        return L"SchlongsOfSkyrim.dll";
+    return nullptr;
+}
+
 bool SosAeNativeLoaded() {
-    return ::GetModuleHandleW(L"SOSAE.dll") != nullptr;
+    return SosAeNativeModuleName() != nullptr;
 }
 
 bool ClassicArousedLoaded() {
@@ -603,6 +620,10 @@ bool LegacySosLoaded() {
     // Require the framework's Papyrus API before advertising its event backend.
     return PluginLoaded({ "Schlongs of Skyrim.esp" }) &&
         (fs::exists("Data/Scripts/SOS_API.pex") || fs::exists("Data/Scripts/SOS_SKSE.pex"));
+}
+
+bool PositionBackendAvailable() {
+    return SosAeNativeLoaded() || TngLoaded() || LegacySosLoaded();
 }
 
 std::string PositionBackendName() {
@@ -671,7 +692,7 @@ std::vector<std::pair<std::string, std::string>> SuggestedFixes(const Diagnostic
         fixes.emplace_back("SPS-007", "SPS's CBPC bone file is missing or overwritten. Let SPS win this file conflict.");
     if (d.compatibleCbpcParameters == 0)
         fixes.emplace_back("SPS-008", "SPS's CBPC movement file is missing or overwritten. Reinstall SPS and let it win the conflict.");
-    if (!d.sosScriptPresent && !d.sosPluginLoaded && !d.tngPluginLoaded)
+    if (!PositionBackendAvailable())
         fixes.emplace_back("SPS-009", "No supported position backend was found. Install SOS AE-NG, legacy SOS, or The New Gentleman.");
     if (d.sexLabModuleLoaded && d.sexLabPluginLoaded && !d.sexLabRoleBridgePresent)
         fixes.emplace_back("SPS-013", "The SPS SexLab role bridge is missing. Reinstall version 1.7 so bottom/top scene switching can work.");
@@ -679,7 +700,8 @@ std::vector<std::pair<std::string, std::string>> SuggestedFixes(const Diagnostic
         fixes.emplace_back("SPS-014", "Physics Editor is loaded and can control the same SMP/CBPC systems as SPS. Disable Physics Editor before using SPS.");
     if (switchFailures.load() > 0)
         fixes.emplace_back("SPS-010", "A physics handoff failed. Check SchlongPhysicsSwapper.log and confirm both FSMP and CBPC load correctly.");
-    if (positionAutoSuspended.load() || (!lastBendSucceeded.load() && requestedBend.load() >= 0))
+    if (PositionBackendAvailable() &&
+        (positionAutoSuspended.load() || (!lastBendSucceeded.load() && requestedBend.load() >= 0)))
         fixes.emplace_back("SPS-011", "The erect angle could not be applied. Use Repair current state, then check for another mod controlling the angle.");
     if (fixes.empty())
         fixes.emplace_back("SPS-000", "Everything appears ready.");
@@ -705,11 +727,12 @@ public:
             const auto previous = arousal.exchange(value);
             const auto wasValid = arousalValid.exchange(true);
             oslConnected.store(true);
+            arousalRetryAfterMs.store(0);
             if (!wasValid || std::abs(previous - value) >= 0.5F)
                 logger::info("{} arousal: {:.1f}", ArousalProviderName(), value);
         } else {
             arousalValid.store(false);
-            arousalRetryAfterMs.store(NowMs() + 5000);
+            arousalRetryAfterMs.store(NowMs() + 1500);
             Record("SPS-002: Arousal provider returned an invalid value", true);
         }
         queryPending.store(false);
@@ -1058,7 +1081,7 @@ void QueryArousal() {
         arousalQueryGeneration.fetch_add(1);
         queryPending.store(false);
         arousalValid.store(false);
-        arousalRetryAfterMs.store(now + 5000);
+        arousalRetryAfterMs.store(now + 1500);
         Record("SPS-002: Arousal check timed out; waiting before trying again", true);
         return;
     }
@@ -1077,13 +1100,14 @@ void QueryArousal() {
         RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{ new ArousalCallback(generation) };
         return vm->DispatchStaticCall(script, "GetArousal", args, callback);
     };
-    // Use OSL's native API first. The older scripted wrapper is retained only
-    // as a fallback for unusual OSL installations.
-    if (!dispatch("OSLArousedNative") && !dispatch("OSLAroused_ModInterface")) {
+    // The public wrapper is available earlier during OSL startup on some large
+    // load orders. It calls the same native API internally, with the native
+    // script retained as a fallback for unusual installations.
+    if (!dispatch("OSLAroused_ModInterface") && !dispatch("OSLArousedNative")) {
         queryPending.store(false);
         arousalValid.store(false);
         oslConnected.store(false);
-        arousalRetryAfterMs.store(now + 5000);
+        arousalRetryAfterMs.store(now + 1500);
         Record("SPS-002: Could not connect to an arousal provider", true);
     }
 }
@@ -1178,9 +1202,9 @@ bool ApplyBend(RE::Actor* actor, int bend, bool flaccid = false, bool animate = 
 
     const auto legacyBend = std::clamp(static_cast<int>(std::lround(bend * 9.0 / 20.0)), 0, 9);
     // A loose SOSAE_SKSE.pex does not prove that its native functions were
-    // registered. Calling it without SOSAE.dll loaded can crash the Papyrus VM,
-    // particularly on 1.5.97 legacy SOS setups. Legacy SOS and TNG use their
-    // normal animation events instead.
+    // registered. Calling it without the SOS AE-NG DLL loaded can crash the
+    // Papyrus VM, particularly on 1.5.97 legacy SOS setups. Legacy SOS and TNG
+    // use their normal animation events instead.
     const bool nativeBackend = SosAeNativeLoaded();
     const bool eventBackend = TngLoaded() || LegacySosLoaded() || nativeBackend;
     const bool useGraph = eventBackend && (!nativeBackend ||
@@ -1243,6 +1267,13 @@ void StartGradualErection(int targetBend, int durationMs) {
     const bool nativeBackend = SosAeNativeLoaded();
     const bool useGraphEvents = (TngLoaded() || LegacySosLoaded()) &&
         (!nativeBackend || copy.bendMethod == 1);
+    if (!nativeBackend && !useGraphEvents) {
+        erectionAnimating.store(false);
+        appliedBend.store(-1);
+        lastBendMethod.store(-1);
+        lastBendSucceeded.store(false);
+        return;
+    }
 
     erectionAnimationThread = std::jthread([generation, targetBend, durationMs, useGraphEvents](std::stop_token token) {
         while (!token.stop_requested() && erectionAnimating.load() &&
@@ -2114,7 +2145,7 @@ std::string BuildReport() {
     return fmt::format(
         "Schlong Physics Swapper {} diagnostics\n"
         "SkyrimRuntime={} SKSE={}\n"
-        "DLLs: MenuFramework={} OSL={} SLO={} FSMP={} CBPC={} SexLab={} SOSAE={}\n"
+        "DLLs: MenuFramework={} OSL={} SLO={} FSMP={} CBPC={} SexLab={} SOS={}\n"
         "Compatibility: TNG={} PositionBackend={} ClassicSexLabAroused={} SexLabRoleBridge={} PPA={} PhysicsEditor={} AutoPhysicsReset={} CrashLogger={}\n"
         "Engine={} StateKnown={} Arousal={:.1f} Provider={} ProviderConnected={} SexLabActive={} SexLabConnected={} SexLabRole={} RoleValid={}\n"
         "CompatibilityAPI=V{} ActiveRequests={} ActiveRequester={} Accepted={} Released={} ResetNotices={} OwnerRepairs={} LastOwnerRepairMs={}\n"
@@ -2128,7 +2159,7 @@ std::string BuildReport() {
         LoadedDllVersion(L"SKSEMenuFramework.dll"), LoadedDllVersion(L"OSLAroused.dll"),
         LoadedDllVersion(L"SexlabArousedNG.dll"),
         LoadedDllVersion(L"hdtsmp64.dll"), LoadedDllVersion(L"cbp.dll"),
-        LoadedDllVersion(L"SexLabUtil.dll"), LoadedDllVersion(L"SOSAE.dll"),
+        LoadedDllVersion(L"SexLabUtil.dll"), SosAeNativeModuleName() ? LoadedDllVersion(SosAeNativeModuleName()) : "not loaded",
         d.tngPluginLoaded, PositionBackendName(), d.classicArousedPluginLoaded, d.sexLabRoleBridgePresent,
         ::GetModuleHandleW(L"AccuratePenetration.dll") != nullptr, d.physicsEditorLoaded,
         d.autoPhysicsResetLoaded, d.crashLoggerLoaded,
@@ -2136,7 +2167,7 @@ std::string BuildReport() {
         SPS::API::kVersion, activeAPIRequestCount, activeAPIRequest ? activeAPIRequest->requester : "none", apiRequestsAccepted.load(), apiRequestsReleased.load(),
         externalResetNotices.load(), externalOwnerRepairs.load(), lastExternalOwnerRepairMs.load(),
         d.menuFrameworkLoaded, d.oslModuleLoaded && d.oslPluginLoaded, d.fsmpModuleLoaded, d.cbpcModuleLoaded, d.sexLabModuleLoaded && d.sexLabPluginLoaded,
-        d.sosScriptPresent || d.sosPluginLoaded || d.tngPluginLoaded || sosConnected.load(), d.supportedAddonLoaded,
+        PositionBackendAvailable(), d.supportedAddonLoaded,
         d.playerBonesFound, d.compatibleXmlFiles, d.xmlFiles, d.xmlSummary, d.compatibleCbpcMaps, d.cbpcMapFiles, d.cbpcMapSummary,
         d.compatibleCbpcParameters, d.cbpcParameterFiles, d.cbpcParameterSummary, switchSuccesses.load(), switchFailures.load(), bendRepairs.load(), loadSMPResets.load(), lastLoadSMPResetMs.load(), recent, error.empty() ? "none" : error,
         s.positionControl, requestedBend.load(), appliedBend.load(), BendMethodName(lastBendMethod.load()), lastBendSucceeded.load(), positionAutoSuspended.load(), std::max<std::int64_t>(0, bendGuardUntilMs.load() - NowMs()),
@@ -2253,8 +2284,8 @@ void __stdcall RenderDebug() {
     StatusLine("Soft physics", d.fsmpModuleLoaded ? (smpConnected.load() ? "SMP - ready" : "SMP found - not tested yet") : "Faster HDT-SMP is missing", d.fsmpModuleLoaded ? (smpConnected.load() ? 2 : 1) : 0);
     StatusLine("Erect physics", d.cbpcModuleLoaded ? (cbpcConnected.load() ? "CBPC - ready" : "CBPC found - not tested yet") : "CBPC is missing", d.cbpcModuleLoaded ? (cbpcConnected.load() ? 2 : 1) : 0);
     StatusLine("Compatible schlong", d.playerBonesFound == 6 ? "All 6 physics bones found" : fmt::format("Only {}/6 physics bones found", d.playerBonesFound).c_str(), d.playerBonesFound == 6 ? 2 : 0);
-    const bool positionBackendFound = d.sosScriptPresent || d.sosPluginLoaded || d.tngPluginLoaded;
-    StatusLine("Erect angle control", positionBackendFound ? fmt::format("{} - ready", PositionBackendName()).c_str() : "SOS AE, SOS or TNG not found", positionBackendFound ? 2 : 0);
+    const bool positionBackendFound = PositionBackendAvailable();
+    StatusLine("Erect angle control", positionBackendFound ? fmt::format("{} - ready", PositionBackendName()).c_str() : "Not available - physics switching still works", positionBackendFound ? 2 : 1);
 
     if (SloArousedLoaded())
         ImGuiMCP::TextWrapped("SLO Aroused users: leave SLO's Use SOS option off so both mods do not change the angle.");

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(SchlongPhysicsSwapper VERSION 1.8.1 LANGUAGES CXX)
+project(SchlongPhysicsSwapper VERSION 1.8.2 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(NOT DEFINED ENV{COMMONLIB_SSE_FOLDER})
@@ -13,19 +13,27 @@ if(NOT mcp_sdk_POPULATED)
 endif()
 set(ENABLE_SKYRIM_SE ON CACHE BOOL "" FORCE)
 set(ENABLE_SKYRIM_AE ON CACHE BOOL "" FORCE)
-set(ENABLE_SKYRIM_VR OFF CACHE BOOL "" FORCE)
+set(ENABLE_SKYRIM_VR ON CACHE BOOL "" FORCE)
 set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
 add_subdirectory("$ENV{COMMONLIB_SSE_FOLDER}" "${CMAKE_BINARY_DIR}/commonlib")
 list(APPEND CMAKE_MODULE_PATH "$ENV{COMMONLIB_SSE_FOLDER}/cmake")
 include(CommonLibSSE)
-find_package(SimpleIni CONFIG REQUIRED)
+# SimpleIni ships a CMake config in some vcpkg revisions and is header-only in
+# others, so use the package target when available and otherwise use vcpkg's
+# include directory directly.
+find_package(SimpleIni CONFIG QUIET)
 option(SPS_BUILD_API_TEST_PLUGIN "Build the developer-only SPS API smoke-test plugin" OFF)
 
 add_commonlibsse_plugin(${PROJECT_NAME} AUTHOR "snowman12356" SOURCES src/plugin.cpp src/SPSAPI.h)
 target_include_directories(${PROJECT_NAME} PRIVATE "${mcp_sdk_SOURCE_DIR}/include")
 target_compile_definitions(${PROJECT_NAME} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_precompile_headers(${PROJECT_NAME} PRIVATE src/PCH.h)
-target_link_libraries(${PROJECT_NAME} PRIVATE SimpleIni::SimpleIni)
+if(TARGET SimpleIni::SimpleIni)
+  target_link_libraries(${PROJECT_NAME} PRIVATE SimpleIni::SimpleIni)
+else()
+  target_include_directories(${PROJECT_NAME} PRIVATE
+      "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include")
+endif()
 
 if(SPS_BUILD_API_TEST_PLUGIN)
   add_commonlibsse_plugin(SPSAPITestPlugin
