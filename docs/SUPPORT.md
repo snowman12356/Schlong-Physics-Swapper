@@ -17,9 +17,10 @@ recommended for this, but it is not required for SPS to run. Do not attach an
 old crash log from a different play session.
 
 Please also say whether **Physics Editor** or **Auto Physics Reset** is installed.
-Physics Editor controls the same SMP/CBPC systems and should be disabled while
-using SPS. Auto Physics Reset is optional, but its load, cell or scene triggers
-may overlap SPS's own player reset if physics changes unexpectedly.
+Physics Editor may stay installed; if physics changes unexpectedly, disable its
+schlong controls so it does not change the same bones as SPS. Auto Physics Reset
+is optional, but its load, cell or scene triggers may overlap SPS's own player
+reset if physics changes unexpectedly.
 
 The reports contain mod state, versions, settings and relevant filenames. They
 do not contain your Windows username, save name, or full computer paths. Please
@@ -42,7 +43,11 @@ check any file yourself before uploading it.
 - `SPS-011`: A position update failed or recovery stopped.
 - `SPS-012`: A report or capture file could not be saved.
 - `SPS-013`: The SPS SexLab role bridge is missing.
-- `SPS-014`: Physics Editor is loaded and conflicts with SPS physics control.
+- `SPS-014`: Physics Editor is loaded. It may stay installed, but its schlong
+  controls can overlap SPS.
+- `SPS-015`: OStim is installed but the optional SPS OStim bridge is missing.
+- `SPS-016`: SOS Physics Manager is enabled and can fight SPS for control.
+- `SPS-017`: The optional delayed player SMP reset could not run.
 
 ## Suggested pinned Nexus post
 

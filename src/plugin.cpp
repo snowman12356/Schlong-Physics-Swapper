@@ -19,6 +19,7 @@
 #include <fstream>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -30,7 +31,7 @@ namespace Mod {
 namespace fs = std::filesystem;
 
 constexpr auto kName = "Schlong Physics Swapper";
-constexpr auto kVersion = "1.8.2";
+constexpr auto kVersion = "1.9.0";
 constexpr auto kIni = "Data/SKSE/Plugins/SchlongPhysicsSwapper.ini";
 constexpr auto kLegacyIni = "Data/SKSE/Plugins/UBEPhysicsSwitch.ini";
 constexpr auto kReport = "Data/SKSE/Plugins/SchlongPhysicsSwapper_Diagnostics.txt";
@@ -46,12 +47,16 @@ struct Settings {
     float hysteresis{ 5.0F };
     int mode{ 0 };  // 0 automatic, 1 force SMP, 2 force CBPC
     int erectBend{ 14 };
+    bool flaccidAngleControl{ false };
+    int flaccidBend{ 0 };
     int pollMs{ 1000 };
     bool sexLabOverride{ true };
     bool sexLabRoleSwitching{ true };
     int sexLabBottomBehavior{ 0 };  // 0 keep entry, 1 live arousal, 2 SMP, 3 CBPC
     int sexLabUnknownRole{ 0 };  // 0 keep current, 1 SMP, 2 CBPC
     int sceneEndDelayMs{ 1500 };
+    bool ostimOverride{ true };
+    bool ostimRoleSwitching{ true };
     int switchCooldownMs{ 750 };
     bool resetSMPAfterLoad{ true };
     int loadResetDelayMs{ 10000 };
@@ -59,7 +64,20 @@ struct Settings {
     int bendMethod{ 2 };  // 0 native, 1 animation event, 2 compatibility
     bool animatePosition{ true };
     bool gradualErection{ true };
+    bool arousalBasedErection{ false };
+    float erectionStartArousal{ 20.0F };
     int erectionDurationMs{ 3000 };
+    int softeningDurationMs{ 5000 };
+    bool randomErections{ false };
+    int randomErectionMinMinutes{ 15 };
+    int randomErectionMaxMinutes{ 45 };
+    int randomErectionDurationSeconds{ 60 };
+    bool randomErectionSafeMoments{ true };
+    bool spontaneousRefractory{ true };
+    int refractoryMinutes{ 5 };
+    bool morningErections{ false };
+    int morningErectionDurationSeconds{ 90 };
+    bool equipmentChangeRecovery{ true };
     bool bounceGuard{ true };
     bool useSexLabBend{ false };
     int sexLabBend{ 14 };
@@ -76,12 +94,14 @@ struct Diagnostics {
     bool sexLabModuleLoaded{ false };
     bool sexLabPluginLoaded{ false };
     bool sexLabRoleBridgePresent{ false };
+    bool ostimPluginLoaded{ false };
+    bool ostimRoleBridgePresent{ false };
     bool oslPluginLoaded{ false };
     bool classicArousedPluginLoaded{ false };
     bool supportedAddonLoaded{ false };
     bool sosPluginLoaded{ false };
     bool tngPluginLoaded{ false };
-    bool sosScriptPresent{ false };
+    bool sosPhysicsManagerLoaded{ false };
     bool physicsEditorLoaded{ false };
     bool autoPhysicsResetLoaded{ false };
     bool crashLoggerLoaded{ false };
@@ -149,6 +169,17 @@ std::atomic<std::int64_t> sexLabRoleRetryAfterMs{ 0 };
 std::atomic<std::int64_t> sexLabLastTopMs{ 0 };
 std::atomic<std::int64_t> sexLabBottomCandidateSinceMs{ 0 };
 std::atomic<std::uint64_t> sexLabRoleGeneration{ 0 };
+std::atomic<bool> ostimActive{ false };
+std::atomic<bool> ostimConnected{ false };
+std::atomic<int> ostimRole{ 0 };  // 0 unknown, 1 bottom/receiving, 2 top/penetrating
+std::atomic<bool> ostimRoleValid{ false };
+std::atomic<bool> ostimRoleQueryPending{ false };
+std::atomic<std::int64_t> ostimRoleQueryStartedMs{ 0 };
+std::atomic<std::int64_t> ostimRoleRetryAfterMs{ 0 };
+std::atomic<std::uint64_t> ostimRoleGeneration{ 0 };
+std::atomic<std::int64_t> ostimEndedMs{ 0 };
+std::atomic<bool> ostimEntryCBPC{ false };
+std::atomic<bool> ostimEntryStateValid{ false };
 std::atomic<bool> ppaApiConnected{ false };
 std::atomic<bool> ppaSceneActive{ false };
 std::atomic<int> ppaSceneRole{ 0 };
@@ -169,16 +200,23 @@ std::atomic<std::int64_t> lastSwitchMs{ 0 };
 std::atomic<std::int64_t> retryAfterMs{ 0 };
 std::atomic<std::int64_t> loadSMPResetDueMs{ 0 };
 std::atomic<std::int64_t> loadSMPResetRestoreDueMs{ 0 };
+std::atomic<std::int64_t> softHandoffResetDueMs{ 0 };
+std::atomic<std::int64_t> softHandoffResetRestoreDueMs{ 0 };
+std::atomic<std::int64_t> softAngleRefreshDueMs{ 0 };
+std::atomic<std::int64_t> softAngleRefreshRestoreDueMs{ 0 };
 std::atomic<std::int64_t> lastLoadSMPResetMs{ 0 };
 std::atomic<std::int64_t> lastBendApplyMs{ 0 };
 std::atomic<std::int64_t> bendSettleDueMs{ 0 };
 std::atomic<std::int64_t> bendConfirmationDueMs{ 0 };
+std::atomic<std::int64_t> bendRetryDueMs{ 0 };
 std::atomic<std::int64_t> softConfirmationDueMs{ 0 };
 std::atomic<std::int64_t> cbpcConfirmationDueMs{ 0 };
 std::atomic<std::int64_t> erectionAnimationStartMs{ 0 };
 std::atomic<std::int64_t> bendGuardUntilMs{ 0 };
 std::atomic<std::int64_t> bendGuardWindowStartMs{ 0 };
 std::atomic<std::int64_t> nodeRefreshDueMs{ 0 };
+std::atomic<std::int64_t> nodeRefreshFollowupDueMs{ 0 };
+std::atomic<std::int64_t> nodeSMPResetRestoreDueMs{ 0 };
 std::atomic<std::int64_t> externalOwnerRepairDueMs{ 0 };
 std::atomic<std::int64_t> lastExternalOwnerRepairMs{ 0 };
 std::atomic<std::int64_t> ignoreNodeEventsUntilMs{ 0 };
@@ -190,9 +228,18 @@ std::atomic<int> erectionAnimationLastQueuedBend{ -1 };
 std::atomic<int> lastBendMethod{ -1 };
 std::atomic<int> bendGuardCount{ 0 };
 std::atomic<int> bendConsecutiveFailures{ 0 };
+std::atomic<bool> bendFailureReported{ false };
 std::atomic<bool> lastBendSucceeded{ false };
 std::atomic<bool> positionAutoSuspended{ false };
 std::atomic<bool> erectionAnimating{ false };
+std::atomic<std::int64_t> randomErectionNextMs{ 0 };
+std::atomic<std::int64_t> randomErectionUntilMs{ 0 };
+std::atomic<bool> randomErectionManualTest{ false };
+std::atomic<bool> erectionRelaxing{ false };
+std::atomic<std::int64_t> spontaneousRefractoryUntilMs{ 0 };
+std::atomic<std::int64_t> morningErectionDueMs{ 0 };
+std::atomic<bool> morningErectionActive{ false };
+std::atomic<float> sleepWaitStartedHours{ -1.0F };
 std::atomic<std::uint64_t> erectionAnimationGeneration{ 0 };
 std::atomic<unsigned> switchSuccesses{ 0 };
 std::atomic<unsigned> switchFailures{ 0 };
@@ -210,17 +257,27 @@ std::atomic<unsigned> externalOwnerRepairs{ 0 };
 std::jthread pollThread;
 std::jthread erectionAnimationThread;
 std::jthread debugCaptureThread;
+std::mutex randomLock;
+std::mt19937 randomEngine{ std::random_device{}() };
 const SPS::PPA::InterfaceV1* ppaAPI{ nullptr };
 SPS::PPA::ListenerHandle ppaListener{ 0 };
 
 void Evaluate(bool force = false);
 void QuerySexLab();
 void QuerySexLabRole();
+void QueryOStimRole();
 void RefreshDiagnostics();
 void Save();
 bool SexLabHasPriority(const Settings& copy);
+bool OStimHasPriority(const Settings& copy);
+bool AnySceneHasPriority(const Settings& copy);
 void ApplyRequestedBend(bool force, bool animate, bool automatic);
+void ApplyRequestedSoftBend(bool force, bool animate);
+void ScheduleSoftAngleRefresh(int delayMs = 350);
+void RunSoftAngleRefresh();
 void CancelErectionAnimation();
+void StartGradualRelaxation(const Settings& copy);
+bool ClearResolvedPositionError();
 std::string BuildReport();
 bool PluginLoaded(std::initializer_list<std::string_view> names);
 std::int64_t NowMs();
@@ -301,7 +358,7 @@ SPS::API::ControlSource CurrentAPIControlSource() {
     if (ActiveAPIRequest()) return SPS::API::ControlSource::ExternalAPI;
     Settings copy;
     { std::scoped_lock lock(settingsLock); copy = settings; }
-    if (SexLabHasPriority(copy)) return SPS::API::ControlSource::Scene;
+    if (AnySceneHasPriority(copy)) return SPS::API::ControlSource::Scene;
     if (stateKnown.load()) return SPS::API::ControlSource::SPS;
     return SPS::API::ControlSource::None;
 }
@@ -575,6 +632,10 @@ bool OslArousedLoaded() {
     return ::GetModuleHandleW(L"OSLAroused.dll") != nullptr;
 }
 
+const char* OStimRoleName(int role) {
+    return SexLabRoleName(role);
+}
+
 const wchar_t* SosAeNativeModuleName() {
     // Some native builds use an explicit SOSAE.dll, which is safe evidence that
     // SOSAE_SKSE was registered on every supported runtime.
@@ -663,10 +724,10 @@ void CaptureState(std::string_view reason) {
     Settings copy;
     { std::scoped_lock lock(settingsLock); copy = settings; }
     const auto line = fmt::format(
-        "{} | engine={} arousal={:.1f}/{} provider={} connected={} SexLab={} role={} SMP={} CBPC={} bend={}/{} method={} animating={} guard={} suspended={}",
+        "{} | engine={} arousal={:.1f}/{} provider={} connected={} SexLab={} SexLabRole={} OStim={} OStimRole={} SMP={} CBPC={} bend={}/{} method={} animating={} guard={} suspended={}",
         reason, stateKnown.load() ? (usingCBPC.load() ? "CBPC" : "SMP") : "unknown",
         arousal.load(), arousalValid.load(), ArousalProviderName(), oslConnected.load(), sexLabActive.load(),
-        SexLabRoleName(sexLabRole.load()),
+        SexLabRoleName(sexLabRole.load()), ostimActive.load(), OStimRoleName(ostimRole.load()),
         smpConnected.load(), cbpcConnected.load(), requestedBend.load(), appliedBend.load(),
         lastBendMethod.load(), erectionAnimating.load(), NowMs() < bendGuardUntilMs.load(),
         positionAutoSuspended.load());
@@ -695,9 +756,13 @@ std::vector<std::pair<std::string, std::string>> SuggestedFixes(const Diagnostic
     if (!PositionBackendAvailable())
         fixes.emplace_back("SPS-009", "No supported position backend was found. Install SOS AE-NG, legacy SOS, or The New Gentleman.");
     if (d.sexLabModuleLoaded && d.sexLabPluginLoaded && !d.sexLabRoleBridgePresent)
-        fixes.emplace_back("SPS-013", "The SPS SexLab role bridge is missing. Reinstall version 1.7 so bottom/top scene switching can work.");
+        fixes.emplace_back("SPS-013", "The SPS SexLab role bridge is missing. Reinstall SPS 1.9 so bottom/top scene switching can work.");
+    if (d.ostimPluginLoaded && !d.ostimRoleBridgePresent)
+        fixes.emplace_back("SPS-015", "OStim is installed but the optional SPS OStim bridge is missing. Reinstall SPS and select OStim support if you want SPS to follow OStim roles.");
+    if (d.sosPhysicsManagerLoaded)
+        fixes.emplace_back("SPS-016", "SOS Physics Manager is enabled and can fight SPS for control. Disable SOSPhysicsManager.esp while using SPS.");
     if (d.physicsEditorLoaded)
-        fixes.emplace_back("SPS-014", "Physics Editor is loaded and can control the same SMP/CBPC systems as SPS. Disable Physics Editor before using SPS.");
+        fixes.emplace_back("SPS-014", "Physics Editor is loaded. It can stay installed, but disable its schlong controls if SPS changes unexpectedly.");
     if (switchFailures.load() > 0)
         fixes.emplace_back("SPS-010", "A physics handoff failed. Check SchlongPhysicsSwapper.log and confirm both FSMP and CBPC load correctly.");
     if (PositionBackendAvailable() &&
@@ -858,6 +923,38 @@ private:
     std::uint64_t generation_;
 };
 
+class OStimRoleCallback final : public RE::BSScript::IStackCallbackFunctor {
+public:
+    explicit OStimRoleCallback(std::uint64_t generation) : generation_(generation) {}
+
+    void operator()(RE::BSScript::Variable a_result) override {
+        if (generation_ != ostimRoleGeneration.load()) return;
+        bool valid = false;
+        int role = 0;
+        if (a_result.IsInt()) {
+            role = std::clamp(a_result.GetSInt(), 0, 2);
+            valid = true;
+        }
+        const int previous = ostimRole.exchange(role);
+        const bool wasValid = ostimRoleValid.exchange(valid);
+        ostimRoleQueryPending.store(false);
+        if (valid) {
+            ostimConnected.store(true);
+            ostimRoleRetryAfterMs.store(0);
+            if (!wasValid || previous != role)
+                Record(fmt::format("OStim role: {}", OStimRoleName(role)));
+        } else {
+            ostimRoleRetryAfterMs.store(NowMs() + 3000);
+            logger::warn("OStim role bridge returned an invalid value");
+        }
+        if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { Evaluate(); });
+    }
+    void SetObject(const RE::BSTSmartPointer<RE::BSScript::Object>&) override {}
+
+private:
+    std::uint64_t generation_;
+};
+
 auto VM() { return RE::BSScript::Internal::VirtualMachine::GetSingleton(); }
 
 bool PapyrusReadyForDispatch() {
@@ -876,12 +973,15 @@ void InvalidatePapyrusQueries(int delayMs) {
     arousalQueryGeneration.fetch_add(1);
     sexLabQueryGeneration.fetch_add(1);
     sexLabRoleGeneration.fetch_add(1);
+    ostimRoleGeneration.fetch_add(1);
     queryPending.store(false);
     sexLabQueryPending.store(false);
     sexLabRoleQueryPending.store(false);
+    ostimRoleQueryPending.store(false);
     arousalRetryAfterMs.store(0);
     sexLabQueryRetryAfterMs.store(0);
     sexLabRoleRetryAfterMs.store(0);
+    ostimRoleRetryAfterMs.store(0);
 }
 
 const std::vector<RE::BSFixedString>& PhysicsBones() {
@@ -940,7 +1040,7 @@ bool ConfirmCurrentPhysicsOwner(std::string_view reason) {
     smpConnected.store(smpOK);
     cbpcConnected.store(cbpcOK);
     if (!smpOK || !cbpcOK) {
-        Record(fmt::format("SPS-015: Could not restore {} after {} (FSMP: {}, CBPC: {})",
+        Record(fmt::format("SPS-010: Could not restore {} after {} (FSMP: {}, CBPC: {})",
             expectCBPC ? "CBPC" : "SMP", reason,
             smpOK ? "OK" : "no response", cbpcOK ? "OK" : "no response"), true);
         return false;
@@ -977,12 +1077,16 @@ void Load() {
         settings.hysteresis = std::clamp(static_cast<float>(ini.GetDoubleValue("General", "Hysteresis", 5)), 0.0F, 25.0F);
         settings.mode = std::clamp(static_cast<int>(ini.GetLongValue("General", "Mode", 0)), 0, 2);
         settings.erectBend = std::clamp(static_cast<int>(ini.GetLongValue("General", "ErectBend", 14)), 0, 20);
+        settings.flaccidAngleControl = ini.GetBoolValue("Position", "FlaccidAngleControl", false);
+        settings.flaccidBend = std::clamp(static_cast<int>(ini.GetLongValue("Position", "FlaccidBend", 0)), 0, 20);
         settings.pollMs = std::clamp(static_cast<int>(ini.GetLongValue("General", "PollMilliseconds", 1000)), 250, 10000);
         settings.sexLabOverride = ini.GetBoolValue("Compatibility", "SexLabPPlusOverride", true);
         settings.sexLabRoleSwitching = ini.GetBoolValue("Compatibility", "SexLabRoleSwitching", true);
         settings.sexLabBottomBehavior = std::clamp(static_cast<int>(ini.GetLongValue("Compatibility", "SexLabBottomBehavior", 0)), 0, 3);
         settings.sexLabUnknownRole = std::clamp(static_cast<int>(ini.GetLongValue("Compatibility", "SexLabUnknownRole", 0)), 0, 2);
         settings.sceneEndDelayMs = std::clamp(static_cast<int>(ini.GetLongValue("Compatibility", "SexLabEndDelayMilliseconds", 1500)), 0, 10000);
+        settings.ostimOverride = ini.GetBoolValue("Compatibility", "OStimOverride", true);
+        settings.ostimRoleSwitching = ini.GetBoolValue("Compatibility", "OStimRoleSwitching", true);
         settings.switchCooldownMs = std::clamp(static_cast<int>(ini.GetLongValue("Reliability", "SwitchCooldownMilliseconds", 750)), 0, 5000);
         settings.resetSMPAfterLoad = ini.GetBoolValue("Reliability", "ResetSMPAfterLoad", true);
         settings.loadResetDelayMs = std::clamp(static_cast<int>(ini.GetLongValue("Reliability", "SMPResetDelayMilliseconds", 10000)), 1000, 60000);
@@ -990,7 +1094,20 @@ void Load() {
         settings.bendMethod = std::clamp(static_cast<int>(ini.GetLongValue("Position", "Method", 2)), 0, 2);
         settings.animatePosition = ini.GetBoolValue("Position", "AnimateChanges", true);
         settings.gradualErection = ini.GetBoolValue("Position", "GradualErection", true);
+        settings.arousalBasedErection = ini.GetBoolValue("NaturalBehaviour", "ArousalBasedErection", false);
+        settings.erectionStartArousal = std::clamp(static_cast<float>(ini.GetDoubleValue("NaturalBehaviour", "ErectionStartArousal", 20)), 0.0F, 99.0F);
         settings.erectionDurationMs = std::clamp(static_cast<int>(ini.GetLongValue("Position", "ErectionDurationMilliseconds", 3000)), 500, 10000);
+        settings.softeningDurationMs = std::clamp(static_cast<int>(ini.GetLongValue("Position", "SofteningDurationMilliseconds", 5000)), 500, 15000);
+        settings.randomErections = ini.GetBoolValue("NaturalBehaviour", "RandomErections", false);
+        settings.randomErectionMinMinutes = std::clamp(static_cast<int>(ini.GetLongValue("NaturalBehaviour", "RandomMinimumMinutes", 15)), 1, 180);
+        settings.randomErectionMaxMinutes = std::clamp(static_cast<int>(ini.GetLongValue("NaturalBehaviour", "RandomMaximumMinutes", 45)), settings.randomErectionMinMinutes, 360);
+        settings.randomErectionDurationSeconds = std::clamp(static_cast<int>(ini.GetLongValue("NaturalBehaviour", "RandomDurationSeconds", 60)), 5, 600);
+        settings.randomErectionSafeMoments = ini.GetBoolValue("NaturalBehaviour", "RandomSafeMomentsOnly", true);
+        settings.spontaneousRefractory = ini.GetBoolValue("NaturalBehaviour", "SpontaneousRefractory", true);
+        settings.refractoryMinutes = std::clamp(static_cast<int>(ini.GetLongValue("NaturalBehaviour", "RefractoryMinutes", 5)), 1, 60);
+        settings.morningErections = ini.GetBoolValue("NaturalBehaviour", "MorningErections", false);
+        settings.morningErectionDurationSeconds = std::clamp(static_cast<int>(ini.GetLongValue("NaturalBehaviour", "MorningDurationSeconds", 90)), 10, 600);
+        settings.equipmentChangeRecovery = ini.GetBoolValue("Reliability", "RepairAfterEquipmentChange", true);
         settings.bounceGuard = ini.GetBoolValue("Position", "BounceGuard", true);
         settings.useSexLabBend = ini.GetBoolValue("Position", "UseSeparateSexLabBend", false);
         settings.sexLabBend = std::clamp(static_cast<int>(ini.GetLongValue("Position", "SexLabBend", 14)), 0, 20);
@@ -1022,14 +1139,31 @@ void Save() {
     ini.SetLongValue("Compatibility", "SexLabBottomBehavior", settings.sexLabBottomBehavior);
     ini.SetLongValue("Compatibility", "SexLabUnknownRole", settings.sexLabUnknownRole);
     ini.SetLongValue("Compatibility", "SexLabEndDelayMilliseconds", settings.sceneEndDelayMs);
+    ini.SetBoolValue("Compatibility", "OStimOverride", settings.ostimOverride);
+    ini.SetBoolValue("Compatibility", "OStimRoleSwitching", settings.ostimRoleSwitching);
     ini.SetLongValue("Reliability", "SwitchCooldownMilliseconds", settings.switchCooldownMs);
     ini.SetBoolValue("Reliability", "ResetSMPAfterLoad", settings.resetSMPAfterLoad);
     ini.SetLongValue("Reliability", "SMPResetDelayMilliseconds", settings.loadResetDelayMs);
     ini.SetBoolValue("Position", "Enabled", settings.positionControl);
+    ini.SetBoolValue("Position", "FlaccidAngleControl", settings.flaccidAngleControl);
+    ini.SetLongValue("Position", "FlaccidBend", settings.flaccidBend);
     ini.SetLongValue("Position", "Method", settings.bendMethod);
     ini.SetBoolValue("Position", "AnimateChanges", settings.animatePosition);
     ini.SetBoolValue("Position", "GradualErection", settings.gradualErection);
+    ini.SetBoolValue("NaturalBehaviour", "ArousalBasedErection", settings.arousalBasedErection);
+    ini.SetDoubleValue("NaturalBehaviour", "ErectionStartArousal", settings.erectionStartArousal);
     ini.SetLongValue("Position", "ErectionDurationMilliseconds", settings.erectionDurationMs);
+    ini.SetLongValue("Position", "SofteningDurationMilliseconds", settings.softeningDurationMs);
+    ini.SetBoolValue("NaturalBehaviour", "RandomErections", settings.randomErections);
+    ini.SetLongValue("NaturalBehaviour", "RandomMinimumMinutes", settings.randomErectionMinMinutes);
+    ini.SetLongValue("NaturalBehaviour", "RandomMaximumMinutes", settings.randomErectionMaxMinutes);
+    ini.SetLongValue("NaturalBehaviour", "RandomDurationSeconds", settings.randomErectionDurationSeconds);
+    ini.SetBoolValue("NaturalBehaviour", "RandomSafeMomentsOnly", settings.randomErectionSafeMoments);
+    ini.SetBoolValue("NaturalBehaviour", "SpontaneousRefractory", settings.spontaneousRefractory);
+    ini.SetLongValue("NaturalBehaviour", "RefractoryMinutes", settings.refractoryMinutes);
+    ini.SetBoolValue("NaturalBehaviour", "MorningErections", settings.morningErections);
+    ini.SetLongValue("NaturalBehaviour", "MorningDurationSeconds", settings.morningErectionDurationSeconds);
+    ini.SetBoolValue("Reliability", "RepairAfterEquipmentChange", settings.equipmentChangeRecovery);
     ini.SetBoolValue("Position", "BounceGuard", settings.bounceGuard);
     ini.SetBoolValue("Position", "UseSeparateSexLabBend", settings.useSexLabBend);
     ini.SetLongValue("Position", "SexLabBend", settings.sexLabBend);
@@ -1148,8 +1282,153 @@ void QuerySexLab() {
     }
 }
 
+bool RandomErectionActive() {
+    const auto until = randomErectionUntilMs.load();
+    return until > 0 && NowMs() < until;
+}
+
+void StartRefractoryPeriod(const Settings& copy, std::int64_t now = 0) {
+    if (!copy.spontaneousRefractory) {
+        spontaneousRefractoryUntilMs.store(0);
+        return;
+    }
+    if (now == 0) now = NowMs();
+    spontaneousRefractoryUntilMs.store(now +
+        static_cast<std::int64_t>(std::clamp(copy.refractoryMinutes, 1, 60)) * 60000);
+}
+
+bool RandomErectionActivityBlocked() {
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player || player->IsDead(false) || player->IsInCombat() ||
+        player->IsInKillMove() || player->IsOnMount() || player->IsSwimming())
+        return true;
+
+    auto* ui = RE::UI::GetSingleton();
+    return ui && (ui->GameIsPaused() ||
+        ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) ||
+        ui->IsMenuOpen(RE::DialogueMenu::MENU_NAME));
+}
+
+void ScheduleNextRandomErection(const Settings& copy, std::int64_t now = 0) {
+    if (!copy.randomErections || copy.mode != 0) {
+        randomErectionNextMs.store(0);
+        return;
+    }
+    const int minimum = std::clamp(copy.randomErectionMinMinutes, 1, 240);
+    const int maximum = std::clamp(std::max(minimum, copy.randomErectionMaxMinutes), minimum, 240);
+    std::uniform_int_distribution<int> delayMinutes(minimum, maximum);
+    int chosenMinutes;
+    {
+        std::scoped_lock lock(randomLock);
+        chosenMinutes = delayMinutes(randomEngine);
+    }
+    if (now == 0) now = NowMs();
+    const auto chosenTime = now + static_cast<std::int64_t>(chosenMinutes) * 60000;
+    randomErectionNextMs.store(std::max(chosenTime, spontaneousRefractoryUntilMs.load()));
+    logger::info("Next random erection check scheduled in {} minutes", chosenMinutes);
+}
+
+void UpdateRandomErection(const Settings& copy) {
+    const auto now = NowMs();
+    const bool spontaneousEnabled = copy.randomErections || copy.morningErections;
+    const bool blocked = !spontaneousEnabled || copy.mode != 0 ||
+        AnySceneHasPriority(copy) || ActiveAPIRequest().has_value();
+    if (blocked) {
+        const bool wasActive = randomErectionUntilMs.exchange(0) > now;
+        if (wasActive) {
+            StartRefractoryPeriod(copy, now);
+            Record("Spontaneous erection stopped because another SPS control took priority");
+        }
+        if (!copy.randomErections) randomErectionNextMs.store(0);
+        morningErectionActive.store(false);
+        randomErectionManualTest.store(false);
+        return;
+    }
+
+    if ((copy.randomErectionSafeMoments || morningErectionActive.load()) &&
+        !randomErectionManualTest.load() &&
+        RandomErectionActivityBlocked()) {
+        const bool wasActive = randomErectionUntilMs.exchange(0) > now;
+        if (wasActive) StartRefractoryPeriod(copy, now);
+        morningErectionActive.store(false);
+        const auto retryAt = now + 60000;
+        const auto next = randomErectionNextMs.load();
+        if (copy.randomErections && (next == 0 || next < retryAt))
+            randomErectionNextMs.store(retryAt);
+        if (wasActive)
+            Record("Spontaneous erection ended because gameplay was interrupted");
+        return;
+    }
+
+    // Keep CBPC in control until the downward movement has completed. Without
+    // this hold, the normal arousal decision immediately hands the bones back
+    // to SMP and the random erection visibly snaps down.
+    if (erectionRelaxing.load()) return;
+
+    const auto until = randomErectionUntilMs.load();
+    if (until > 0) {
+        if (now < until) return;
+        randomErectionUntilMs.store(0);
+        randomErectionManualTest.store(false);
+        morningErectionActive.store(false);
+        StartRefractoryPeriod(copy, now);
+        if (copy.randomErections) ScheduleNextRandomErection(copy, now);
+        if (copy.gradualErection && copy.positionControl && stateKnown.load() &&
+            usingCBPC.load() && !AnySceneHasPriority(copy) && !PPAOwnsPosition()) {
+            StartGradualRelaxation(copy);
+        } else {
+            Record("Spontaneous erection finished; normal arousal control resumed");
+        }
+        return;
+    }
+
+    const auto morningDue = morningErectionDueMs.load();
+    if (copy.morningErections && morningDue > 0 && now >= morningDue &&
+        now >= spontaneousRefractoryUntilMs.load()) {
+        morningErectionDueMs.store(0);
+        if (stateKnown.load() && !usingCBPC.load()) {
+            morningErectionActive.store(true);
+            randomErectionUntilMs.store(now +
+                static_cast<std::int64_t>(copy.morningErectionDurationSeconds) * 1000);
+            Record("A morning erection started after resting");
+            return;
+        }
+    }
+
+    const auto next = randomErectionNextMs.load();
+    if (!copy.randomErections) return;
+    if (next == 0) {
+        ScheduleNextRandomErection(copy, now);
+        return;
+    }
+    if (now < next || now < spontaneousRefractoryUntilMs.load()) return;
+
+    // Do not waste a random event while the player is already erect. Pick a
+    // fresh interval and wait for a future soft state instead.
+    if (!stateKnown.load() || usingCBPC.load()) {
+        ScheduleNextRandomErection(copy, now);
+        return;
+    }
+
+    randomErectionNextMs.store(0);
+    randomErectionManualTest.store(false);
+    randomErectionUntilMs.store(now +
+        static_cast<std::int64_t>(std::clamp(copy.randomErectionDurationSeconds, 5, 600)) * 1000);
+    Record("A random erection started");
+}
+
 int DesiredBend(const Settings& copy) {
-    return copy.useSexLabBend && SexLabHasPriority(copy) ? copy.sexLabBend : copy.erectBend;
+    if (copy.useSexLabBend && AnySceneHasPriority(copy)) return copy.sexLabBend;
+    if (!copy.arousalBasedErection || copy.mode != 0 || !arousalValid.load() ||
+        AnySceneHasPriority(copy) || RandomErectionActive())
+        return copy.erectBend;
+
+    const float start = std::clamp(copy.erectionStartArousal, 0.0F, 99.0F);
+    const float fullyErect = std::max(start + 1.0F, copy.threshold);
+    const float progress = std::clamp((arousal.load() - start) / (fullyErect - start), 0.0F, 1.0F);
+    const int softBend = copy.flaccidAngleControl && SosAeNativeLoaded() ? copy.flaccidBend : 0;
+    return std::clamp(static_cast<int>(std::lround(
+        softBend + (copy.erectBend - softBend) * progress)), 0, 20);
 }
 
 const char* BendMethodName(int method) {
@@ -1164,15 +1443,21 @@ const char* BendMethodName(int method) {
 void ResetPositionRecovery() {
     positionAutoSuspended.store(false);
     bendConsecutiveFailures.store(0);
+    bendFailureReported.store(false);
+    bendRetryDueMs.store(0);
     bendGuardCount.store(0);
     bendGuardUntilMs.store(0);
     bendGuardWindowStartMs.store(0);
+    ClearResolvedPositionError();
 }
 
 bool AutomaticBendAllowed(const Settings& copy) {
-    if (positionAutoSuspended.load()) return false;
-    if (!copy.bounceGuard) return true;
     const auto now = NowMs();
+    if (positionAutoSuspended.load()) {
+        if (now < bendGuardUntilMs.load()) return false;
+        positionAutoSuspended.store(false);
+    }
+    if (!copy.bounceGuard) return true;
     if (now < bendGuardUntilMs.load()) return false;
     auto windowStart = bendGuardWindowStartMs.load();
     if (windowStart == 0 || now - windowStart > 3000) {
@@ -1197,7 +1482,7 @@ bool ApplyBend(RE::Actor* actor, int bend, bool flaccid = false, bool animate = 
         return true;
     }
     if (automatic && !AutomaticBendAllowed(copy)) {
-        return true;
+        return false;
     }
 
     const auto legacyBend = std::clamp(static_cast<int>(std::lround(bend * 9.0 / 20.0)), 0, 9);
@@ -1236,12 +1521,28 @@ bool ApplyBend(RE::Actor* actor, int bend, bool flaccid = false, bool animate = 
         // cannot be mistaken for a rebuilt skeleton and start a repair loop.
         ignoreNodeEventsUntilMs.store(now + 2000);
         lastBendSucceeded.store(true);
-        bendConsecutiveFailures.store(0);
+        const int previousFailures = bendConsecutiveFailures.exchange(0);
+        const bool failureWasReported = bendFailureReported.exchange(false);
+        bendRetryDueMs.store(0);
+        positionAutoSuspended.store(false);
+        const bool clearedError = ClearResolvedPositionError();
+        if (previousFailures > 0 || failureWasReported || clearedError)
+            Record("SOS angle control recovered");
     } else {
         lastBendSucceeded.store(false);
-        const int failures = bendConsecutiveFailures.fetch_add(1) + 1;
-        if (automatic && failures >= copy.maxBendFailures && !positionAutoSuspended.exchange(true))
-            Record("SPS-011: Automatic position recovery stopped after repeated SOS failures", true);
+        const auto now = NowMs();
+        bendRetryDueMs.store(now + 1500);
+        if (automatic) {
+            const int failures = bendConsecutiveFailures.fetch_add(1) + 1;
+            if (failures >= copy.maxBendFailures) {
+                bendConsecutiveFailures.store(0);
+                bendGuardUntilMs.store(now + 5000);
+                positionAutoSuspended.store(true);
+                bendRetryDueMs.store(now + 5000);
+                if (!bendFailureReported.exchange(true))
+                    Record("SPS-011: SOS is not ready for the angle yet; automatic retry paused for 5 seconds", true);
+            }
+        }
     }
     return graphOK || nativeOK;
 }
@@ -1249,12 +1550,15 @@ bool ApplyBend(RE::Actor* actor, int bend, bool flaccid = false, bool animate = 
 void CancelErectionAnimation() {
     erectionAnimating.store(false);
     erectionAnimationGeneration.fetch_add(1);
+    erectionRelaxing.store(false);
 }
 
-void StartGradualErection(int targetBend, int durationMs) {
+void StartBendAnimation(int startBend, int targetBend, int durationMs, bool relaxing) {
+    startBend = std::clamp(startBend, 0, 20);
     targetBend = std::clamp(targetBend, 0, 20);
-    durationMs = std::clamp(durationMs, 500, 10000);
+    durationMs = std::clamp(durationMs, 500, 15000);
     CancelErectionAnimation();
+    erectionRelaxing.store(relaxing);
     const auto generation = erectionAnimationGeneration.load();
     erectionAnimationTargetBend.store(targetBend);
     erectionAnimationLastQueuedBend.store(-1);
@@ -1269,25 +1573,27 @@ void StartGradualErection(int targetBend, int durationMs) {
         (!nativeBackend || copy.bendMethod == 1);
     if (!nativeBackend && !useGraphEvents) {
         erectionAnimating.store(false);
+        erectionRelaxing.store(false);
         appliedBend.store(-1);
         lastBendMethod.store(-1);
         lastBendSucceeded.store(false);
         return;
     }
 
-    erectionAnimationThread = std::jthread([generation, targetBend, durationMs, useGraphEvents](std::stop_token token) {
+    erectionAnimationThread = std::jthread([generation, startBend, targetBend, durationMs, useGraphEvents, relaxing](std::stop_token token) {
         while (!token.stop_requested() && erectionAnimating.load() &&
             generation == erectionAnimationGeneration.load()) {
             const auto elapsed = std::max<std::int64_t>(0, NowMs() - erectionAnimationStartMs.load());
             const float t = std::clamp(static_cast<float>(elapsed) / static_cast<float>(durationMs), 0.0F, 1.0F);
             const float eased = t * t * (3.0F - 2.0F * t);
-            const int bend = std::clamp(static_cast<int>(std::lround(targetBend * eased)), 0, targetBend);
+            const int bend = std::clamp(static_cast<int>(std::lround(
+                startBend + (targetBend - startBend) * eased)), 0, 20);
             const int eventBend = std::clamp(static_cast<int>(std::lround(bend * 9.0 / 20.0)), 0, 9);
             const int queueKey = useGraphEvents ? eventBend : bend;
             const int previousQueueKey = erectionAnimationLastQueuedBend.exchange(queueKey);
             if (queueKey != previousQueueKey || t >= 1.0F) {
                 if (auto* tasks = SKSE::GetTaskInterface()) {
-                    tasks->AddTask([generation, bend, eventBend, targetBend, useGraphEvents] {
+                    tasks->AddTask([generation, bend, eventBend, targetBend, useGraphEvents, relaxing] {
                         if (!erectionAnimating.load() || generation != erectionAnimationGeneration.load() ||
                             !stateKnown.load() || !usingCBPC.load()) return;
                         auto* player = RE::PlayerCharacter::GetSingleton();
@@ -1296,23 +1602,59 @@ void StartGradualErection(int targetBend, int durationMs) {
                             ? player->NotifyAnimationGraph(RE::BSFixedString(fmt::format("SOSBend{}", eventBend)))
                             : CallSosAeBend(static_cast<RE::Actor*>(player), bend);
                         if (!ok) {
+                            // Some SOS AE builds stop accepting native bend values just
+                            // above their visible flaccid limit. During relaxation that
+                            // means the animation has already gone as low as this backend
+                            // can display. Finish the owner handoff instead of cancelling
+                            // and restarting the same 5 -> 0 animation every poll.
+                            if (relaxing) {
+                                CancelErectionAnimation();
+                                appliedBend.store(-1);
+                                bendRetryDueMs.store(0);
+                                bendConsecutiveFailures.store(0);
+                                bendFailureReported.store(false);
+                                Record("SOS reached its lowest soft angle; normal soft physics resumed");
+                                Evaluate(true);
+                                return;
+                            }
                             CancelErectionAnimation();
                             appliedBend.store(-1);
-                            Record("SPS-009: Gradual erection unavailable; using the normal position method", true);
-                            ApplyRequestedBend(true, true, false);
+                            lastBendSucceeded.store(false);
+                            bendRetryDueMs.store(NowMs() + 1500);
+                            Record("Gradual erection is waiting for SOS; the normal angle was queued instead");
                             return;
                         }
                         if (!useGraphEvents) sosConnected.store(true);
                         appliedBend.store(bend);
                         lastBendMethod.store(useGraphEvents ? 1 : 0);
                         lastBendSucceeded.store(true);
+                        bendRetryDueMs.store(0);
+                        bendConsecutiveFailures.store(0);
+                        bendFailureReported.store(false);
+                        positionAutoSuspended.store(false);
+                        ClearResolvedPositionError();
                         lastBendApplyMs.store(NowMs());
                         ignoreNodeEventsUntilMs.store(NowMs() + 2000);
-                        if (bend >= targetBend) {
+                        // Animation-event backends expose only ten visible SOS
+                        // positions. Their visible soft angle can therefore be
+                        // reached one internal 0-20 step before `bend` equals
+                        // the target. Finish the handoff as soon as the angle
+                        // the player can actually see reaches the requested
+                        // position instead of holding CBPC for the remainder of
+                        // the easing curve.
+                        const int targetEventBend = std::clamp(static_cast<int>(std::lround(
+                            targetBend * 9.0 / 20.0)), 0, 9);
+                        const bool reachedVisibleTarget = useGraphEvents ?
+                            eventBend == targetEventBend : bend == targetBend;
+                        if (reachedVisibleTarget) {
                             erectionAnimating.store(false);
                             appliedBend.store(targetBend);
+                            if (relaxing) erectionRelaxing.store(false);
                             ++bendRepairs;
-                            Record(fmt::format("Gradual erection completed: {}/20", targetBend));
+                            Record(relaxing
+                                ? "Erection lowered gradually; normal soft physics resumed"
+                                : fmt::format("Gradual erection completed: {}/20", targetBend));
+                            if (relaxing) Evaluate(true);
                         }
                     });
                 }
@@ -1321,8 +1663,23 @@ void StartGradualErection(int targetBend, int durationMs) {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
     });
-    Record(fmt::format("Gradual erection started: 0 to {}/20 over {:.1f} seconds",
-        targetBend, durationMs / 1000.0F));
+    Record(relaxing
+        ? fmt::format("Erection is lowering gradually: {} to {}/20 over {:.1f} seconds",
+            startBend, targetBend, durationMs / 1000.0F)
+        : fmt::format("Gradual erection started: {} to {}/20 over {:.1f} seconds",
+            startBend, targetBend, durationMs / 1000.0F));
+}
+
+void StartGradualErection(int targetBend, int durationMs) {
+    StartBendAnimation(0, targetBend, durationMs, false);
+}
+
+void StartGradualRelaxation(const Settings& copy) {
+    const int startBend = appliedBend.load() >= 0 ? appliedBend.load() : copy.erectBend;
+    const int targetBend = copy.flaccidAngleControl && SosAeNativeLoaded() ? copy.flaccidBend : 0;
+    if (erectionAnimating.load() && erectionRelaxing.load() &&
+        erectionAnimationTargetBend.load() == targetBend) return;
+    StartBendAnimation(startBend, targetBend, copy.softeningDurationMs, true);
 }
 
 void ApplyRequestedBend(bool force = false, bool animate = false, bool automatic = false) {
@@ -1350,9 +1707,40 @@ void ApplyRequestedBend(bool force = false, bool animate = false, bool automatic
             ++bendRepairs;
             if (previous != desired)
                 Record(fmt::format("Erect vertical bend applied: {}/20", desired));
-        } else if (!automatic || !positionAutoSuspended.load()) {
+        } else if (!automatic) {
             Record("SPS-011: SOS bend API did not accept the position update", true);
         }
+    }
+}
+
+bool ClearResolvedPositionError() {
+    std::scoped_lock lock(activityLock);
+    if (lastError.starts_with("SPS-009:") || lastError.starts_with("SPS-011:")) {
+        lastError.clear();
+        return true;
+    }
+    return false;
+}
+
+void ApplyRequestedSoftBend(bool force = false, bool animate = false) {
+    if (!stateKnown.load() || usingCBPC.load()) return;
+    Settings copy;
+    { std::scoped_lock lock(settingsLock); copy = settings; }
+    if (!copy.positionControl || PPAOwnsPosition()) return;
+
+    // Only SOS AE exposes a safe native bend call that can be combined with
+    // SOSFlaccid. Legacy SOS and TNG still receive their normal flaccid event.
+    const bool customSoftAngle = copy.flaccidAngleControl && SosAeNativeLoaded();
+    const int desired = customSoftAngle ? copy.flaccidBend : 0;
+    requestedBend.store(desired);
+    if (!force && appliedBend.load() == desired) return;
+
+    if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+        const int previous = appliedBend.load();
+        const bool ok = ApplyBend(static_cast<RE::Actor*>(player), desired, true, animate, false);
+        if (lastBendMethod.load() < 0) return;
+        if (ok && customSoftAngle && previous != desired)
+            Record(fmt::format("Soft vertical bend applied: {}/20", desired));
     }
 }
 
@@ -1380,7 +1768,7 @@ void ConfirmSoftState() {
             smpOK ? "OK" : "no response", cbpcOK ? "OK" : "no response"), true);
         return;
     }
-    ApplyBend(actor, 0, true, true, false);
+    ApplyRequestedSoftBend(true, true);
     Record("Soft state confirmed after physics handoff");
 }
 
@@ -1416,11 +1804,11 @@ void RunLoadSMPReset() {
     }
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (!player) {
-        Record("SPS-014: Delayed SMP reset skipped because the player was unavailable", true);
+        Record("SPS-017: Delayed SMP reset skipped because the player was unavailable", true);
         return;
     }
     if (::GetModuleHandleW(L"hdtsmp64.dll") == nullptr) {
-        Record("SPS-014: Delayed SMP reset skipped because Faster HDT-SMP was not loaded", true);
+        Record("SPS-017: Delayed SMP reset skipped because Faster HDT-SMP was not loaded", true);
         return;
     }
 
@@ -1429,7 +1817,7 @@ void RunLoadSMPReset() {
     const bool dispatched = Call("DynamicHDT", "ResetPhysics",
         static_cast<RE::Actor*>(player), true);
     if (!dispatched) {
-        Record("SPS-014: Faster HDT-SMP did not accept the delayed player reset", true);
+        Record("SPS-017: Faster HDT-SMP did not accept the delayed player reset", true);
         return;
     }
 
@@ -1452,6 +1840,92 @@ void ScheduleLoadSMPReset() {
     }
     loadSMPResetDueMs.store(NowMs() + copy.loadResetDelayMs);
     Record(fmt::format("Player SMP reset scheduled in {:.1f} seconds", copy.loadResetDelayMs / 1000.0F));
+}
+
+void ScheduleSoftAngleRefresh(int delayMs) {
+    Settings copy;
+    { std::scoped_lock lock(settingsLock); copy = settings; }
+    softAngleRefreshRestoreDueMs.store(0);
+    if (!copy.enabled || !copy.positionControl || !SosAeNativeLoaded() ||
+        !stateKnown.load() || usingCBPC.load() || PPAOwnsPosition()) {
+        softAngleRefreshDueMs.store(0);
+        return;
+    }
+    softAngleRefreshDueMs.store(NowMs() + std::clamp(delayMs, 0, 2000));
+}
+
+void RunSoftAngleRefresh() {
+    if (!stateKnown.load() || usingCBPC.load() || PPAOwnsPosition()) return;
+    if (!PapyrusReadyForDispatch()) {
+        softAngleRefreshDueMs.store(NowMs() + 1000);
+        return;
+    }
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player || ::GetModuleHandleW(L"hdtsmp64.dll") == nullptr) return;
+
+    // FSMP keeps the old soft transform until its actor data is rebuilt. Apply
+    // the requested value first, rebuild only the player, then apply it once
+    // more after FSMP has settled.
+    ApplyRequestedSoftBend(true, true);
+    const bool dispatched = Call("DynamicHDT", "ResetPhysics",
+        static_cast<RE::Actor*>(player), true);
+    if (!dispatched) {
+        Record("SPS-018: Faster HDT-SMP did not accept the soft-angle refresh", true);
+        return;
+    }
+    softAngleRefreshRestoreDueMs.store(NowMs() + 750);
+    Record("Soft angle changed; refreshing the player's SMP pose");
+}
+
+bool RefreshSMPAfterPlayerMeshChange() {
+    if (!stateKnown.load() || usingCBPC.load() || PPAOwnsPosition()) return false;
+    if (!PapyrusReadyForDispatch()) {
+        nodeRefreshDueMs.store(NowMs() + 1000);
+        return false;
+    }
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player || ::GetModuleHandleW(L"hdtsmp64.dll") == nullptr) return false;
+
+    const auto now = NowMs();
+    ignoreNodeEventsUntilMs.store(now + 3000);
+    const bool dispatched = Call("DynamicHDT", "ResetPhysics",
+        static_cast<RE::Actor*>(player), true);
+    if (!dispatched) return false;
+
+    nodeSMPResetRestoreDueMs.store(now + 750);
+    Record("Player mesh changed; refreshing its SMP physics");
+    return true;
+}
+
+void RunSoftHandoffSMPReset() {
+    if (!stateKnown.load() || usingCBPC.load() || PPAOwnsPosition()) {
+        softHandoffResetDueMs.store(0);
+        softHandoffResetRestoreDueMs.store(0);
+        return;
+    }
+    if (!PapyrusReadyForDispatch()) {
+        softHandoffResetDueMs.store(NowMs() + 1000);
+        return;
+    }
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player || ::GetModuleHandleW(L"hdtsmp64.dll") == nullptr) return;
+
+    // TogglePhysics can report success while FSMP keeps the previous simulated
+    // shape. Rebuilding just the player after a real CBPC -> SMP handoff is the
+    // actor-scoped equivalent of the FSMP "SMP reset" button that repairs it.
+    const auto now = NowMs();
+    ignoreNodeEventsUntilMs.store(now + 3000);
+    const bool dispatched = Call("DynamicHDT", "ResetPhysics",
+        static_cast<RE::Actor*>(player), true);
+    if (!dispatched) {
+        softHandoffResetDueMs.store(now + 1000);
+        Record("SPS-019: Faster HDT-SMP did not accept the soft-handoff refresh; retry queued", true);
+        return;
+    }
+
+    softConfirmationDueMs.store(0);
+    softHandoffResetRestoreDueMs.store(now + 750);
+    Record("Soft physics handoff refreshed the player's SMP pose");
 }
 
 bool SetOwner(bool cbpc, bool force = false) {
@@ -1521,28 +1995,44 @@ bool SetOwner(bool cbpc, bool force = false) {
 
     usingCBPC.store(cbpc);
     stateKnown.store(true);
+    if (cbpc) {
+        softHandoffResetDueMs.store(0);
+        softHandoffResetRestoreDueMs.store(0);
+        softAngleRefreshDueMs.store(0);
+        softAngleRefreshRestoreDueMs.store(0);
+    }
     lastSwitchMs.store(now);
     ignoreNodeEventsUntilMs.store(now + 4000);
     retryAfterMs.store(0);
     ++switchSuccesses;
+    ResetPositionRecovery();
     appliedBend.store(-1);
-    softConfirmationDueMs.store(cbpc ? 0 : now + 750);
+    const bool realSoftHandoff = !cbpc && previousState == SPS::API::PhysicsState::CBPC;
+    if (realSoftHandoff) {
+        softConfirmationDueMs.store(0);
+        softHandoffResetRestoreDueMs.store(0);
+        softHandoffResetDueMs.store(now + 350);
+    } else {
+        softConfirmationDueMs.store(cbpc ? 0 : now + 750);
+    }
     cbpcConfirmationDueMs.store(cbpc ? now + 750 : 0);
     if (copy.positionControl) {
         if (cbpc) {
             requestedBend.store(DesiredBend(copy));
             bendSettleDueMs.store(now + copy.settleDelayMs);
-            bendConfirmationDueMs.store(copy.gradualErection ? 0 : now + copy.settleDelayMs + 1500);
+            const bool timedGradual = copy.gradualErection &&
+                (!copy.arousalBasedErection || RandomErectionActive());
+            bendConfirmationDueMs.store(timedGradual ? 0 : now + copy.settleDelayMs + 1500);
             if (copy.settleDelayMs == 0) {
-                if (copy.gradualErection && !SexLabHasPriority(copy) && !PPAOwnsPosition())
+                if (timedGradual && !AnySceneHasPriority(copy) && !PPAOwnsPosition())
                     StartGradualErection(DesiredBend(copy), copy.erectionDurationMs);
                 else
-                    ApplyRequestedBend(true, true, false);
+                    ApplyRequestedBend(true, true, true);
             }
         } else {
             bendSettleDueMs.store(0);
             bendConfirmationDueMs.store(0);
-            if (!PPAOwnsPosition()) ApplyBend(actor, 0, true, true, false);
+            if (!PPAOwnsPosition()) ApplyRequestedSoftBend(true, true);
         }
     }
     Record(fmt::format("Physics switched to {} ({})", cbpc ? "CBPC" : "SMP", cbpc ? "erect" : "soft"));
@@ -1558,13 +2048,27 @@ bool SexLabHasPriority(const Settings& copy) {
     return sexLabEndedMs.load() > 0 && NowMs() - sexLabEndedMs.load() < copy.sceneEndDelayMs;
 }
 
+bool OStimHasPriority(const Settings& copy) {
+    if (!copy.ostimOverride) return false;
+    if (ostimActive.load()) return true;
+    return ostimEndedMs.load() > 0 && NowMs() - ostimEndedMs.load() < copy.sceneEndDelayMs;
+}
+
+bool AnySceneHasPriority(const Settings& copy) {
+    return SexLabHasPriority(copy) || OStimHasPriority(copy);
+}
+
 bool NormalSettingsWantCBPC(const Settings& copy) {
     if (copy.mode == 1) return false;
     if (copy.mode == 2) return true;
+    if (RandomErectionActive()) return true;
     if (!arousalValid.load()) return stateKnown.load() ? usingCBPC.load() : false;
+    const float erectionPoint = copy.arousalBasedErection
+        ? std::min(copy.threshold, std::clamp(copy.erectionStartArousal, 0.0F, 99.0F))
+        : copy.threshold;
     if (usingCBPC.load())
-        return arousal.load() > copy.threshold - copy.hysteresis;
-    return arousal.load() >= copy.threshold;
+        return arousal.load() > erectionPoint - copy.hysteresis;
+    return arousal.load() >= erectionPoint;
 }
 
 bool SexLabSceneWantsCBPC(const Settings& copy) {
@@ -1598,6 +2102,24 @@ bool SexLabSceneWantsCBPC(const Settings& copy) {
         return usingCBPC.load();
     }
     if (recentPPAUpdate && ppaSceneRole.load() == 1) return bottomWantsCBPC();
+    if (copy.sexLabUnknownRole == 1) return false;
+    if (copy.sexLabUnknownRole == 2) return true;
+    return usingCBPC.load();
+}
+
+bool OStimSceneWantsCBPC(const Settings& copy) {
+    if (!copy.ostimRoleSwitching) return true;
+    if (!ostimActive.load()) return usingCBPC.load();
+    const auto bottomWantsCBPC = [&copy] {
+        if (copy.sexLabBottomBehavior == 1) return NormalSettingsWantCBPC(copy);
+        if (copy.sexLabBottomBehavior == 2) return false;
+        if (copy.sexLabBottomBehavior == 3) return true;
+        return ostimEntryStateValid.load() ? ostimEntryCBPC.load() : NormalSettingsWantCBPC(copy);
+    };
+    if (ostimRoleValid.load()) {
+        if (ostimRole.load() == 1) return bottomWantsCBPC();
+        if (ostimRole.load() == 2) return true;
+    }
     if (copy.sexLabUnknownRole == 1) return false;
     if (copy.sexLabUnknownRole == 2) return true;
     return usingCBPC.load();
@@ -1640,6 +2162,44 @@ void QuerySexLabRole() {
     }
 }
 
+void QueryOStimRole() {
+    if (!ostimActive.load() || !fs::exists("Data/Scripts/SPS_OStimBridge.pex")) {
+        ostimRoleValid.store(false);
+        ostimRoleQueryPending.store(false);
+        return;
+    }
+    const auto now = NowMs();
+    if (now < ostimRoleRetryAfterMs.load()) return;
+    if (ostimRoleQueryPending.load()) {
+        if (now - ostimRoleQueryStartedMs.load() < 3000) return;
+        ostimRoleGeneration.fetch_add(1);
+        ostimRoleQueryPending.store(false);
+        ostimRoleValid.store(false);
+        ostimRoleRetryAfterMs.store(now + 3000);
+        return;
+    }
+    if (!PapyrusReadyForDispatch()) {
+        ostimRoleRetryAfterMs.store(now + 1000);
+        return;
+    }
+    if (ostimRoleQueryPending.exchange(true)) return;
+    ostimRoleQueryStartedMs.store(now);
+    auto* vm = VM();
+    if (!vm) {
+        ostimRoleQueryPending.store(false);
+        return;
+    }
+    const auto generation = ostimRoleGeneration.load();
+    auto* args = RE::MakeFunctionArguments();
+    RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{ new OStimRoleCallback(generation) };
+    if (!vm->DispatchStaticCall("SPS_OStimBridge", "GetPlayerRole", args, callback)) {
+        ostimRoleQueryPending.store(false);
+        ostimRoleValid.store(false);
+        ostimConnected.store(false);
+        ostimRoleRetryAfterMs.store(now + 3000);
+    }
+}
+
 void Evaluate(bool force) {
     Settings copy;
     { std::scoped_lock lock(settingsLock); copy = settings; }
@@ -1649,15 +2209,50 @@ void Evaluate(bool force) {
     }
 
     if (const auto request = ActiveAPIRequest()) {
+        if (erectionRelaxing.load()) {
+            CancelErectionAnimation();
+            appliedBend.store(-1);
+        }
         SetOwner(request->state == SPS::API::PhysicsState::CBPC, force);
         return;
     }
 
     bool cbpc = usingCBPC.load();
-    if (SexLabHasPriority(copy)) {
+    bool normalControl = false;
+    if (OStimHasPriority(copy)) {
+        cbpc = OStimSceneWantsCBPC(copy);
+    } else if (SexLabHasPriority(copy)) {
         cbpc = SexLabSceneWantsCBPC(copy);
     } else {
+        normalControl = true;
         cbpc = NormalSettingsWantCBPC(copy);
+    }
+
+    // Scene integrations take priority over an everyday/spontaneous softening
+    // animation. Cancel it here, where the new owner is known, instead of in
+    // the random-erection scheduler. The old scheduler-side cancellation also
+    // stopped ordinary softening every poll when random erections were off,
+    // causing an endless restart at the last accepted bend (commonly 5/20).
+    if (!normalControl && erectionRelaxing.load()) {
+        CancelErectionAnimation();
+        appliedBend.store(-1);
+    }
+
+    if (normalControl && erectionRelaxing.load()) {
+        if (!cbpc) return;
+        CancelErectionAnimation();
+        appliedBend.store(-1);
+    }
+
+    // Lower the angle while CBPC still owns the bones, then return ownership
+    // to SMP. Handing the bones to SMP first makes the erection snap down.
+    if (normalControl && !cbpc && stateKnown.load() && usingCBPC.load() &&
+        !erectionRelaxing.load() && copy.gradualErection && copy.positionControl &&
+        (appliedBend.load() < 0 ||
+            appliedBend.load() > (copy.flaccidAngleControl && SosAeNativeLoaded() ? copy.flaccidBend : 0)) &&
+        !PPAOwnsPosition()) {
+        StartGradualRelaxation(copy);
+        return;
     }
     SetOwner(cbpc, force);
 }
@@ -1669,6 +2264,8 @@ void Tick() {
     if (copy.mode == 0) QueryArousal();
     if (copy.sexLabOverride) QuerySexLab();
     if (copy.sexLabOverride && copy.sexLabRoleSwitching && sexLabActive.load()) QuerySexLabRole();
+    if (copy.ostimOverride && copy.ostimRoleSwitching && ostimActive.load()) QueryOStimRole();
+    UpdateRandomErection(copy);
     Evaluate();
     CaptureState("poll");
 
@@ -1697,6 +2294,45 @@ void Tick() {
         Record("Physics state restored after the delayed SMP reset");
     }
 
+    auto softHandoffResetDue = softHandoffResetDueMs.load();
+    if (!usingCBPC.load() && softHandoffResetDue > 0 && now >= softHandoffResetDue &&
+        softHandoffResetDueMs.compare_exchange_strong(softHandoffResetDue, 0)) {
+        RunSoftHandoffSMPReset();
+    }
+
+    auto softHandoffRestoreDue = softHandoffResetRestoreDueMs.load();
+    if (!usingCBPC.load() && softHandoffRestoreDue > 0 && now >= softHandoffRestoreDue &&
+        softHandoffResetRestoreDueMs.compare_exchange_strong(softHandoffRestoreDue, 0)) {
+        appliedBend.store(-1);
+        Evaluate(true);
+        softConfirmationDueMs.store(now + 250);
+        Record("Soft physics restored after the handoff refresh");
+    }
+
+    auto softAngleDue = softAngleRefreshDueMs.load();
+    if (!usingCBPC.load() && softAngleDue > 0 && now >= softAngleDue &&
+        softAngleRefreshDueMs.compare_exchange_strong(softAngleDue, 0)) {
+        RunSoftAngleRefresh();
+    }
+
+    auto softAngleRestoreDue = softAngleRefreshRestoreDueMs.load();
+    if (!usingCBPC.load() && softAngleRestoreDue > 0 && now >= softAngleRestoreDue &&
+        softAngleRefreshRestoreDueMs.compare_exchange_strong(softAngleRestoreDue, 0)) {
+        appliedBend.store(-1);
+        ApplyRequestedSoftBend(true, true);
+        softConfirmationDueMs.store(now + 250);
+        Record("Soft angle restored after the SMP refresh");
+    }
+
+    auto nodeResetRestoreDue = nodeSMPResetRestoreDueMs.load();
+    if (!usingCBPC.load() && nodeResetRestoreDue > 0 && now >= nodeResetRestoreDue &&
+        nodeSMPResetRestoreDueMs.compare_exchange_strong(nodeResetRestoreDue, 0)) {
+        appliedBend.store(-1);
+        Evaluate(true);
+        softConfirmationDueMs.store(now + 250);
+        Record("Soft physics restored after the player mesh change");
+    }
+
     auto softDue = softConfirmationDueMs.load();
     if (!usingCBPC.load() && softDue > 0 && now >= softDue &&
         softConfirmationDueMs.compare_exchange_strong(softDue, 0)) {
@@ -1712,10 +2348,12 @@ void Tick() {
     bool settledNow = false;
     auto settleDue = bendSettleDueMs.load();
     if (usingCBPC.load() && settleDue > 0 && now >= settleDue && bendSettleDueMs.compare_exchange_strong(settleDue, 0)) {
-        if (copy.gradualErection && !SexLabHasPriority(copy) && !PPAOwnsPosition())
+        const bool timedGradual = copy.gradualErection &&
+            (!copy.arousalBasedErection || RandomErectionActive());
+        if (timedGradual && !AnySceneHasPriority(copy) && !PPAOwnsPosition())
             StartGradualErection(DesiredBend(copy), copy.erectionDurationMs);
         else
-            ApplyRequestedBend(true, true, false);
+            ApplyRequestedBend(true, true, true);
         settledNow = true;
     }
 
@@ -1725,13 +2363,15 @@ void Tick() {
     auto confirmDue = bendConfirmationDueMs.load();
     if (usingCBPC.load() && confirmDue > 0 && now >= confirmDue &&
         bendConfirmationDueMs.compare_exchange_strong(confirmDue, 0)) {
-        ApplyRequestedBend(true, false, false);
+        ApplyRequestedBend(true, false, true);
     }
 
     if (!settledNow && usingCBPC.load() && copy.positionControl) {
         const int desired = DesiredBend(copy);
-        if (appliedBend.load() != desired && bendSettleDueMs.load() == 0)
-            ApplyRequestedBend(true, copy.animatePosition, false);
+        const auto retryDue = bendRetryDueMs.load();
+        if (appliedBend.load() != desired && bendSettleDueMs.load() == 0 &&
+            (retryDue == 0 || now >= retryDue))
+            ApplyRequestedBend(true, copy.animatePosition, true);
     }
 
     auto nodeDue = nodeRefreshDueMs.load();
@@ -1739,16 +2379,35 @@ void Tick() {
         // A real later rebuild may discard the bend, but it does not justify a
         // state decision. Re-confirm the existing owner once, then restore only
         // the position data that the rebuilt skeleton may have discarded.
-        if (stateKnown.load()) ConfirmCurrentPhysicsOwner("a player skeleton rebuild");
+        if (stateKnown.load() && !usingCBPC.load() && RefreshSMPAfterPlayerMeshChange()) {
+            // The player-only reset restores the owner and angle after FSMP
+            // finishes rebuilding the newly equipped schlong mesh.
+        } else if (stateKnown.load()) {
+            ConfirmCurrentPhysicsOwner("a player skeleton rebuild");
+        }
         if (stateKnown.load() && usingCBPC.load() && copy.positionControl) {
             CancelErectionAnimation();
             appliedBend.store(-1);
             bendSettleDueMs.store(now + copy.settleDelayMs);
             bendConfirmationDueMs.store(now + copy.settleDelayMs + 1500);
             Record("Player skeleton changed; erect position queued for one repair");
-        } else if (stateKnown.load() && !usingCBPC.load()) {
+        } else if (stateKnown.load() && !usingCBPC.load() && nodeSMPResetRestoreDueMs.load() == 0) {
             softConfirmationDueMs.store(now + 750);
         }
+        nodeRefreshFollowupDueMs.store(now + 1500);
+    }
+
+    auto nodeFollowupDue = nodeRefreshFollowupDueMs.load();
+    if (nodeFollowupDue > 0 && now >= nodeFollowupDue &&
+        nodeRefreshFollowupDueMs.compare_exchange_strong(nodeFollowupDue, 0)) {
+        // Some armour managers rebuild the genital node twice. This quiet
+        // second confirmation catches the late rebuild without another reset.
+        ConfirmCurrentPhysicsOwner("the completed equipment change");
+        appliedBend.store(-1);
+        if (stateKnown.load() && usingCBPC.load() && copy.positionControl)
+            ApplyRequestedBend(true, false, true);
+        else if (stateKnown.load() && !usingCBPC.load())
+            ApplyRequestedSoftBend(true, false);
     }
 }
 
@@ -1805,6 +2464,8 @@ void RefreshDiagnostics() {
     result.sexLabModuleLoaded = ::GetModuleHandleW(L"SexLabUtil.dll") != nullptr;
     result.sexLabPluginLoaded = PluginLoaded({ "SexLab.esm" });
     result.sexLabRoleBridgePresent = fs::exists("Data/Scripts/SPS_SexLabBridge.pex");
+    result.ostimPluginLoaded = PluginLoaded({ "OStim.esp" }) || ::GetModuleHandleW(L"OStim.dll") != nullptr;
+    result.ostimRoleBridgePresent = fs::exists("Data/Scripts/SPS_OStimBridge.pex");
     result.oslPluginLoaded = PluginLoaded({ "OSLAroused.esp", "OAroused.esp", "SexLabAroused.esm" });
     result.tngPluginLoaded = TngLoaded();
     result.supportedAddonLoaded = PluginLoaded({
@@ -1812,7 +2473,7 @@ void RefreshDiagnostics() {
         "SOS - Dw3BA - Futanari Addon.esp", "TheNewGentleman.esp"
     });
     result.sosPluginLoaded = LegacySosLoaded();
-    result.sosScriptPresent = fs::exists("Data/Scripts/SOSAE_SKSE.pex");
+    result.sosPhysicsManagerLoaded = PluginLoaded({ "SOSPhysicsManager.esp" });
     result.physicsEditorLoaded = ::GetModuleHandleW(L"PhysicsEditor.dll") != nullptr;
     result.autoPhysicsResetLoaded = ::GetModuleHandleW(L"AutoSMPReset.dll") != nullptr ||
         ::GetModuleHandleW(L"AutoPhysicsReset.dll") != nullptr ||
@@ -1893,23 +2554,58 @@ void UseRecommendedSettings(Settings& value) {
     value.sexLabBottomBehavior = 0;
     value.sexLabUnknownRole = 0;
     value.sceneEndDelayMs = 1500;
+    value.ostimOverride = true;
+    value.ostimRoleSwitching = true;
     value.positionControl = true;
+    value.flaccidAngleControl = false;
+    value.flaccidBend = 0;
     value.bendMethod = 2;
     value.animatePosition = true;
     value.gradualErection = true;
+    value.arousalBasedErection = false;
+    value.erectionStartArousal = 20.0F;
     value.erectionDurationMs = 3000;
+    value.softeningDurationMs = 5000;
+    value.randomErections = false;
+    value.randomErectionMinMinutes = 15;
+    value.randomErectionMaxMinutes = 45;
+    value.randomErectionDurationSeconds = 60;
+    value.randomErectionSafeMoments = true;
+    value.spontaneousRefractory = true;
+    value.refractoryMinutes = 5;
+    value.morningErections = false;
+    value.morningErectionDurationSeconds = 90;
+    value.equipmentChangeRecovery = true;
     value.bounceGuard = true;
     value.settleDelayMs = 350;
     value.maxBendFailures = 3;
 }
 
 void SaveSettingsAndApply(const Settings& copy, const Settings& previous) {
-    const bool positionChanged = copy.erectBend != previous.erectBend ||
+    const bool softPositionChanged = copy.flaccidAngleControl != previous.flaccidAngleControl ||
+        copy.flaccidBend != previous.flaccidBend;
+    const bool positionChanged = copy.erectBend != previous.erectBend || softPositionChanged ||
         copy.sexLabBend != previous.sexLabBend || copy.useSexLabBend != previous.useSexLabBend ||
         copy.positionControl != previous.positionControl || copy.bendMethod != previous.bendMethod ||
         copy.animatePosition != previous.animatePosition || copy.gradualErection != previous.gradualErection ||
-        copy.erectionDurationMs != previous.erectionDurationMs;
+        copy.arousalBasedErection != previous.arousalBasedErection ||
+        copy.erectionStartArousal != previous.erectionStartArousal ||
+        copy.threshold != previous.threshold || copy.erectionDurationMs != previous.erectionDurationMs ||
+        copy.softeningDurationMs != previous.softeningDurationMs;
+    const bool randomSettingsChanged = copy.randomErections != previous.randomErections ||
+        copy.randomErectionMinMinutes != previous.randomErectionMinMinutes ||
+        copy.randomErectionMaxMinutes != previous.randomErectionMaxMinutes ||
+        copy.randomErectionDurationSeconds != previous.randomErectionDurationSeconds ||
+        copy.randomErectionSafeMoments != previous.randomErectionSafeMoments ||
+        copy.spontaneousRefractory != previous.spontaneousRefractory ||
+        copy.refractoryMinutes != previous.refractoryMinutes ||
+        copy.morningErections != previous.morningErections ||
+        copy.morningErectionDurationSeconds != previous.morningErectionDurationSeconds;
     { std::scoped_lock lock(settingsLock); settings = copy; }
+    if (!copy.equipmentChangeRecovery) {
+        nodeRefreshDueMs.store(0);
+        nodeRefreshFollowupDueMs.store(0);
+    }
     if (previous.enabled && !copy.enabled) {
         ClearAPIRequests();
         externalOwnerRepairDueMs.store(0);
@@ -1923,9 +2619,24 @@ void SaveSettingsAndApply(const Settings& copy, const Settings& previous) {
         if (stateKnown.load() && usingCBPC.load())
             bendConfirmationDueMs.store(NowMs() + 1000);
     }
+    if (randomSettingsChanged) {
+        CancelErectionAnimation();
+        randomErectionNextMs.store(0);
+        randomErectionUntilMs.store(0);
+        randomErectionManualTest.store(false);
+        erectionRelaxing.store(false);
+        spontaneousRefractoryUntilMs.store(0);
+        morningErectionDueMs.store(0);
+        morningErectionActive.store(false);
+    }
     if (auto* tasks = SKSE::GetTaskInterface()) {
-        tasks->AddTask([positionChanged, enabled = copy.enabled, positionEnabled = copy.positionControl] {
-            if (positionChanged && positionEnabled) ApplyRequestedBend(true, true, false);
+        tasks->AddTask([positionChanged, softPositionChanged,
+            enabled = copy.enabled, positionEnabled = copy.positionControl] {
+            if (positionChanged && positionEnabled) {
+                if (stateKnown.load() && usingCBPC.load()) ApplyRequestedBend(true, true, false);
+                else if (stateKnown.load() && softPositionChanged) ScheduleSoftAngleRefresh();
+                else if (stateKnown.load()) ApplyRequestedSoftBend(true, true);
+            }
             if (enabled) Evaluate();
             else SetOwner(false, true);
         });
@@ -1944,14 +2655,16 @@ void __stdcall RenderMain() {
     const bool coreReady = d.menuFrameworkLoaded && d.oslModuleLoaded && d.oslPluginLoaded &&
         d.fsmpModuleLoaded && d.cbpcModuleLoaded && d.playerBonesFound == 6 &&
         d.compatibleXmlFiles > 0 && d.compatibleCbpcMaps > 0 && d.compatibleCbpcParameters > 0 &&
-        !d.physicsEditorLoaded;
+        !d.sosPhysicsManagerLoaded;
 
     ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "RIGHT NOW");
     StatusLine("SPS", !healthChecked ? "Checking your setup..." : (coreReady ? (stateKnown.load() ? "Ready" : "Waiting for the player") : "Needs attention"), !healthChecked || !stateKnown.load() ? 1 : (coreReady ? 2 : 0));
     const auto arousalText = arousalValid.load() ? fmt::format("Current arousal: {:.0f} / 100", arousal.load()) : "Waiting for your arousal mod";
     ImGuiMCP::ProgressBar(arousalValid.load() ? arousal.load() / 100.0F : 0.0F, ImGuiMCP::ImVec2(-1.0F, 0.0F), arousalText.c_str());
     StatusLine("Current state", stateKnown.load() ? (usingCBPC.load() ? "Erect - CBPC" : "Soft - SMP") : "Not decided yet", stateKnown.load() ? 2 : 1);
-    if (sexLabActive.load())
+    if (ostimActive.load())
+        StatusLine("Current OStim role", ostimRoleValid.load() ? OStimRoleName(ostimRole.load()) : "Checking...", ostimRoleValid.load() ? 2 : 1);
+    else if (sexLabActive.load())
         StatusLine("Current scene role", sexLabRoleValid.load() ? SexLabRoleName(sexLabRole.load()) : "Checking...", sexLabRoleValid.load() ? 2 : 1);
     if (healthChecked && !coreReady)
         ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F), "Open Help and reports to see what needs attention.");
@@ -1963,40 +2676,175 @@ void __stdcall RenderMain() {
     changed |= ImGuiMCP::Combo("What should SPS do?", &copy.mode, modes, 3);
 
     ImGuiMCP::BeginDisabled(copy.mode != 0);
-    changed |= ImGuiMCP::SliderFloat("Arousal needed to become erect", &copy.threshold, 0, 100, "%.0f");
+    if (ImGuiMCP::SliderFloat(copy.arousalBasedErection ?
+        "Arousal needed to become fully erect" : "Arousal needed to become erect",
+        &copy.threshold, 0, 100, "%.0f")) {
+        if (copy.arousalBasedErection && copy.threshold <= copy.erectionStartArousal)
+            copy.erectionStartArousal = std::max(0.0F, copy.threshold - 1.0F);
+        changed = true;
+    }
     ImGuiMCP::EndDisabled();
-    if (copy.mode == 0)
-        ImGuiMCP::TextWrapped("Becomes erect at %.0f arousal. Returns to soft below %.0f.", copy.threshold, std::max(0.0F, copy.threshold - copy.hysteresis));
+    if (copy.mode == 0) {
+        if (copy.arousalBasedErection)
+            ImGuiMCP::TextWrapped("Starts rising at %.0f arousal and is fully erect at %.0f.",
+                copy.erectionStartArousal, copy.threshold);
+        else
+            ImGuiMCP::TextWrapped("Becomes erect at %.0f arousal. Returns to soft below %.0f.",
+                copy.threshold, std::max(0.0F, copy.threshold - copy.hysteresis));
+    }
+    ImGuiMCP::TextWrapped("Angles, gradual rising and random erections are on the Looks and erections page.");
+
+    ImGuiMCP::Separator();
+    if (ImGuiMCP::Button("Check now"))
+        if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { QueryArousal(); QuerySexLab(); QuerySexLabRole(); QueryOStimRole(); Evaluate(); });
+    ImGuiMCP::SameLine();
+    if (ImGuiMCP::Button("Reset to recommended settings")) { UseRecommendedSettings(copy); changed = true; }
+    if (changed) SaveSettingsAndApply(copy, previous);
+}
+
+void __stdcall RenderLooks() {
+    Settings copy;
+    { std::scoped_lock lock(settingsLock); copy = settings; }
+    const Settings previous = copy;
+    bool changed = false;
+
+    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "LOOKS AND ERECTIONS");
+    ImGuiMCP::TextWrapped("Choose the soft and erect positions, then decide how erections happen outside scenes.");
+
+    ImGuiMCP::Separator();
+    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "SOFT LOOK");
+    const bool softAngleAvailable = SosAeNativeLoaded();
+    ImGuiMCP::BeginDisabled(!copy.positionControl || !softAngleAvailable);
+    changed |= ImGuiMCP::Checkbox("Use a custom soft angle", &copy.flaccidAngleControl);
+    ImGuiMCP::BeginDisabled(!copy.flaccidAngleControl);
+    changed |= ImGuiMCP::SliderInt("Soft angle", &copy.flaccidBend, 0, 20);
+    ImGuiMCP::EndDisabled();
+    ImGuiMCP::EndDisabled();
+    if (softAngleAvailable)
+        ImGuiMCP::TextWrapped("0 hangs at the normal resting angle. SPS refreshes SMP automatically after you stop moving the slider.");
+    else
+        ImGuiMCP::TextWrapped("Custom soft angles need SOS AE-NG. Legacy SOS and TNG keep their normal floppy pose.");
+    ImGuiMCP::BeginDisabled(!copy.positionControl || !copy.flaccidAngleControl ||
+        !softAngleAvailable || !stateKnown.load() || usingCBPC.load());
+    if (ImGuiMCP::Button("Refresh soft angle now")) {
+        ResetPositionRecovery();
+        appliedBend.store(-1);
+        if (auto* tasks = SKSE::GetTaskInterface())
+            tasks->AddTask([] { ScheduleSoftAngleRefresh(0); });
+    }
+    ImGuiMCP::EndDisabled();
 
     ImGuiMCP::Separator();
     ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "ERECT LOOK");
     ImGuiMCP::BeginDisabled(!copy.positionControl);
-    changed |= ImGuiMCP::SliderInt("How high when erect", &copy.erectBend, 0, 20);
+    changed |= ImGuiMCP::SliderInt("Erect angle", &copy.erectBend, 0, 20);
     ImGuiMCP::EndDisabled();
-    ImGuiMCP::TextWrapped("0 is straight out. 20 is the highest position.");
-    if (!copy.positionControl)
-        ImGuiMCP::TextWrapped("Angle control is turned off on the Fine tuning page.");
-    changed |= ImGuiMCP::Checkbox("Raise gradually instead of popping up", &copy.gradualErection);
-    ImGuiMCP::BeginDisabled(!copy.gradualErection);
-    float erectionSeconds = copy.erectionDurationMs / 1000.0F;
-    if (ImGuiMCP::SliderFloat("Time to fully raise", &erectionSeconds, 0.5F, 10.0F, "%.1f seconds")) {
-        copy.erectionDurationMs = static_cast<int>(std::lround(erectionSeconds * 1000.0F));
-        changed = true;
-    }
-    ImGuiMCP::EndDisabled();
+    ImGuiMCP::TextWrapped("0 points straight out. 20 is the highest position.");
     ImGuiMCP::BeginDisabled(!copy.positionControl || !stateKnown.load() || !usingCBPC.load());
-    if (ImGuiMCP::Button("Apply this angle now")) {
+    if (ImGuiMCP::Button("Apply erect angle now")) {
         ResetPositionRecovery();
         appliedBend.store(-1);
-        if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { ApplyRequestedBend(true, true, false); });
+        if (auto* tasks = SKSE::GetTaskInterface())
+            tasks->AddTask([] { ApplyRequestedBend(true, true, false); });
     }
     ImGuiMCP::EndDisabled();
 
     ImGuiMCP::Separator();
-    if (ImGuiMCP::Button("Check now"))
-        if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { QueryArousal(); QuerySexLab(); QuerySexLabRole(); Evaluate(); });
-    ImGuiMCP::SameLine();
-    if (ImGuiMCP::Button("Reset to recommended settings")) { UseRecommendedSettings(copy); changed = true; }
+    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "HOW IT GETS ERECT");
+    ImGuiMCP::BeginDisabled(copy.mode != 0);
+    const bool arousalRiseChanged = ImGuiMCP::Checkbox(
+        "Rise gradually as arousal increases", &copy.arousalBasedErection);
+    changed |= arousalRiseChanged;
+    ImGuiMCP::BeginDisabled(!copy.arousalBasedErection);
+    if (ImGuiMCP::SliderFloat("Arousal where rising starts", &copy.erectionStartArousal,
+        0.0F, 99.0F, "%.0f")) {
+        if (copy.erectionStartArousal >= copy.threshold)
+            copy.threshold = std::min(100.0F, copy.erectionStartArousal + 1.0F);
+        changed = true;
+    }
+    ImGuiMCP::EndDisabled();
+    ImGuiMCP::EndDisabled();
+    if (copy.arousalBasedErection)
+        ImGuiMCP::TextWrapped("The angle follows arousal from %.0f to %.0f instead of jumping straight to fully erect.",
+            copy.erectionStartArousal, copy.threshold);
+
+    changed |= ImGuiMCP::Checkbox("Use a smooth timed rise when switching", &copy.gradualErection);
+    ImGuiMCP::BeginDisabled(!copy.gradualErection);
+    float erectionSeconds = copy.erectionDurationMs / 1000.0F;
+    if (ImGuiMCP::SliderFloat("Timed rise length", &erectionSeconds, 0.5F, 10.0F, "%.1f seconds")) {
+        copy.erectionDurationMs = static_cast<int>(std::lround(erectionSeconds * 1000.0F));
+        changed = true;
+    }
+    float softeningSeconds = copy.softeningDurationMs / 1000.0F;
+    if (ImGuiMCP::SliderFloat("Time to soften again", &softeningSeconds, 0.5F, 15.0F, "%.1f seconds")) {
+        copy.softeningDurationMs = static_cast<int>(std::lround(softeningSeconds * 1000.0F));
+        changed = true;
+    }
+    ImGuiMCP::EndDisabled();
+    if (copy.arousalBasedErection)
+        ImGuiMCP::TextWrapped("The timed rise is still used for random erections. Normal arousal changes follow the live arousal value.");
+    ImGuiMCP::TextWrapped("Erect physics keeps a small amount of natural movement while staying stable. Soft physics supplies the looser sway and follow-through.");
+
+    ImGuiMCP::Separator();
+    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "RANDOM ERECTIONS");
+    ImGuiMCP::BeginDisabled(copy.mode != 0);
+    changed |= ImGuiMCP::Checkbox("Allow random erections", &copy.randomErections);
+    ImGuiMCP::BeginDisabled(!copy.randomErections);
+    if (ImGuiMCP::SliderInt("Shortest random interval (minutes)",
+        &copy.randomErectionMinMinutes, 1, 120)) {
+        copy.randomErectionMaxMinutes = std::max(copy.randomErectionMinMinutes,
+            copy.randomErectionMaxMinutes);
+        changed = true;
+    }
+    if (ImGuiMCP::SliderInt("Longest random interval (minutes)",
+        &copy.randomErectionMaxMinutes, 1, 240)) {
+        copy.randomErectionMinMinutes = std::min(copy.randomErectionMinMinutes,
+            copy.randomErectionMaxMinutes);
+        changed = true;
+    }
+    changed |= ImGuiMCP::SliderInt("How long it lasts (seconds)",
+        &copy.randomErectionDurationSeconds, 5, 600);
+    changed |= ImGuiMCP::Checkbox("Only trigger during normal gameplay",
+        &copy.randomErectionSafeMoments);
+    ImGuiMCP::EndDisabled();
+    ImGuiMCP::EndDisabled();
+    ImGuiMCP::TextWrapped("SPS chooses a new random time between the two limits after every erection. The normal-gameplay option waits during combat, dialogue, loading, paused menus and similar interruptions.");
+
+    ImGuiMCP::Separator();
+    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "NATURAL EXTRAS");
+    ImGuiMCP::BeginDisabled(copy.mode != 0);
+    changed |= ImGuiMCP::Checkbox("Use a recovery break after spontaneous erections",
+        &copy.spontaneousRefractory);
+    ImGuiMCP::BeginDisabled(!copy.spontaneousRefractory);
+    changed |= ImGuiMCP::SliderInt("Recovery time (minutes)", &copy.refractoryMinutes, 1, 60);
+    ImGuiMCP::EndDisabled();
+    changed |= ImGuiMCP::Checkbox("Allow morning erections after resting", &copy.morningErections);
+    ImGuiMCP::BeginDisabled(!copy.morningErections);
+    changed |= ImGuiMCP::SliderInt("Morning erection length (seconds)",
+        &copy.morningErectionDurationSeconds, 10, 600);
+    ImGuiMCP::EndDisabled();
+    ImGuiMCP::EndDisabled();
+    ImGuiMCP::TextWrapped("Morning erections can happen after sleeping or waiting for at least three in-game hours. Recovery time prevents spontaneous erections from happening back to back.");
+    if (RandomErectionActive())
+        StatusLine("Spontaneous erection", morningErectionActive.load() ? "Morning erection active" : "Active", 2);
+    else if (copy.randomErections)
+        StatusLine("Spontaneous erection", "Waiting for a random interval", 1);
+
+    const bool randomTestBlocked = !copy.randomErections || copy.mode != 0 ||
+        AnySceneHasPriority(copy) || ActiveAPIRequest().has_value() || usingCBPC.load();
+    ImGuiMCP::BeginDisabled(randomTestBlocked);
+    if (ImGuiMCP::Button("Test a random erection now")) {
+        randomErectionNextMs.store(0);
+        randomErectionUntilMs.store(NowMs() +
+            static_cast<std::int64_t>(copy.randomErectionDurationSeconds) * 1000);
+        randomErectionManualTest.store(true);
+        if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { Evaluate(true); });
+        Record("Random erection test started");
+    }
+    ImGuiMCP::EndDisabled();
+
+    if (!copy.positionControl)
+        ImGuiMCP::TextWrapped("Angle control is off on the Fine tuning page. Physics switching will still work.");
     if (changed) SaveSettingsAndApply(copy, previous);
 }
 
@@ -2009,19 +2857,31 @@ void __stdcall RenderScenes() {
     Diagnostics d;
     { std::scoped_lock lock(diagnosticsLock); d = diagnostics; }
     const bool sexLabLoaded = d.sexLabModuleLoaded && d.sexLabPluginLoaded;
+    const bool ostimLoaded = d.ostimPluginLoaded;
     const bool ppaLoaded = ::GetModuleHandleW(L"AccuratePenetration.dll") != nullptr;
 
     ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "SCENE STATUS");
     StatusLine("SexLab P+", sexLabLoaded ? (sexLabConnected.load() ? "Ready" : "Loading...") : "Not installed (optional)", sexLabLoaded ? (sexLabConnected.load() ? 2 : 1) : 1);
-    StatusLine("Player scene", sexLabActive.load() ? (sexLabRoleValid.load() ? SexLabRoleName(sexLabRole.load()) : "Running - checking role") : "Not running", sexLabActive.load() ? (sexLabRoleValid.load() ? 2 : 1) : 2);
+    StatusLine("OStim Standalone", ostimLoaded ? (d.ostimRoleBridgePresent ? "Ready (experimental)" : "Bridge not installed") : "Not installed (optional)", ostimLoaded ? (d.ostimRoleBridgePresent ? 2 : 0) : 1);
+    if (ostimActive.load())
+        StatusLine("Player scene", ostimRoleValid.load() ? OStimRoleName(ostimRole.load()) : "OStim running - checking role", ostimRoleValid.load() ? 2 : 1);
+    else
+        StatusLine("Player scene", sexLabActive.load() ? (sexLabRoleValid.load() ? SexLabRoleName(sexLabRole.load()) : "SexLab running - checking role") : "Not running", sexLabActive.load() ? (sexLabRoleValid.load() ? 2 : 1) : 2);
     StatusLine("PPA", ppaLoaded ? (PPAOwnsPosition() ? "Controlling the scene angle" : "Ready") : "Not installed (optional)", ppaLoaded ? 2 : 1);
 
     ImGuiMCP::Separator();
     ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "HOW SPS HANDLES SCENES");
-    changed |= ImGuiMCP::Checkbox("Let SPS manage physics during player scenes", &copy.sexLabOverride);
+    changed |= ImGuiMCP::Checkbox("Manage SexLab P+ scenes", &copy.sexLabOverride);
+    changed |= ImGuiMCP::Checkbox("Manage OStim Standalone scenes (experimental)", &copy.ostimOverride);
     ImGuiMCP::BeginDisabled(!copy.sexLabOverride);
-    changed |= ImGuiMCP::Checkbox("Use the player's role in the scene", &copy.sexLabRoleSwitching);
-    ImGuiMCP::BeginDisabled(!copy.sexLabRoleSwitching);
+    changed |= ImGuiMCP::Checkbox("Use the player's SexLab role", &copy.sexLabRoleSwitching);
+    ImGuiMCP::EndDisabled();
+    ImGuiMCP::BeginDisabled(!copy.ostimOverride);
+    changed |= ImGuiMCP::Checkbox("Use the player's OStim role", &copy.ostimRoleSwitching);
+    ImGuiMCP::EndDisabled();
+    const bool anyRoleSwitching = (copy.sexLabOverride && copy.sexLabRoleSwitching) ||
+        (copy.ostimOverride && copy.ostimRoleSwitching);
+    ImGuiMCP::BeginDisabled(!anyRoleSwitching);
     const char* bottomBehaviors[]{
         "Keep whatever state I had (recommended)",
         "Follow live arousal",
@@ -2030,13 +2890,14 @@ void __stdcall RenderScenes() {
     };
     changed |= ImGuiMCP::Combo("When receiving / bottom", &copy.sexLabBottomBehavior, bottomBehaviors, 4);
     ImGuiMCP::EndDisabled();
+    ImGuiMCP::BeginDisabled(!copy.sexLabOverride && !copy.ostimOverride);
     float returnDelaySeconds = copy.sceneEndDelayMs / 1000.0F;
     if (ImGuiMCP::SliderFloat("Wait before returning to normal", &returnDelaySeconds, 0.0F, 10.0F, "%.1f seconds")) {
         copy.sceneEndDelayMs = static_cast<int>(std::lround(returnDelaySeconds * 1000.0F));
         changed = true;
     }
     ImGuiMCP::EndDisabled();
-    ImGuiMCP::TextWrapped("Recommended: receiving keeps the state from just before the scene. Penetrating uses CBPC.");
+    ImGuiMCP::TextWrapped("Recommended: receiving keeps the state from just before the scene. Penetrating uses CBPC. OStim support is optional and experimental.");
 
     ImGuiMCP::Separator();
     ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "SCENE ANGLE");
@@ -2078,6 +2939,9 @@ void __stdcall RenderAdvanced() {
     }
     ImGuiMCP::EndDisabled();
     ImGuiMCP::TextWrapped("SPS resets the player's SMP once, then restores the correct soft or erect state.");
+    changed |= ImGuiMCP::Checkbox("Repair physics after changing armour or schlong",
+        &copy.equipmentChangeRecovery);
+    ImGuiMCP::TextWrapped("Recommended. SPS quietly checks the player again after an outfit or schlong swap so physics and the chosen angle do not get left behind.");
 
     if (ImGuiMCP::CollapsingHeader("Arousal switching timing")) {
         changed |= ImGuiMCP::SliderFloat("Soft return gap", &copy.hysteresis, 0, 25, "%.0f arousal");
@@ -2145,25 +3009,26 @@ std::string BuildReport() {
     return fmt::format(
         "Schlong Physics Swapper {} diagnostics\n"
         "SkyrimRuntime={} SKSE={}\n"
-        "DLLs: MenuFramework={} OSL={} SLO={} FSMP={} CBPC={} SexLab={} SOS={}\n"
-        "Compatibility: TNG={} PositionBackend={} ClassicSexLabAroused={} SexLabRoleBridge={} PPA={} PhysicsEditor={} AutoPhysicsReset={} CrashLogger={}\n"
-        "Engine={} StateKnown={} Arousal={:.1f} Provider={} ProviderConnected={} SexLabActive={} SexLabConnected={} SexLabRole={} RoleValid={}\n"
+        "DLLs: MenuFramework={} OSL={} SLO={} FSMP={} CBPC={} SexLab={} OStim={} SOS={}\n"
+        "Compatibility: TNG={} PositionBackend={} ClassicSexLabAroused={} SexLabRoleBridge={} OStimRoleBridge={} PPA={} PhysicsEditor={} SOSPhysicsManager={} AutoPhysicsReset={} CrashLogger={}\n"
+        "Engine={} StateKnown={} Arousal={:.1f} Provider={} ProviderConnected={} SexLabActive={} SexLabConnected={} SexLabRole={} SexLabRoleValid={} OStimActive={} OStimConnected={} OStimRole={} OStimRoleValid={}\n"
         "CompatibilityAPI=V{} ActiveRequests={} ActiveRequester={} Accepted={} Released={} ResetNotices={} OwnerRepairs={} LastOwnerRepairMs={}\n"
         "MenuFramework={} ArousalProvider={} FSMP={} CBPC={} SexLabPPlus={} PositionBackendReady={} SupportedAddon={}\n"
         "PlayerBones={}/6 XML={}/{} [{}]\nCBPCMap={}/{} [{}]\nCBPCParameters={}/{} [{}]\n"
         "SwitchSuccesses={} SwitchFailures={} BendApplies={} LoadSMPResets={} LastLoadSMPResetMs={} LastAction={} LastError={}\n"
         "Position: Enabled={} Requested={} Applied={} LastMethod={} LastSucceeded={} AutoSuspended={} GuardRemainingMs={}\n"
-        "Settings: Enabled={} Mode={} Threshold={:.0f} Hysteresis={:.0f} Bend={} PollMs={} SexLabOverride={} SexLabRoleSwitching={} BottomBehavior={} UnknownRole={} EndDelayMs={} CooldownMs={} ResetSMPAfterLoad={} LoadResetDelayMs={} BendMethod={} Animate={} Gradual={} ErectionMs={} BounceGuard={} SettleMs={} SeparateSexLabBend={} SexLabBend={} MaxFailures={} PPA={} VerboseLogging={}\n"
+        "Settings: Enabled={} Mode={} Threshold={:.0f} Hysteresis={:.0f} ErectBend={} SoftAngle={} SoftBend={} PollMs={} SexLabOverride={} SexLabRoleSwitching={} OStimOverride={} OStimRoleSwitching={} BottomBehavior={} UnknownRole={} EndDelayMs={} CooldownMs={} ResetSMPAfterLoad={} LoadResetDelayMs={} EquipmentRecovery={} BendMethod={} Animate={} Gradual={} ArousalBased={} ErectionStart={:.0f} ErectionMs={} SofteningMs={} RandomErections={} RandomMinMinutes={} RandomMaxMinutes={} RandomDurationSeconds={} RandomSafeMoments={} Refractory={} RefractoryMinutes={} MorningErections={} MorningDurationSeconds={} BounceGuard={} SettleMs={} SeparateSexLabBend={} SexLabBend={} MaxFailures={} PPA={} VerboseLogging={}\n"
         "\nSuggested fixes\n{}",
         kVersion, runtimeVersion, skseVersion,
         LoadedDllVersion(L"SKSEMenuFramework.dll"), LoadedDllVersion(L"OSLAroused.dll"),
         LoadedDllVersion(L"SexlabArousedNG.dll"),
         LoadedDllVersion(L"hdtsmp64.dll"), LoadedDllVersion(L"cbp.dll"),
-        LoadedDllVersion(L"SexLabUtil.dll"), SosAeNativeModuleName() ? LoadedDllVersion(SosAeNativeModuleName()) : "not loaded",
-        d.tngPluginLoaded, PositionBackendName(), d.classicArousedPluginLoaded, d.sexLabRoleBridgePresent,
-        ::GetModuleHandleW(L"AccuratePenetration.dll") != nullptr, d.physicsEditorLoaded,
+        LoadedDllVersion(L"SexLabUtil.dll"), LoadedDllVersion(L"OStim.dll"), SosAeNativeModuleName() ? LoadedDllVersion(SosAeNativeModuleName()) : "not loaded",
+        d.tngPluginLoaded, PositionBackendName(), d.classicArousedPluginLoaded, d.sexLabRoleBridgePresent, d.ostimRoleBridgePresent,
+        ::GetModuleHandleW(L"AccuratePenetration.dll") != nullptr, d.physicsEditorLoaded, d.sosPhysicsManagerLoaded,
         d.autoPhysicsResetLoaded, d.crashLoggerLoaded,
         stateKnown.load() ? (usingCBPC.load() ? "CBPC" : "SMP") : "unknown", stateKnown.load(), arousal.load(), ArousalProviderName(), oslConnected.load(), sexLabActive.load(), sexLabConnected.load(), SexLabRoleName(sexLabRole.load()), sexLabRoleValid.load(),
+        ostimActive.load(), ostimConnected.load(), OStimRoleName(ostimRole.load()), ostimRoleValid.load(),
         SPS::API::kVersion, activeAPIRequestCount, activeAPIRequest ? activeAPIRequest->requester : "none", apiRequestsAccepted.load(), apiRequestsReleased.load(),
         externalResetNotices.load(), externalOwnerRepairs.load(), lastExternalOwnerRepairMs.load(),
         d.menuFrameworkLoaded, d.oslModuleLoaded && d.oslPluginLoaded, d.fsmpModuleLoaded, d.cbpcModuleLoaded, d.sexLabModuleLoaded && d.sexLabPluginLoaded,
@@ -2171,8 +3036,11 @@ std::string BuildReport() {
         d.playerBonesFound, d.compatibleXmlFiles, d.xmlFiles, d.xmlSummary, d.compatibleCbpcMaps, d.cbpcMapFiles, d.cbpcMapSummary,
         d.compatibleCbpcParameters, d.cbpcParameterFiles, d.cbpcParameterSummary, switchSuccesses.load(), switchFailures.load(), bendRepairs.load(), loadSMPResets.load(), lastLoadSMPResetMs.load(), recent, error.empty() ? "none" : error,
         s.positionControl, requestedBend.load(), appliedBend.load(), BendMethodName(lastBendMethod.load()), lastBendSucceeded.load(), positionAutoSuspended.load(), std::max<std::int64_t>(0, bendGuardUntilMs.load() - NowMs()),
-        s.enabled, s.mode, s.threshold, s.hysteresis, s.erectBend, s.pollMs, s.sexLabOverride, s.sexLabRoleSwitching, s.sexLabBottomBehavior, s.sexLabUnknownRole, s.sceneEndDelayMs, s.switchCooldownMs, s.resetSMPAfterLoad, s.loadResetDelayMs,
-        s.bendMethod, s.animatePosition, s.gradualErection, s.erectionDurationMs, s.bounceGuard, s.settleDelayMs, s.useSexLabBend, s.sexLabBend, s.maxBendFailures,
+        s.enabled, s.mode, s.threshold, s.hysteresis, s.erectBend, s.flaccidAngleControl, s.flaccidBend, s.pollMs, s.sexLabOverride, s.sexLabRoleSwitching, s.ostimOverride, s.ostimRoleSwitching, s.sexLabBottomBehavior, s.sexLabUnknownRole, s.sceneEndDelayMs, s.switchCooldownMs, s.resetSMPAfterLoad, s.loadResetDelayMs, s.equipmentChangeRecovery,
+        s.bendMethod, s.animatePosition, s.gradualErection, s.arousalBasedErection, s.erectionStartArousal,
+        s.erectionDurationMs, s.softeningDurationMs, s.randomErections, s.randomErectionMinMinutes, s.randomErectionMaxMinutes,
+        s.randomErectionDurationSeconds, s.randomErectionSafeMoments, s.spontaneousRefractory, s.refractoryMinutes,
+        s.morningErections, s.morningErectionDurationSeconds, s.bounceGuard, s.settleDelayMs, s.useSexLabBend, s.sexLabBend, s.maxBendFailures,
         ::GetModuleHandleW(L"AccuratePenetration.dll") != nullptr, s.verboseLogging, fixes);
 }
 
@@ -2250,7 +3118,7 @@ void __stdcall RenderDebug() {
     const bool coreReady = d.menuFrameworkLoaded && d.oslModuleLoaded && d.oslPluginLoaded &&
         d.fsmpModuleLoaded && d.cbpcModuleLoaded && d.playerBonesFound == 6 &&
         d.compatibleXmlFiles > 0 && d.compatibleCbpcMaps > 0 && d.compatibleCbpcParameters > 0 &&
-        !d.physicsEditorLoaded;
+        !d.sosPhysicsManagerLoaded;
     ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "HELP AND REPORTS");
     StatusLine("Setup", d.checkedAtMs == 0 ? "Not checked yet" : (coreReady ? "Everything looks good" : "Something needs attention"), d.checkedAtMs == 0 ? 1 : (coreReady ? 2 : 0));
     if (ImGuiMCP::Button("Check my setup again"))
@@ -2293,7 +3161,9 @@ void __stdcall RenderDebug() {
         ImGuiMCP::TextWrapped("SexLab Aroused Redux users: leave Enable SOS off so both mods do not change the angle.");
 
     if (d.physicsEditorLoaded)
-        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.35F, 0.35F, 1.0F), "Physics Editor is running. Disable it because it controls the same physics as SPS.");
+        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F), "Physics Editor is installed. It can stay installed, but disable its schlong controls if SPS changes unexpectedly.");
+    if (d.sosPhysicsManagerLoaded)
+        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.35F, 0.35F, 1.0F), "SOS Physics Manager is enabled. Disable it because it controls the same schlong physics as SPS.");
     if (d.autoPhysicsResetLoaded)
         ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F), "Auto Physics Reset is also running. Turn off its load, cell or scene resets if the state changes unexpectedly.");
 
@@ -2305,6 +3175,9 @@ void __stdcall RenderDebug() {
         StatusLine("PPA", ppaLoaded ? (PPAOwnsPosition() ? "Controlling the scene angle" : "Ready") : "Not installed", ppaLoaded ? 2 : 1);
         if (d.sexLabModuleLoaded && d.sexLabPluginLoaded)
             StatusLine("Scene role support", d.sexLabRoleBridgePresent ? "Ready" : "Missing - reinstall SPS", d.sexLabRoleBridgePresent ? 2 : 0);
+        StatusLine("OStim Standalone", d.ostimPluginLoaded ? (d.ostimRoleBridgePresent ? "Ready - experimental" : "Bridge missing - rerun the FOMOD") : "Not installed", d.ostimPluginLoaded ? (d.ostimRoleBridgePresent ? 2 : 0) : 1);
+        if (ostimActive.load())
+            StatusLine("Current OStim role", ostimRoleValid.load() ? OStimRoleName(ostimRole.load()) : "Checking...", ostimRoleValid.load() ? 2 : 1);
     }
 
     if (ImGuiMCP::CollapsingHeader("Physics file details")) {
@@ -2388,6 +3261,7 @@ void RegisterMenu() {
     if (!SKSEMenuFramework::IsInstalled()) { Record("SKSE Menu Framework not found", true); return; }
     SKSEMenuFramework::SetSection(kName);
     SKSEMenuFramework::AddSectionItem("Home", RenderMain);
+    SKSEMenuFramework::AddSectionItem("Looks and erections", RenderLooks);
     SKSEMenuFramework::AddSectionItem("Scene behaviour", RenderScenes);
     SKSEMenuFramework::AddSectionItem("Fine tuning", RenderAdvanced);
     SKSEMenuFramework::AddSectionItem("Help and reports", RenderDebug);
@@ -2398,7 +3272,47 @@ public:
     RE::BSEventNotifyControl ProcessEvent(const SKSE::ModCallbackEvent* event, RE::BSTEventSource<SKSE::ModCallbackEvent>*) override {
         if (!event) return RE::BSEventNotifyControl::kContinue;
         const std::string_view name = event->eventName.c_str();
-        if (name == "HookAnimationStart" || name == "HookAnimationStarting" ||
+        if (name == "ostim_start") {
+            ostimActive.store(true);
+            ostimConnected.store(true);
+            ostimEndedMs.store(0);
+            ostimEntryStateValid.store(stateKnown.load());
+            ostimEntryCBPC.store(usingCBPC.load());
+            ostimRoleGeneration.fetch_add(1);
+            ostimRole.store(0);
+            ostimRoleValid.store(false);
+            ostimRoleQueryPending.store(false);
+            ostimRoleRetryAfterMs.store(0);
+            Record("OStim player scene started");
+            if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] {
+                QueryOStimRole();
+                Evaluate();
+            });
+        } else if (name == "ostim_scenechanged") {
+            ostimConnected.store(true);
+            ostimRoleGeneration.fetch_add(1);
+            ostimRoleValid.store(false);
+            ostimRoleQueryPending.store(false);
+            ostimRoleRetryAfterMs.store(0);
+            if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] {
+                QueryOStimRole();
+                Evaluate();
+            });
+        } else if (name == "ostim_end") {
+            ostimActive.store(false);
+            ostimConnected.store(true);
+            ostimEndedMs.store(NowMs());
+            ostimEntryStateValid.store(false);
+            ostimRoleGeneration.fetch_add(1);
+            ostimRole.store(0);
+            ostimRoleValid.store(false);
+            ostimRoleQueryPending.store(false);
+            ResetPPASceneTracking(2000);
+            if (stateKnown.load() && !usingCBPC.load())
+                softConfirmationDueMs.store(NowMs() + 250);
+            Record("OStim player scene ended");
+            if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { Evaluate(); });
+        } else if (name == "HookAnimationStart" || name == "HookAnimationStarting" ||
             name == "HookStageStart" || name == "HookStageEnd" ||
             name == "HookActorsRelocated" || name == "HookActorChangeEnd" ||
             name == "HookAnimationEnding" || name == "HookAnimationEnd" ||
@@ -2442,14 +3356,44 @@ class NiNodeSink final : public RE::BSTEventSink<SKSE::NiNodeUpdateEvent> {
 public:
     RE::BSEventNotifyControl ProcessEvent(const SKSE::NiNodeUpdateEvent* event, RE::BSTEventSource<SKSE::NiNodeUpdateEvent>*) override {
         const auto now = NowMs();
-        if (event && event->reference == RE::PlayerCharacter::GetSingleton() && now >= ignoreNodeEventsUntilMs.load())
+        bool enabled = false;
+        { std::scoped_lock lock(settingsLock); enabled = settings.equipmentChangeRecovery; }
+        if (enabled && event && event->reference == RE::PlayerCharacter::GetSingleton() &&
+            now >= ignoreNodeEventsUntilMs.load())
             nodeRefreshDueMs.store(now + 750);
+        return RE::BSEventNotifyControl::kContinue;
+    }
+};
+
+class MenuSink final : public RE::BSTEventSink<RE::MenuOpenCloseEvent> {
+public:
+    RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* event,
+        RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override {
+        if (!event || event->menuName != RE::SleepWaitMenu::MENU_NAME)
+            return RE::BSEventNotifyControl::kContinue;
+
+        auto* calendar = RE::Calendar::GetSingleton();
+        if (!calendar) return RE::BSEventNotifyControl::kContinue;
+        if (event->opening) {
+            sleepWaitStartedHours.store(calendar->GetHoursPassed());
+            return RE::BSEventNotifyControl::kContinue;
+        }
+
+        const float started = sleepWaitStartedHours.exchange(-1.0F);
+        bool allowMorning = false;
+        { std::scoped_lock lock(settingsLock); allowMorning = settings.morningErections; }
+        const float restedHours = started >= 0.0F ? calendar->GetHoursPassed() - started : 0.0F;
+        if (allowMorning && restedHours >= 3.0F) {
+            morningErectionDueMs.store(NowMs() + 1500);
+            Record(fmt::format("Morning erection queued after resting for {:.1f} hours", restedHours));
+        }
         return RE::BSEventNotifyControl::kContinue;
     }
 };
 
 ModEventSink modEventSink;
 NiNodeSink niNodeSink;
+MenuSink menuSink;
 
 void OnMessage(SKSE::MessagingInterface::Message* message) {
     if (message->type == SKSE::MessagingInterface::kPreLoadGame) {
@@ -2461,6 +3405,25 @@ void OnMessage(SKSE::MessagingInterface::Message* message) {
         sexLabRoleValid.store(false);
         sexLabLastTopMs.store(0);
         sexLabBottomCandidateSinceMs.store(0);
+        ostimActive.store(false);
+        ostimRole.store(0);
+        ostimRoleValid.store(false);
+        ostimEntryStateValid.store(false);
+        randomErectionNextMs.store(0);
+        randomErectionUntilMs.store(0);
+        randomErectionManualTest.store(false);
+        spontaneousRefractoryUntilMs.store(0);
+        morningErectionDueMs.store(0);
+        morningErectionActive.store(false);
+        sleepWaitStartedHours.store(-1.0F);
+        CancelErectionAnimation();
+        nodeRefreshDueMs.store(0);
+        nodeRefreshFollowupDueMs.store(0);
+        nodeSMPResetRestoreDueMs.store(0);
+        softHandoffResetDueMs.store(0);
+        softHandoffResetRestoreDueMs.store(0);
+        softAngleRefreshDueMs.store(0);
+        softAngleRefreshRestoreDueMs.store(0);
         return;
     }
     if (message->type == SKSE::MessagingInterface::kDataLoaded) {
@@ -2469,6 +3432,7 @@ void OnMessage(SKSE::MessagingInterface::Message* message) {
         RegisterPPAAPI();
         if (auto* source = SKSE::GetModCallbackEventSource()) source->AddEventSink(&modEventSink);
         if (auto* source = SKSE::GetNiNodeUpdateEventSource()) source->AddEventSink(&niNodeSink);
+        if (auto* ui = RE::UI::GetSingleton()) ui->AddEventSink(&menuSink);
         RefreshDiagnostics();
         return;
     }
@@ -2485,6 +3449,28 @@ void OnMessage(SKSE::MessagingInterface::Message* message) {
         sexLabRoleValid.store(false);
         sexLabLastTopMs.store(0);
         sexLabBottomCandidateSinceMs.store(0);
+        ostimActive.store(false);
+        ostimConnected.store(false);
+        ostimEndedMs.store(0);
+        ostimEntryStateValid.store(false);
+        ostimRole.store(0);
+        ostimRoleValid.store(false);
+        randomErectionNextMs.store(0);
+        randomErectionUntilMs.store(0);
+        randomErectionManualTest.store(false);
+        spontaneousRefractoryUntilMs.store(0);
+        morningErectionDueMs.store(0);
+        morningErectionActive.store(false);
+        sleepWaitStartedHours.store(-1.0F);
+        CancelErectionAnimation();
+        nodeRefreshDueMs.store(0);
+        nodeRefreshFollowupDueMs.store(0);
+        nodeSMPResetRestoreDueMs.store(0);
+        softHandoffResetDueMs.store(0);
+        softHandoffResetRestoreDueMs.store(0);
+        ignoreNodeEventsUntilMs.store(0);
+        softAngleRefreshDueMs.store(0);
+        softAngleRefreshRestoreDueMs.store(0);
         ResetPPASceneTracking(2000);
         stateKnown.store(false);
         ScheduleLoadSMPReset();

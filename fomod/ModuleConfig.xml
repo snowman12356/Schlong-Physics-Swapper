@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
-  <moduleName>Schlong Physics Swapper 1.8.2</moduleName>
+  <moduleName>Schlong Physics Swapper 1.9.0</moduleName>
   <requiredInstallFiles>
     <file source="SKSE\Plugins\SchlongPhysicsSwapper.dll" destination="SKSE\Plugins\SchlongPhysicsSwapper.dll" priority="0" />
     <file source="SKSE\Plugins\CBPCMasterConfig_ZZZ_SchlongPhysicsSwapper.txt" destination="SKSE\Plugins\CBPCMasterConfig_ZZZ_SchlongPhysicsSwapper.txt" priority="0" />
@@ -34,6 +34,27 @@
             <plugin name="SexLab Aroused Redux">
               <description>Choose this if you use SexLab Aroused Redux. No extra SPS file is needed. Leave Redux's Enable SOS option off.</description>
               <files />
+              <typeDescriptor><type name="Optional" /></typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+    <installStep name="Scene support">
+      <optionalFileGroups order="Explicit">
+        <group name="Do you use OStim Standalone?" type="SelectExactlyOne">
+          <plugins order="Explicit">
+            <plugin name="No OStim support">
+              <description>Choose this if you do not use OStim Standalone.</description>
+              <files />
+              <typeDescriptor><type name="Recommended" /></typeDescriptor>
+            </plugin>
+            <plugin name="OStim Standalone support (experimental)">
+              <description>Adds experimental OStim scene role support. OStim itself is not included.</description>
+              <files>
+                <file source="Optional\OStim\Scripts\SPS_OStimBridge.pex" destination="Scripts\SPS_OStimBridge.pex" priority="10" />
+                <file source="Optional\OStim\Source\Scripts\SPS_OStimBridge.psc" destination="Source\Scripts\SPS_OStimBridge.psc" priority="0" />
+              </files>
               <typeDescriptor><type name="Optional" /></typeDescriptor>
             </plugin>
           </plugins>

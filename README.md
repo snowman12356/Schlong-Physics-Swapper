@@ -1,4 +1,4 @@
-# Schlong Physics Swapper 1.8.2
+# Schlong Physics Swapper 1.9.0
 
 Native SKSE plugin for compatible SOS six-bone schlongs. Faster HDT-SMP owns
 Gen01-Gen06 while arousal is below a configurable threshold; CBPC owns them
@@ -42,9 +42,9 @@ with it.
 - A compatible SOS addon with SMP physics 
 
 Crash Logger is optional and only needed when reporting a Skyrim crash. Physics
-Editor is not a requirement and should not be used alongside SPS because it can
-control the same SMP and CBPC systems. Auto Physics Reset is optional; disable
-its overlapping load, cell or scene triggers if it changes SPS's chosen state.
+Editor may stay installed; disable only its schlong controls if it starts
+changing the same physics as SPS. Auto Physics Reset is optional; disable its
+overlapping load, cell or scene triggers if it changes SPS's chosen state.
 
 Schlongs of Skyrim AE is supported through `SOSAE_SKSE.SetSchlongBend`.
 Legacy SOS is supported through its `SOSFlaccid`/`SOSBend0`-`SOSBend9`
@@ -89,6 +89,14 @@ always use SMP, or always use CBPC. Keeping the pre-scene state is the default.
 Unknown or unregistered stages keep the current engine by default, preventing
 visible pops. Normal arousal control resumes after a configurable delay.
 
+OStim Standalone support is optional and experimental. When its FOMOD option is
+installed, SPS listens for player OStim scenes and checks whether the player is
+on top or on the bottom. Top/penetrating uses CBPC. Bottom/receiving follows the
+same user choice as SexLab: keep the pre-scene state, follow arousal, always use
+SMP, or always use CBPC. Normal arousal control resumes after the scene delay.
+OStim itself is not included, and this feature does not change OStim scenes or
+animation positions.
+
 PPA (Procedural Penis Animations) is optional and compatible. Current PPA
 versions are detected through its [documented V1 listener API](https://asdasdduck.github.io/ppa-docs/skse-api.html), with a safe DLL
 fallback for older builds. During a PPA scene, PPA owns genital position and
@@ -116,9 +124,22 @@ The streamlined **Home** page provides only everyday controls:
 
 - live arousal, current physics engine, and overall health
 - plain-language Automatic, Always Soft, and Always Erect modes
-- immediate erect vertical-position control from 0 to 20
-- optional gradual erection with an adjustable transition time
-- a simple recommended-settings button and immediate angle test
+- a simple recommended-settings button
+
+The new **Looks and erections** page keeps appearance and erection behaviour
+together:
+
+- soft and erect angle controls in one place
+- automatic soft-angle refresh for SOS AE-NG, without a manual SMP reset
+- an optional erection that rises gradually with live arousal
+- separate rise and softening times, so an erection can fade naturally instead
+  of dropping immediately
+- optional random erections with separate shortest and longest intervals
+- an optional normal-gameplay guard that waits during combat, dialogue, loading
+  and paused menus
+- optional recovery time between spontaneous erections and an optional erection
+  after a long sleep or wait
+- a test button so random behaviour can be checked immediately
 
 SexLab controls now have their own **Scene behaviour** page. Rare timing,
 recovery and compatibility controls live on **Fine tuning** and are collapsed
@@ -135,18 +156,38 @@ old settings even when both files are initially present.
 The Nexus archive includes a simple FOMOD. You manually choose OSL Aroused,
 SLO Aroused NG or SexLab Aroused Redux, so the installer does not have to guess.
 The OSL choice installs its player compatibility file; SLO NG and Redux need no
-extra SPS file. SOS AE, legacy SOS and TNG all use the same SPS core DLL. New
-users can install the recommended settings; updating users can choose **Keep my
-existing settings** so their INI is not replaced. Physics Editor and Auto
-Physics Reset notices are shown on the in-game **Help and reports** page and do
-not block installation.
+extra SPS file. A separate optional choice installs the experimental OStim role
+bridge. SOS AE, legacy SOS and TNG all use the same SPS core DLL. New users can
+install the recommended settings; updating users can choose **Keep my existing
+settings** so their INI is not replaced. Physics Editor and Auto Physics Reset
+notices are shown on the in-game **Help and reports** page and do not block
+installation.
 
 ## Behavior
 
 - Soft/below threshold: CBPC is stopped first, then SMP is enabled.
+- With optional soft-angle control enabled, SOS AE-NG can hold the selected
+  flaccid angle while SMP still owns the six physics bones. Legacy SOS and TNG
+  keep their normal floppy animation-event position.
+- Changing the soft angle performs one debounced player-only SMP refresh and
+  reapplies the selected pose after FSMP settles.
 - Above threshold: SMP is disabled first, then CBPC is started.
+- With arousal-based rising enabled, CBPC starts at the selected starting
+  arousal and the bend rises with arousal until the normal threshold is reached.
+- Optional random erections choose a fresh delay between the user's minimum
+  and maximum after every event. They pause during scenes and external API
+  control, and can also wait during combat, dialogue, loading and paused menus.
+  They soften gradually when the event ends, then observe the selected recovery
+  time before another can start. Normal arousal control then resumes.
+- Optional morning erections can start after sleeping or waiting for at least
+  three in-game hours. They use the same safe-context and gradual-softening rules.
+- Changing schlongs or equipment while soft triggers one debounced player-only
+  SMP refresh, then restores the selected soft state and angle. This prevents
+  stale FSMP chains from leaving the tip drifting or hanging in place.
 - SexLab P+ bottom/receiving role: retain the pre-scene physics state.
   Top/penetrating role: CBPC.
+- Experimental OStim player scenes use the same bottom/top choices when the
+  optional bridge is installed.
 - PPA controls live scene position when installed; SPS does not send competing
   SOS bend or flaccid commands while PPA is active.
 - With gradual erection enabled, the native SOS AE position eases from 0 to the
@@ -210,6 +251,7 @@ The Help and reports page shows loaded and live connection state for:
 - The New Gentleman position support
 - the supported schlong addon and six live Gen01-Gen06 skeleton nodes
 - SexLab P+
+- OStim Standalone and its optional role bridge
 - Procedural Penis Animations
 
 Its setup check scans the active MO2 virtual `Data` directory for SMP XMLs
@@ -237,6 +279,28 @@ computer paths.
 When reporting a problem, attach the diagnostic report or 30-second capture and
 include the schlong addon, Skyrim runtime, mod-manager name, expected result,
 actual result, and short reproduction steps. See [SUPPORT.md](docs/SUPPORT.md).
+
+## 1.9.0 changes
+
+- Added optional experimental OStim Standalone scene support.
+- Added an optional flaccid-angle setting for SOS AE-NG that refreshes without
+  requiring a manual SMP reset.
+- Added optional erections that rise gradually with live arousal.
+- Added partial erections between the chosen starting and fully erect arousal.
+- Added separate rise and softening times, including gradual recovery when a
+  spontaneous erection is interrupted.
+- Added optional random erections with user-set minimum and maximum intervals.
+- Added an optional normal-gameplay guard for random erections.
+- Added an optional recovery delay between spontaneous erections.
+- Added optional erections after a long sleep or wait.
+- Added automatic soft SMP recovery after changing schlongs or equipment.
+- Kept subtle movement and follow-through in the supplied physics values rather
+  than making the erect state completely rigid.
+- Added a clearer Looks and erections menu page.
+- Kept one DLL for Skyrim SE, AE and VR.
+- Made legacy SOS detection safer and added a clear warning for SOS Physics
+  Manager conflicts.
+- Kept OStim optional: users who do not select it install no OStim bridge.
 
 ## 1.8.2 changes
 

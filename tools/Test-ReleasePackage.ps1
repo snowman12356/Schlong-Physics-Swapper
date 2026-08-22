@@ -18,6 +18,7 @@ $requiredFiles = @(
     'SKSE\Plugins\CBPCMasterConfig_ZZZ_SchlongPhysicsSwapper.txt',
     'SKSE\Plugins\CBPConfig_ZZZ_SchlongPhysicsSwapper.txt',
     'Scripts\SPS_SexLabBridge.pex',
+    'Optional\OStim\Scripts\SPS_OStimBridge.pex',
     'Scripts\OSLAroused_Main.pex',
     'Mod Author API\README.md',
     'Mod Author API\SPSAPI.h'
@@ -37,8 +38,8 @@ try {
     throw "FOMOD XML is not well formed: $($_.Exception.Message)"
 }
 
-if ($info.fomod.Version -ne '1.8.2' -or $module.config.moduleName -notmatch '1\.8\.2') {
-    throw 'FOMOD version does not match the 1.8.2 release.'
+if ($info.fomod.Version -ne '1.9.0' -or $module.config.moduleName -notmatch '1\.9\.0') {
+    throw 'FOMOD version does not match the 1.9.0 release.'
 }
 
 $sourceNodes = $module.SelectNodes('//*[@source]')

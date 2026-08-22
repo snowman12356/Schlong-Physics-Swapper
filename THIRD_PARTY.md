@@ -6,9 +6,10 @@ third-party material.
 
 Schlong Physics Swapper calls or reads public compatibility interfaces supplied
 by SKSE Menu Framework, Faster HDT-SMP, CBPC, OSL Aroused, SLO Aroused NG,
-classic SexLab Aroused Redux, SexLab P+, Schlongs of Skyrim AE, and The New
-Gentleman. Those projects are not bundled and remain subject to their own
-terms.
+classic SexLab Aroused Redux, SexLab P+, OStim Standalone, Schlongs of Skyrim
+AE, and The New Gentleman. Those projects are not bundled and remain subject
+to their own terms. The optional SPS OStim bridge calls OStim's public Papyrus
+interfaces and contains no OStim code or assets.
 
 The DLL is built with CommonLibSSE-NG, SKSE Menu Framework 3 headers, and the
 permissively licensed C++ dependencies declared by the build. Binary release

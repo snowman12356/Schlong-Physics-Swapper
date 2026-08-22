@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '1.8.2',
+    [string]$Version = '1.9.0',
     [string]$BuildDirectory = 'build-static',
     [switch]$CreateZip
 )
@@ -66,6 +66,8 @@ Copy-ReleaseFile 'config\CBPCMasterConfig_ZZZ_SchlongPhysicsSwapper.txt' 'SKSE\P
 Copy-ReleaseFile 'config\CBPConfig_ZZZ_SchlongPhysicsSwapper.txt' 'SKSE\Plugins\CBPConfig_ZZZ_SchlongPhysicsSwapper.txt'
 Copy-ReleaseFile 'scripts\SPS_SexLabBridge.pex' 'Scripts\SPS_SexLabBridge.pex'
 Copy-ReleaseFile 'scripts\Source\SPS_SexLabBridge.psc' 'Source\Scripts\SPS_SexLabBridge.psc'
+Copy-ReleaseFile 'scripts\SPS_OStimBridge.pex' 'Optional\OStim\Scripts\SPS_OStimBridge.pex'
+Copy-ReleaseFile 'scripts\Source\SPS_OStimBridge.psc' 'Optional\OStim\Source\Scripts\SPS_OStimBridge.psc'
 Copy-ReleaseFile 'compat\OSL Aroused\Scripts\OSLAroused_Main.pex' 'Scripts\OSLAroused_Main.pex'
 Copy-ReleaseFile 'compat\OSL Aroused\Scripts\Source\OSLAroused_Main.psc' 'Source\OSL Aroused Compatibility\OSLAroused_Main.psc'
 Copy-ReleaseFile 'compat\OSL Aroused\README.md' 'Source\OSL Aroused Compatibility\README.md'
