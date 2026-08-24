@@ -31,7 +31,7 @@ namespace Mod {
 namespace fs = std::filesystem;
 
 constexpr auto kName = "Schlong Physics Swapper";
-constexpr auto kVersion = "1.9.0";
+constexpr auto kVersion = "1.9.1";
 constexpr auto kIni = "Data/SKSE/Plugins/SchlongPhysicsSwapper.ini";
 constexpr auto kLegacyIni = "Data/SKSE/Plugins/UBEPhysicsSwitch.ini";
 constexpr auto kReport = "Data/SKSE/Plugins/SchlongPhysicsSwapper_Diagnostics.txt";
@@ -216,7 +216,10 @@ std::atomic<std::int64_t> bendGuardUntilMs{ 0 };
 std::atomic<std::int64_t> bendGuardWindowStartMs{ 0 };
 std::atomic<std::int64_t> nodeRefreshDueMs{ 0 };
 std::atomic<std::int64_t> nodeRefreshFollowupDueMs{ 0 };
+std::atomic<std::int64_t> erectMeshReplayDueMs{ 0 };
 std::atomic<std::int64_t> nodeSMPResetRestoreDueMs{ 0 };
+std::atomic<std::int64_t> diagnosticsRefreshDueMs{ 0 };
+std::atomic<std::int64_t> manualPhysicsTestUntilMs{ 0 };
 std::atomic<std::int64_t> externalOwnerRepairDueMs{ 0 };
 std::atomic<std::int64_t> lastExternalOwnerRepairMs{ 0 };
 std::atomic<std::int64_t> ignoreNodeEventsUntilMs{ 0 };
@@ -285,6 +288,7 @@ void Record(std::string message, bool error = false);
 std::optional<ExternalPhysicsRequest> ActiveAPIRequest();
 void ClearAPIRequests();
 void ScheduleExternalOwnerRepair(int delayMs, std::string_view reason);
+bool SetOwner(bool cbpc, bool force = false);
 
 const char* SexLabRoleName(int role) {
     switch (role) {
@@ -720,6 +724,11 @@ void Record(std::string message, bool error) {
     }
 }
 
+void ClearArousalError() {
+    std::scoped_lock lock(activityLock);
+    if (lastError.starts_with("SPS-002:")) lastError.clear();
+}
+
 void CaptureState(std::string_view reason) {
     Settings copy;
     { std::scoped_lock lock(settingsLock); copy = settings; }
@@ -793,12 +802,16 @@ public:
             const auto wasValid = arousalValid.exchange(true);
             oslConnected.store(true);
             arousalRetryAfterMs.store(0);
+            ClearArousalError();
             if (!wasValid || std::abs(previous - value) >= 0.5F)
                 logger::info("{} arousal: {:.1f}", ArousalProviderName(), value);
         } else {
-            arousalValid.store(false);
-            arousalRetryAfterMs.store(NowMs() + 1500);
-            Record("SPS-002: Arousal provider returned an invalid value", true);
+            const bool haveLastReading = arousalValid.load();
+            arousalRetryAfterMs.store(NowMs() + 3000);
+            Record(haveLastReading ?
+                "Arousal provider returned a delayed or invalid response; keeping the last reading" :
+                "SPS-002: Arousal provider returned an invalid value",
+                !haveLastReading);
         }
         queryPending.store(false);
         if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { Evaluate(); });
@@ -1197,6 +1210,7 @@ void QueryArousal() {
         const auto previous = arousal.exchange(value);
         const auto wasValid = arousalValid.exchange(true);
         oslConnected.store(true);
+        ClearArousalError();
         if (!wasValid || std::abs(previous - value) >= 0.5F)
             logger::info("{} arousal: {:.1f}", ArousalProviderName(), value);
         if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { Evaluate(); });
@@ -1211,12 +1225,15 @@ void QueryArousal() {
     }
     if (now < arousalRetryAfterMs.load()) return;
     if (queryPending.load()) {
-        if (now - queryStartedMs.load() < 5000) return;
+        if (now - queryStartedMs.load() < 10000) return;
         arousalQueryGeneration.fetch_add(1);
         queryPending.store(false);
-        arousalValid.store(false);
-        arousalRetryAfterMs.store(now + 1500);
-        Record("SPS-002: Arousal check timed out; waiting before trying again", true);
+        const bool haveLastReading = arousalValid.load();
+        arousalRetryAfterMs.store(now + 3000);
+        Record(haveLastReading ?
+            "Arousal response was delayed; keeping the last reading and trying again" :
+            "Arousal response is still loading; SPS will try again",
+            false);
         return;
     }
     if (!PapyrusReadyForDispatch()) {
@@ -1234,15 +1251,19 @@ void QueryArousal() {
         RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{ new ArousalCallback(generation) };
         return vm->DispatchStaticCall(script, "GetArousal", args, callback);
     };
-    // The public wrapper is available earlier during OSL startup on some large
-    // load orders. It calls the same native API internally, with the native
-    // script retained as a fallback for unusual installations.
-    if (!dispatch("OSLAroused_ModInterface") && !dispatch("OSLArousedNative")) {
+    // Prefer OSL's native request. The public wrapper can accept a queued call
+    // before it is ready to return a result, leaving SPS waiting even though
+    // OSL itself is already showing the current arousal value.
+    if (!dispatch("OSLArousedNative") && !dispatch("OSLAroused_ModInterface")) {
         queryPending.store(false);
-        arousalValid.store(false);
+        const bool haveLastReading = arousalValid.load();
+        if (!haveLastReading) arousalValid.store(false);
         oslConnected.store(false);
-        arousalRetryAfterMs.store(now + 1500);
-        Record("SPS-002: Could not connect to an arousal provider", true);
+        arousalRetryAfterMs.store(now + 3000);
+        Record(haveLastReading ?
+            "Arousal provider is temporarily unavailable; keeping the last reading" :
+            "SPS-002: Could not connect to an arousal provider",
+            !haveLastReading);
     }
 }
 
@@ -1608,13 +1629,24 @@ void StartBendAnimation(int startBend, int targetBend, int durationMs, bool rela
                             // can display. Finish the owner handoff instead of cancelling
                             // and restarting the same 5 -> 0 animation every poll.
                             if (relaxing) {
+                                const bool flaccidEventAccepted =
+                                    player->NotifyAnimationGraph(RE::BSFixedString("SOSFlaccid"));
                                 CancelErectionAnimation();
-                                appliedBend.store(-1);
+                                requestedBend.store(targetBend);
+                                appliedBend.store(targetBend);
+                                lastBendSucceeded.store(flaccidEventAccepted);
                                 bendRetryDueMs.store(0);
                                 bendConsecutiveFailures.store(0);
                                 bendFailureReported.store(false);
-                                Record("SOS reached its lowest soft angle; normal soft physics resumed");
-                                Evaluate(true);
+                                if (flaccidEventAccepted) {
+                                    lastBendMethod.store(1);
+                                    lastBendApplyMs.store(NowMs());
+                                    ignoreNodeEventsUntilMs.store(NowMs() + 2000);
+                                }
+                                Record(flaccidEventAccepted
+                                    ? "SOS accepted its flaccid event; normal soft physics resumed"
+                                    : "SOS reached its lowest available angle; normal soft physics resumed");
+                                SetOwner(false, true);
                                 return;
                             }
                             CancelErectionAnimation();
@@ -1650,6 +1682,12 @@ void StartBendAnimation(int startBend, int targetBend, int durationMs, bool rela
                             erectionAnimating.store(false);
                             appliedBend.store(targetBend);
                             if (relaxing) erectionRelaxing.store(false);
+                            // SOS AE can rebuild or finish its graph transition
+                            // just after the gradual native updates complete.
+                            // Replay the final value once through compatibility
+                            // mode so the visible angle cannot remain at zero.
+                            if (!relaxing && SosAeNativeLoaded())
+                                bendConfirmationDueMs.store(NowMs() + 500);
                             ++bendRepairs;
                             Record(relaxing
                                 ? "Erection lowered gradually; normal soft physics resumed"
@@ -1928,7 +1966,7 @@ void RunSoftHandoffSMPReset() {
     Record("Soft physics handoff refreshed the player's SMP pose");
 }
 
-bool SetOwner(bool cbpc, bool force = false) {
+bool SetOwner(bool cbpc, bool force) {
     const auto now = NowMs();
     if (!PapyrusReadyForDispatch()) {
         retryAfterMs.store(now + 1000);
@@ -2228,6 +2266,11 @@ void Evaluate(bool force) {
         cbpc = NormalSettingsWantCBPC(copy);
     }
 
+    // A manual troubleshooting test should remain visible long enough for the
+    // user to inspect it. Scene requests still take control immediately.
+    if (normalControl && !force && NowMs() < manualPhysicsTestUntilMs.load()) return;
+    if (!normalControl) manualPhysicsTestUntilMs.store(0);
+
     // Scene integrations take priority over an everyday/spontaneous softening
     // animation. Cancel it here, where the new owner is known, instead of in
     // the random-erection scheduler. The old scheduler-side cancellation also
@@ -2261,7 +2304,10 @@ void Tick() {
     Settings copy;
     { std::scoped_lock lock(settingsLock); copy = settings; }
     if (!copy.enabled) return;
-    if (copy.mode == 0) QueryArousal();
+    if (copy.mode == 0)
+        QueryArousal();
+    else
+        ClearArousalError();
     if (copy.sexLabOverride) QuerySexLab();
     if (copy.sexLabOverride && copy.sexLabRoleSwitching && sexLabActive.load()) QuerySexLabRole();
     if (copy.ostimOverride && copy.ostimRoleSwitching && ostimActive.load()) QueryOStimRole();
@@ -2270,6 +2316,12 @@ void Tick() {
     CaptureState("poll");
 
     const auto now = NowMs();
+    auto diagnosticsDue = diagnosticsRefreshDueMs.load();
+    if (diagnosticsDue > 0 && now >= diagnosticsDue &&
+        diagnosticsRefreshDueMs.compare_exchange_strong(diagnosticsDue, 0)) {
+        RefreshDiagnostics();
+    }
+
     auto ownerRepairDue = externalOwnerRepairDueMs.load();
     if (ownerRepairDue > 0 && now >= ownerRepairDue &&
         externalOwnerRepairDueMs.compare_exchange_strong(ownerRepairDue, 0)) {
@@ -2291,6 +2343,8 @@ void Tick() {
         Evaluate(true);
         if (stateKnown.load() && !usingCBPC.load())
             softConfirmationDueMs.store(now + 250);
+        else if (stateKnown.load() && usingCBPC.load() && copy.positionControl)
+            erectMeshReplayDueMs.store(now + 2250);
         Record("Physics state restored after the delayed SMP reset");
     }
 
@@ -2363,7 +2417,7 @@ void Tick() {
     auto confirmDue = bendConfirmationDueMs.load();
     if (usingCBPC.load() && confirmDue > 0 && now >= confirmDue &&
         bendConfirmationDueMs.compare_exchange_strong(confirmDue, 0)) {
-        ApplyRequestedBend(true, false, true);
+        ApplyRequestedBend(true, true, true);
     }
 
     if (!settledNow && usingCBPC.load() && copy.positionControl) {
@@ -2395,6 +2449,8 @@ void Tick() {
             softConfirmationDueMs.store(now + 750);
         }
         nodeRefreshFollowupDueMs.store(now + 1500);
+        if (stateKnown.load() && usingCBPC.load() && copy.positionControl)
+            erectMeshReplayDueMs.store(now + 3250);
     }
 
     auto nodeFollowupDue = nodeRefreshFollowupDueMs.load();
@@ -2405,9 +2461,23 @@ void Tick() {
         ConfirmCurrentPhysicsOwner("the completed equipment change");
         appliedBend.store(-1);
         if (stateKnown.load() && usingCBPC.load() && copy.positionControl)
-            ApplyRequestedBend(true, false, true);
+            ApplyRequestedBend(true, true, true);
         else if (stateKnown.load() && !usingCBPC.load())
             ApplyRequestedSoftBend(true, false);
+    }
+
+    auto erectReplayDue = erectMeshReplayDueMs.load();
+    if (erectReplayDue > 0 && now >= erectReplayDue &&
+        erectMeshReplayDueMs.compare_exchange_strong(erectReplayDue, 0)) {
+        // Armour and schlong changes can replace the live skeleton after both
+        // the CBPC handoff and the first bend request have already succeeded.
+        // Replay the saved angle once after the replacement mesh is stable.
+        if (stateKnown.load() && usingCBPC.load() && copy.positionControl) {
+            CancelErectionAnimation();
+            appliedBend.store(-1);
+            ApplyRequestedBend(true, true, true);
+            Record("Erect angle restored after the replacement mesh settled");
+        }
     }
 }
 
@@ -2450,7 +2520,10 @@ void AddSummary(std::string& summary, const fs::path& path, int count) {
 bool PluginLoaded(std::initializer_list<std::string_view> names) {
     auto* data = RE::TESDataHandler::GetSingleton();
     if (!data) return false;
-    return std::ranges::any_of(names, [&](auto name) { return data->LookupModByName(name) != nullptr; });
+    return std::ranges::any_of(names, [&](auto name) {
+        return data->LookupLoadedModByName(name) != nullptr ||
+            data->LookupLoadedLightModByName(name) != nullptr;
+    });
 }
 
 void RefreshDiagnostics() {
@@ -3093,12 +3166,17 @@ void StartDebugCapture() {
 }
 
 void TestPhysicsState(bool cbpc) {
-    if (!SetOwner(cbpc, true)) return;
+    manualPhysicsTestUntilMs.store(NowMs() + 5000);
+    if (!SetOwner(cbpc, true)) {
+        manualPhysicsTestUntilMs.store(0);
+        return;
+    }
     if (!cbpc) ConfirmSoftState();
     CaptureState(cbpc ? "manual erect test" : "manual soft test");
 }
 
 void RepairPhysics() {
+    manualPhysicsTestUntilMs.store(0);
     ResetPositionRecovery();
     retryAfterMs.store(0);
     appliedBend.store(-1);
@@ -3143,7 +3221,7 @@ void __stdcall RenderDebug() {
     ImGuiMCP::SameLine();
     if (ImGuiMCP::Button("Repair current state"))
         if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask(RepairPhysics);
-    ImGuiMCP::TextWrapped("The two test buttons are temporary. Automatic control takes over again on the next check.");
+    ImGuiMCP::TextWrapped("The two test buttons hold their result for 5 seconds, then automatic control resumes.");
     ImGuiMCP::Separator();
 
     ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "WHAT SPS FOUND");
@@ -3419,7 +3497,10 @@ void OnMessage(SKSE::MessagingInterface::Message* message) {
         CancelErectionAnimation();
         nodeRefreshDueMs.store(0);
         nodeRefreshFollowupDueMs.store(0);
+        erectMeshReplayDueMs.store(0);
         nodeSMPResetRestoreDueMs.store(0);
+        diagnosticsRefreshDueMs.store(0);
+        manualPhysicsTestUntilMs.store(0);
         softHandoffResetDueMs.store(0);
         softHandoffResetRestoreDueMs.store(0);
         softAngleRefreshDueMs.store(0);
@@ -3465,7 +3546,13 @@ void OnMessage(SKSE::MessagingInterface::Message* message) {
         CancelErectionAnimation();
         nodeRefreshDueMs.store(0);
         nodeRefreshFollowupDueMs.store(0);
+        // The live genital skeleton can be replaced a few seconds after the
+        // save has loaded. Replay an already-selected erect angle once after
+        // that late replacement, without changing the user's physics mode.
+        erectMeshReplayDueMs.store(NowMs() + 5000);
         nodeSMPResetRestoreDueMs.store(0);
+        diagnosticsRefreshDueMs.store(NowMs() + 2000);
+        manualPhysicsTestUntilMs.store(0);
         softHandoffResetDueMs.store(0);
         softHandoffResetRestoreDueMs.store(0);
         ignoreNodeEventsUntilMs.store(0);
@@ -3477,9 +3564,13 @@ void OnMessage(SKSE::MessagingInterface::Message* message) {
         if (auto* tasks = SKSE::GetTaskInterface()) {
             tasks->AddTask([] {
                 SetOwner(false, true);
-                QueryArousal();
+                Settings copy;
+                { std::scoped_lock lock(settingsLock); copy = settings; }
+                if (copy.mode == 0)
+                    QueryArousal();
+                else
+                    ClearArousalError();
                 QuerySexLab();
-                RefreshDiagnostics();
             });
         }
     }

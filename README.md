@@ -1,4 +1,4 @@
-# Schlong Physics Swapper 1.9.0
+# Schlong Physics Swapper 1.9.1
 
 Native SKSE plugin for compatible SOS six-bone schlongs. Faster HDT-SMP owns
 Gen01-Gen06 while arousal is below a configurable threshold; CBPC owns them
@@ -279,6 +279,13 @@ computer paths.
 When reporting a problem, attach the diagnostic report or 30-second capture and
 include the schlong addon, Skyrim runtime, mod-manager name, expected result,
 actual result, and short reproduction steps. See [SUPPORT.md](docs/SUPPORT.md).
+
+## 1.9.1 changes
+
+- Fixed SPS sometimes missing OSL Aroused updates at high arousal.
+- Fixed the erect angle resetting to 0 after loading or changing equipment.
+- Improved recovery after armour, schlong and player mesh changes.
+- Fixed a severe slowdown when a soft-position update was rejected.
 
 ## 1.9.0 changes
 
