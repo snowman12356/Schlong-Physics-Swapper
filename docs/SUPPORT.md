@@ -2,8 +2,8 @@
 
 Please include enough information to reproduce the problem:
 
-1. Open **SKSE Menu Framework > Schlong Physics Swapper > Help and reports**.
-2. Press **Check my setup again**.
+1. Open **SKSE Menu Framework > Schlong Physics Swapper > Troubleshooting**.
+2. Press **Check setup again**.
 3. If the problem happens on demand, press **Record the next 30 seconds** and
    reproduce it before the timer finishes.
 4. Attach `SchlongPhysicsSwapper_DebugCapture.txt` from
@@ -21,6 +21,14 @@ Physics Editor may stay installed; if physics changes unexpectedly, disable its
 schlong controls so it does not change the same bones as SPS. Auto Physics Reset
 is optional, but its load, cell or scene triggers may overlap SPS's own player
 reset if physics changes unexpectedly.
+
+When using an arousal mod, leave its own SOS position control disabled so it
+does not compete with SPS: turn off **Enable SOS** in OSL Aroused or classic
+SexLab Aroused Redux, and turn off **Use SOS** in SLO Aroused NG. OSL's switch
+is currently global, so this also disables its automatic NPC angles outside
+scenes; SexLab and OStim scene animations are unaffected. Users remaining on
+OSL 2.9.0 through 2.9.2 may select the legacy OSL FOMOD option instead; never install
+that script override with OSL 2.9.3 or newer.
 
 The reports contain mod state, versions, settings and relevant filenames. They
 do not contain your Windows username, save name, or full computer paths. Please
@@ -48,10 +56,14 @@ check any file yourself before uploading it.
 - `SPS-015`: OStim is installed but the optional SPS OStim bridge is missing.
 - `SPS-016`: SOS Physics Manager is enabled and can fight SPS for control.
 - `SPS-017`: The optional delayed player SMP reset could not run.
+- `SPS-018`: The optional custom soft-angle SMP refresh could not run.
+- `SPS-019`: The player-only SMP refresh after a soft handoff could not run.
+- `SPS-020`: A startup or queued quick-fix action timed out while the game was
+  still loading.
 
 ## Suggested pinned Nexus post
 
-If something is not working, please open the mod's **Help and reports** page,
+If something is not working, please open the mod's **Troubleshooting** page,
 check the setup and save a report. For problems you can repeat, record the next
 30 seconds and reproduce the issue before the timer ends.
 Attach the resulting text file with your schlong addon, Skyrim version and a

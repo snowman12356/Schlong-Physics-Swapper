@@ -36,7 +36,7 @@ remove-approved-bodyslide-stale.ps1
 Thumbs.db
 Desktop.ini
 
-# OSL compatibility files are allow-listed below.
+# The optional OSL 2.9.0-to-2.9.2 compatibility files are allow-listed below.
 compat/*
 !compat/OSL Aroused/
 compat/OSL Aroused/*

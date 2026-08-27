@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
-  <moduleName>Schlong Physics Swapper 1.9.1</moduleName>
+  <moduleName>Schlong Physics Swapper 1.9.2</moduleName>
   <requiredInstallFiles>
     <file source="SKSE\Plugins\SchlongPhysicsSwapper.dll" destination="SKSE\Plugins\SchlongPhysicsSwapper.dll" priority="0" />
     <file source="SKSE\Plugins\CBPCMasterConfig_ZZZ_SchlongPhysicsSwapper.txt" destination="SKSE\Plugins\CBPCMasterConfig_ZZZ_SchlongPhysicsSwapper.txt" priority="0" />
@@ -18,11 +18,16 @@
       <optionalFileGroups order="Explicit">
         <group name="Which arousal mod do you use?" type="SelectExactlyOne">
           <plugins order="Explicit">
-            <plugin name="OSL Aroused">
-              <description>Choose this if you use OSL Aroused. SPS will install its player compatibility file.</description>
+            <plugin name="OSL Aroused 2.9.3 or newer">
+              <description>Choose this for current OSL Aroused. No extra SPS file is installed. Turn off OSL's Enable SOS option so it does not fight SPS for the player's angle. When updating, install SPS as Replace rather than Merge so an older SPS override is removed.</description>
+              <files />
+              <typeDescriptor><type name="Optional" /></typeDescriptor>
+            </plugin>
+            <plugin name="OSL Aroused 2.9.0 to 2.9.2 (legacy compatibility)">
+              <description>Choose this only for OSL Aroused 2.9.0 through 2.9.2. Installs the legacy player-only compatibility script so OSL can keep controlling NPC angles without changing the SPS player's angle. Do not use this with OSL 2.9.3 or newer.</description>
               <files>
-                <file source="Scripts\OSLAroused_Main.pex" destination="Scripts\OSLAroused_Main.pex" priority="10" />
-                <folder source="Source\OSL Aroused Compatibility" destination="Source\OSL Aroused Compatibility" priority="0" />
+                <file source="Optional\OSL Legacy\Scripts\OSLAroused_Main.pex" destination="Scripts\OSLAroused_Main.pex" priority="10" />
+                <folder source="Optional\OSL Legacy\Source\OSL Aroused Compatibility" destination="Source\OSL Aroused Compatibility" priority="0" />
               </files>
               <typeDescriptor><type name="Optional" /></typeDescriptor>
             </plugin>
@@ -33,6 +38,11 @@
             </plugin>
             <plugin name="SexLab Aroused Redux">
               <description>Choose this if you use SexLab Aroused Redux. No extra SPS file is needed. Leave Redux's Enable SOS option off.</description>
+              <files />
+              <typeDescriptor><type name="Optional" /></typeDescriptor>
+            </plugin>
+            <plugin name="No arousal mod (manual modes only)">
+              <description>Choose this only if you will use Keep soft or Keep erect. Automatic switching needs an arousal mod.</description>
               <files />
               <typeDescriptor><type name="Optional" /></typeDescriptor>
             </plugin>

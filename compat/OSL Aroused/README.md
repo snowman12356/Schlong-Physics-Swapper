@@ -1,9 +1,12 @@
-# OSL Aroused player-position compatibility override
+# Legacy OSL Aroused player-position compatibility override
 
 Upstream: <https://github.com/ozooma10/OSLAroused>
 
 Base source: `contrib/Distribution/PapyrusSources/OSLAroused_Main.psc` from the
 public `2.9.0` tag. The installed binary was validated with OSL Aroused 2.9.2.
+Use this override only with OSL Aroused 2.9.0 through 2.9.2. OSL 2.9.3 moved
+SOS position control into its native DLL, so this script cannot exclude the
+player on that version and must not be installed with it.
 
 The patch changes `UpdateSOSPosition` from:
 

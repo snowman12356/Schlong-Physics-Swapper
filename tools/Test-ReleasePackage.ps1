@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [string]$PackagePath
+    [string]$PackagePath,
+    [string]$Version
 )
 
 $ErrorActionPreference = 'Stop'
@@ -19,7 +20,9 @@ $requiredFiles = @(
     'SKSE\Plugins\CBPConfig_ZZZ_SchlongPhysicsSwapper.txt',
     'Scripts\SPS_SexLabBridge.pex',
     'Optional\OStim\Scripts\SPS_OStimBridge.pex',
-    'Scripts\OSLAroused_Main.pex',
+    'Optional\OSL Legacy\Scripts\OSLAroused_Main.pex',
+    'Optional\OSL Legacy\Source\OSL Aroused Compatibility\OSLAroused_Main.psc',
+    'Licenses\OSL-Aroused-Unlicense.txt',
     'Mod Author API\README.md',
     'Mod Author API\SPSAPI.h'
 )
@@ -38,8 +41,24 @@ try {
     throw "FOMOD XML is not well formed: $($_.Exception.Message)"
 }
 
-if ($info.fomod.Version -ne '1.9.1' -or $module.config.moduleName -notmatch '1\.9\.1') {
-    throw 'FOMOD version does not match the 1.9.1 release.'
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $Version = [string]$info.fomod.Version
+}
+
+$forbiddenPaths = @(
+    'Scripts\OSLAroused_Main.pex',
+    'Source\OSL Aroused Compatibility'
+)
+
+foreach ($relativePath in $forbiddenPaths) {
+    $fullPath = Join-Path $resolvedPackage $relativePath
+    if (Test-Path -LiteralPath $fullPath) {
+        throw "Obsolete OSL override must not be included in the package: $relativePath"
+    }
+}
+$escapedVersion = [regex]::Escape($Version)
+if ($info.fomod.Version -ne $Version -or $module.config.moduleName -notmatch $escapedVersion) {
+    throw "FOMOD version does not match the requested $Version release."
 }
 
 $sourceNodes = $module.SelectNodes('//*[@source]')

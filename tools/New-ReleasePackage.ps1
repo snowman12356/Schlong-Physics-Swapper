@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '1.9.1',
+    [string]$Version = '1.9.2',
     [string]$BuildDirectory = 'build-static',
     [switch]$CreateZip
 )
@@ -9,7 +9,7 @@ $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $build = (Resolve-Path -LiteralPath (Join-Path $repo $BuildDirectory)).Path
 $dist = Join-Path $repo 'dist'
-$stageName = "Schlong-Physics-Swapper-{0}-ReleaseCandidate" -f $Version
+$stageName = "Schlong-Physics-Swapper-{0}" -f $Version
 $stage = Join-Path $dist $stageName
 
 if (Test-Path -LiteralPath $stage) {
@@ -68,9 +68,9 @@ Copy-ReleaseFile 'scripts\SPS_SexLabBridge.pex' 'Scripts\SPS_SexLabBridge.pex'
 Copy-ReleaseFile 'scripts\Source\SPS_SexLabBridge.psc' 'Source\Scripts\SPS_SexLabBridge.psc'
 Copy-ReleaseFile 'scripts\SPS_OStimBridge.pex' 'Optional\OStim\Scripts\SPS_OStimBridge.pex'
 Copy-ReleaseFile 'scripts\Source\SPS_OStimBridge.psc' 'Optional\OStim\Source\Scripts\SPS_OStimBridge.psc'
-Copy-ReleaseFile 'compat\OSL Aroused\Scripts\OSLAroused_Main.pex' 'Scripts\OSLAroused_Main.pex'
-Copy-ReleaseFile 'compat\OSL Aroused\Scripts\Source\OSLAroused_Main.psc' 'Source\OSL Aroused Compatibility\OSLAroused_Main.psc'
-Copy-ReleaseFile 'compat\OSL Aroused\README.md' 'Source\OSL Aroused Compatibility\README.md'
+Copy-ReleaseFile 'compat\OSL Aroused\Scripts\OSLAroused_Main.pex' 'Optional\OSL Legacy\Scripts\OSLAroused_Main.pex'
+Copy-ReleaseFile 'compat\OSL Aroused\Scripts\Source\OSLAroused_Main.psc' 'Optional\OSL Legacy\Source\OSL Aroused Compatibility\OSLAroused_Main.psc'
+Copy-ReleaseFile 'compat\OSL Aroused\README.md' 'Optional\OSL Legacy\Source\OSL Aroused Compatibility\README.md'
 Copy-ReleaseFile 'compat\OSL Aroused\LICENSE.OSLAroused-Unlicense.txt' 'Licenses\OSL-Aroused-Unlicense.txt'
 Copy-ReleaseFile 'LICENSE' 'LICENSE'
 Copy-ReleaseFile 'README.md' 'README.md'
@@ -82,11 +82,11 @@ Copy-ReleaseFile 'docs\MOD_AUTHOR_API.md' 'Mod Author API\README.md'
 Copy-ReleaseFile 'src\SPSAPI.h' 'Mod Author API\SPSAPI.h'
 Copy-ReleaseDirectory 'fomod' 'fomod'
 
-& (Join-Path $PSScriptRoot 'Test-ReleasePackage.ps1') -PackagePath $stage
+& (Join-Path $PSScriptRoot 'Test-ReleasePackage.ps1') -PackagePath $stage -Version $Version
 if (-not $?) { throw 'Release validation failed.' }
 
 if ($CreateZip) {
-    $zip = Join-Path $dist ("Schlong-Physics-Swapper-{0}-ReleaseCandidate.zip" -f $Version)
+    $zip = Join-Path $dist ("Schlong-Physics-Swapper-{0}.zip" -f $Version)
     Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -Force
     Write-Output "Created: $zip"
 }

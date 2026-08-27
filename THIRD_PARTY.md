@@ -19,13 +19,14 @@ archives include their applicable copyright and licence notices in the
 notices do not imply that the upstream projects endorse Schlong Physics
 Swapper.
 
-## OSL Aroused compatibility override
+## Optional legacy OSL Aroused compatibility
 
-The included `OSLAroused_Main.psc` is derived from the public OSL Aroused 2.9.0
+The optional `OSLAroused_Main.psc` is derived from the public OSL Aroused 2.9.0
 source at <https://github.com/ozooma10/OSLAroused>. It adds one player check to
-`UpdateSOSPosition`, preventing OSL from sending player `SOSFlaccid`/`SOSBend`
-events while retaining NPC behavior. The compiled `.pex` was validated against
-the installed OSL Aroused 2.9.2 script used during development.
+the old Papyrus `UpdateSOSPosition` function, preventing OSL from sending player
+`SOSFlaccid`/`SOSBend` events while retaining NPC behavior. It is offered only
+for OSL Aroused 2.9.0 through 2.9.2 and must not be installed with OSL 2.9.3 or
+newer, where SOS position control moved into the native DLL.
 
 OSL Aroused is released under the Unlicense. A verbatim copy is included at
 `compat/OSL Aroused/LICENSE.OSLAroused-Unlicense.txt`. The derivative source and

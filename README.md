@@ -1,4 +1,4 @@
-# Schlong Physics Swapper 1.9.1
+# Schlong Physics Swapper 1.9.2
 
 Native SKSE plugin for compatible SOS six-bone schlongs. Faster HDT-SMP owns
 Gen01-Gen06 while arousal is below a configurable threshold; CBPC owns them
@@ -21,10 +21,11 @@ you preserve the licence notice and give credit as:
 
 > Schlong Physics Swapper by snowman12356
 
-Please link to the original GitHub or Nexus page where practical. Files derived
-from other projects remain under their respective licences; see
-[THIRD_PARTY.md](THIRD_PARTY.md). In particular, the included OSL Aroused
-compatibility files are distributed under OSL Aroused's Unlicense.
+Please link to the original GitHub or Nexus page where practical. Third-party
+projects used through public compatibility interfaces remain under their
+respective licences; see [THIRD_PARTY.md](THIRD_PARTY.md). The optional OSL
+Aroused 2.9.0-to-2.9.2 compatibility file is distributed under OSL Aroused's
+Unlicense.
 
 The author may participate in Nexus Mods' Donation Points programme. This does
 not restrict these permissions or place any feature, update, support, or file
@@ -38,7 +39,8 @@ with it.
 - SKSE Menu Framework 3
 - Faster HDT-SMP
 - CBPC 
-- OSL Aroused, SLO Aroused NG, or classic SexLab Aroused Redux
+- OSL Aroused, SLO Aroused NG, or classic SexLab Aroused Redux for Automatic
+  mode. Manual Keep soft and Keep erect modes work without an arousal mod.
 - A compatible SOS addon with SMP physics 
 
 Crash Logger is optional and only needed when reporting a Skyrim crash. Physics
@@ -59,19 +61,19 @@ physics configuration; the active genital mesh must still point to a valid
 The package includes a dedicated CBPC map and parameter file for all six shaft
 bones. It does not depend on another SOS CBPC preset being active.
 
-OSL normally sends `SOSFlaccid` and `SOSBend` events whenever player arousal
-changes, which can compete with this plugin's position control. The package
-includes a player-only OSL compatibility override based on OSL Aroused's
-published 2.9.0 source and validated against the installed 2.9.2 script. It
-only skips OSL's player SOS-position event; OSL arousal, integrations, UI, and
-NPC behavior remain unchanged. OSL Aroused is distributed under the Unlicense;
-the upstream license, patched source, and attribution are included.
+OSL Aroused is supported through its native arousal interface. Leave OSL's
+**Enable SOS** option disabled so its arousal-based position changes do not
+compete with SPS for the player. This also disables OSL's automatic SOS angles
+for NPCs outside scenes; SexLab and OStim scene animations still control their
+participants normally. Users who remain on OSL 2.9.0 through 2.9.2 can instead
+select the clearly labelled legacy FOMOD option. That optional script
+excludes only the player and retains the old OSL NPC angle behavior. It must not
+be installed with OSL 2.9.3 or newer, where angle control moved into OSL's DLL.
 
 SLO Aroused NG is supported by reading its standard cached `sla_Arousal`
 value. This avoids adding a repeating Papyrus request to busy load orders. When
 using SLO, leave its **Use SOS** option disabled so it does not send competing
-`SOSFlaccid`/`SOSBend` events. The packaged OSL script override is only used by
-OSL Aroused and does not replace SLO's native DLL.
+`SOSFlaccid`/`SOSBend` events. SPS does not replace SLO's native DLL.
 
 Classic SexLab Aroused Redux is supported as a fallback by reading the
 player's public `sla_Arousal` faction rank. OSL and SLO remain higher-priority
@@ -84,7 +86,7 @@ the state from immediately before the scene is retained: flaccid stays flaccid
 and hard stays hard. The player uses CBPC while penetrating or having their
 penis serviced.
 
-The Scene behaviour page can change bottom/receiving behaviour to follow live arousal,
+The Scenes page can change bottom/receiving behaviour to follow live arousal,
 always use SMP, or always use CBPC. Keeping the pre-scene state is the default.
 Unknown or unregistered stages keep the current engine by default, preventing
 visible pops. Normal arousal control resumes after a configurable delay.
@@ -120,17 +122,17 @@ replacing the interface. The public header and examples are in
 ## Settings
 
 Open SKSE Menu Framework in game, then select **Schlong Physics Swapper**.
-The streamlined **Home** page provides only everyday controls:
+The streamlined **Home** page provides the core controls and the two positions
+SPS switches between:
 
 - live arousal, current physics engine, and overall health
 - plain-language Automatic, Always Soft, and Always Erect modes
-- a simple recommended-settings button
-
-The new **Looks and erections** page keeps appearance and erection behaviour
-together:
-
 - soft and erect angle controls in one place
 - automatic soft-angle refresh for SOS AE-NG, without a manual SMP reset
+- a simple recommended-settings button
+
+The **Appearance** page controls the transition between those positions:
+
 - an optional erection that rises gradually with live arousal
 - separate rise and softening times, so an erection can fade naturally instead
   of dropping immediately
@@ -141,9 +143,9 @@ together:
   after a long sleep or wait
 - a test button so random behaviour can be checked immediately
 
-SexLab controls now have their own **Scene behaviour** page. Rare timing,
-recovery and compatibility controls live on **Fine tuning** and are collapsed
-until needed. **Help and reports** shows the important setup results first,
+SexLab and OStim controls have their own **Scenes** page. Rare timing,
+recovery and compatibility controls live under **Advanced** and are collapsed
+until needed. **Troubleshooting** shows the important setup results first,
 keeps file names and counters inside optional detail sections, and uses normal
 language for quick fixes and support reports.
 
@@ -154,14 +156,18 @@ automatically imports an existing `UBEPhysicsSwitch.ini` once, preserving the
 old settings even when both files are initially present.
 
 The Nexus archive includes a simple FOMOD. You manually choose OSL Aroused,
-SLO Aroused NG or SexLab Aroused Redux, so the installer does not have to guess.
-The OSL choice installs its player compatibility file; SLO NG and Redux need no
-extra SPS file. A separate optional choice installs the experimental OStim role
-bridge. SOS AE, legacy SOS and TNG all use the same SPS core DLL. New users can
-install the recommended settings; updating users can choose **Keep my existing
-settings** so their INI is not replaced. Physics Editor and Auto Physics Reset
-notices are shown on the in-game **Help and reports** page and do not block
-installation.
+SLO Aroused NG, SexLab Aroused Redux, or no arousal mod for manual-only use,
+so the installer does not have to guess.
+The current OSL, SLO NG and Redux choices install no extra SPS compatibility
+file; leave each arousal mod's SOS position option disabled. OSL 2.9.0 through
+2.9.2 has a separate legacy option that installs the old player-only override. If
+updating to OSL 2.9.3 or newer, replace the old SPS mod rather than merging the
+new archive into it so that override is removed. A separate optional choice
+installs the experimental OStim role bridge. SOS AE, legacy SOS and TNG all use
+the same SPS core DLL. New users can install the recommended settings; updating
+users can choose **Keep my existing settings** so their INI is not replaced.
+Physics Editor and Auto Physics Reset notices are shown on the in-game
+**Troubleshooting** page and do not block installation.
 
 ## Behavior
 
@@ -196,14 +202,14 @@ installation.
 - A 5-point default hysteresis keeps ownership stable around the threshold.
 - About 10 seconds after loading a save or starting a new game, SPS resets the
   player's SMP once and then restores the correct soft/erect state. This can be
-  turned off or delayed on the Fine tuning page.
+  turned off or delayed on the Advanced page.
 - Handoffs are only marked successful when both external Papyrus APIs accept
   every request. Failed handoffs are retried and the last confirmed state is
   restored on a best-effort basis.
 - A switch cooldown prevents rapid ownership changes.
-- While CBPC owns an erect schlong, a lightweight idempotent guard re-disables
-  SMP on Gen01-Gen06 after an external `smp reset`. It does not restart CBPC or
-  replay the SOS position.
+- After a handoff, mesh change, or notified external physics reset, SPS runs a
+  short bounded confirmation that restores the selected owner if needed. It
+  does not send an FSMP command on every ordinary arousal poll.
 - The erect bend is applied after a CBPC handoff and confirmed once more after
   CBPC has fully settled. Slider changes receive one debounced final
   confirmation. Blind periodic replays are avoided because they cause visible
@@ -228,20 +234,23 @@ installation.
 ## Installation
 
 1. Install the requirements listed above.
-2. Install the GitHub release archive with MO2 or Vortex.
+2. Install the GitHub release archive with MO2 or Vortex. When updating, replace
+   the old SPS mod rather than merging files into it.
 3. Ensure **Schlong Physics Swapper** wins conflicts for its two `ZZZ` CBPC
-   files. OSL Aroused users should also let its `Scripts/OSLAroused_Main.pex`
-   win; SLO Aroused NG users should leave SLO's **Use SOS** option disabled.
+   files. OSL Aroused users must turn off **Enable SOS**; SLO Aroused NG users
+   must turn off **Use SOS**; Redux users must turn off **Enable SOS**. The only
+   exception is the legacy OSL 2.9.0-to-2.9.2 installer option, which provides
+   its own player exclusion.
 4. Start Skyrim through SKSE and open the Schlong Physics Swapper section in
    SKSE Menu Framework.
 
-The public archive contains the SKSE DLL, INI template, dedicated CBPC files,
-and attributed OSL compatibility override. It does not contain an ESP, body
-meshes, SMP XML, or any other OSL files.
+The public archive contains the SKSE DLL, INI template, dedicated CBPC files and
+an optional OSL 2.9.0-to-2.9.2 compatibility script. It does not contain an
+ESP, body meshes, SMP XML, or any other OSL files.
 
-## Help and reports page
+## Troubleshooting page
 
-The Help and reports page shows loaded and live connection state for:
+The Troubleshooting page shows loaded and live connection state for:
 
 - SKSE Menu Framework
 - Arousal provider (OSL, SLO NG, or classic SexLab Aroused)
@@ -280,12 +289,38 @@ When reporting a problem, attach the diagnostic report or 30-second capture and
 include the schlong addon, Skyrim runtime, mod-manager name, expected result,
 actual result, and short reproduction steps. See [SUPPORT.md](docs/SUPPORT.md).
 
+## 1.9.2 changes
+
+- Made physics switching more reliable after loading a save, starting a new
+  game, equipping armour, removing armour, changing schlongs and rebuilding the
+  player mesh.
+- Added bounded verification and recovery so SPS can restore the selected SMP
+  or CBPC owner without creating an endless retry loop.
+- Fixed erect physics sometimes keeping SMP, losing its angle or visually
+  staying soft after an equipment change.
+- Fixed soft physics sometimes keeping an incorrect stretched pose until a
+  manual FSMP reset.
+- Made the troubleshooting test buttons hold their result for 10 seconds and
+  queue safely while the game is still loading.
+- Prevented disabled plugins such as SOS Physics Manager from being reported as
+  active conflicts.
+- Reorganised the MCM into Home, Appearance, Scenes, Advanced and
+  Troubleshooting pages without changing existing saved settings.
+- Added separate OSL installer choices: current OSL 2.9.3+ uses its native
+  arousal interface with **Enable SOS** disabled, while OSL 2.9.0 through 2.9.2
+  can use the optional legacy player-only compatibility script.
+- Added a repeatable local Windows build script and strengthened release-package
+  validation.
+
 ## 1.9.1 changes
 
 - Fixed SPS sometimes missing OSL Aroused updates at high arousal.
 - Fixed the erect angle resetting to 0 after loading or changing equipment.
 - Improved recovery after armour, schlong and player mesh changes.
 - Fixed a severe slowdown when a soft-position update was rejected.
+- Added separate OSL installer choices: current OSL 2.9.3+ uses native arousal
+  with **Enable SOS** off, while OSL 2.9.0 through 2.9.2 can still use the
+  optional player-only legacy compatibility script.
 
 ## 1.9.0 changes
 
@@ -303,7 +338,8 @@ actual result, and short reproduction steps. See [SUPPORT.md](docs/SUPPORT.md).
 - Added automatic soft SMP recovery after changing schlongs or equipment.
 - Kept subtle movement and follow-through in the supplied physics values rather
   than making the erect state completely rigid.
-- Added a clearer Looks and erections menu page.
+- Moved soft and erect position controls to Home and kept transition behaviour
+  on the clearer Appearance page.
 - Kept one DLL for Skyrim SE, AE and VR.
 - Made legacy SOS detection safer and added a clear warning for SOS Physics
   Manager conflicts.
@@ -337,8 +373,8 @@ actual result, and short reproduction steps. See [SUPPORT.md](docs/SUPPORT.md).
 
 ## 1.7.2 changes
 
-- Rebuilt the menu around Home, Scene behaviour, Fine tuning, and Help and
-  reports pages.
+- Rebuilt the menu around Home, Appearance, Scenes, Advanced and
+  Troubleshooting pages.
 - Moved SexLab options out of the general advanced page so scene behaviour is
   easier to understand.
 - Reworded controls and status messages in normal language.
@@ -404,5 +440,43 @@ toolchain, then build the `SchlongPhysicsSwapper` target. The Menu Framework SDK
 headers are fetched during configuration. For a VR-capable build, initialise
 CommonLibSSE-NG's `extern/openvr` submodule before configuring.
 
-The OSL compatibility override is stored in `compat/OSL Aroused` with its
-patched Papyrus source and upstream Unlicense. It is not compiled by CMake.
+The optional OSL 2.9.0-to-2.9.2 compatibility override is stored in
+`compat/OSL Aroused` with its patched Papyrus source and upstream Unlicense. It
+is not compiled by CMake and is placed only inside the release archive's legacy
+optional folder.
+
+### Reliable Windows build command
+
+Long OneDrive paths can make Ninja lock up or leave generated projects tied to
+a temporary drive that no longer exists. `tools/Build-Local.ps1` avoids both
+problems: it uses the Visual Studio generator, maps the workspace to a short
+temporary drive for configuration and compilation, then removes that mapping.
+
+Set `COMMONLIB_SSE_FOLDER` and `VCPKG_ROOT`, or pass their paths directly:
+
+```powershell
+.\tools\Build-Local.ps1 `
+    -CommonLib 'C:\path\to\CommonLibSSE-NG' `
+    -VcpkgRoot 'C:\path\to\vcpkg'
+```
+
+By default, the heavy CMake build cache is kept under
+`%LOCALAPPDATA%\SPSBuild` instead of OneDrive. The script reuses that cache,
+skips a full configure when possible, and builds with four parallel jobs.
+The first build still has to compile CommonLib, but later builds should be
+much faster.
+
+The finished DLL is copied to `build-output\SchlongPhysicsSwapper.dll`, ready
+for testing or packaging. Useful optional switches are:
+
+```powershell
+.\tools\Build-Local.ps1 -Jobs 8
+.\tools\Build-Local.ps1 -Reconfigure
+```
+
+Set `SPS_BUILD_ROOT` if you want the persistent build cache on another fast
+local drive. To package this output, use:
+
+```powershell
+.\tools\New-ReleasePackage.ps1 -BuildDirectory build-output
+```

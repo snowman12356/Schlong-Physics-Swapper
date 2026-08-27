@@ -31,7 +31,7 @@ namespace Mod {
 namespace fs = std::filesystem;
 
 constexpr auto kName = "Schlong Physics Swapper";
-constexpr auto kVersion = "1.9.1";
+constexpr auto kVersion = "1.9.2";
 constexpr auto kIni = "Data/SKSE/Plugins/SchlongPhysicsSwapper.ini";
 constexpr auto kLegacyIni = "Data/SKSE/Plugins/UBEPhysicsSwitch.ini";
 constexpr auto kReport = "Data/SKSE/Plugins/SchlongPhysicsSwapper_Diagnostics.txt";
@@ -201,6 +201,7 @@ std::atomic<std::int64_t> retryAfterMs{ 0 };
 std::atomic<std::int64_t> loadSMPResetDueMs{ 0 };
 std::atomic<std::int64_t> loadSMPResetRestoreDueMs{ 0 };
 std::atomic<std::int64_t> softHandoffResetDueMs{ 0 };
+std::atomic<std::int64_t> softHandoffResetUntilMs{ 0 };
 std::atomic<std::int64_t> softHandoffResetRestoreDueMs{ 0 };
 std::atomic<std::int64_t> softAngleRefreshDueMs{ 0 };
 std::atomic<std::int64_t> softAngleRefreshRestoreDueMs{ 0 };
@@ -210,18 +211,30 @@ std::atomic<std::int64_t> bendSettleDueMs{ 0 };
 std::atomic<std::int64_t> bendConfirmationDueMs{ 0 };
 std::atomic<std::int64_t> bendRetryDueMs{ 0 };
 std::atomic<std::int64_t> softConfirmationDueMs{ 0 };
+std::atomic<std::int64_t> softConfirmationUntilMs{ 0 };
 std::atomic<std::int64_t> cbpcConfirmationDueMs{ 0 };
+std::atomic<std::int64_t> cbpcConfirmationUntilMs{ 0 };
 std::atomic<std::int64_t> erectionAnimationStartMs{ 0 };
 std::atomic<std::int64_t> bendGuardUntilMs{ 0 };
 std::atomic<std::int64_t> bendGuardWindowStartMs{ 0 };
 std::atomic<std::int64_t> nodeRefreshDueMs{ 0 };
 std::atomic<std::int64_t> nodeRefreshFollowupDueMs{ 0 };
+std::atomic<std::int64_t> nodeCBPCReacquireDueMs{ 0 };
+std::atomic<std::int64_t> nodeCBPCReacquireUntilMs{ 0 };
 std::atomic<std::int64_t> erectMeshReplayDueMs{ 0 };
 std::atomic<std::int64_t> nodeSMPResetRestoreDueMs{ 0 };
 std::atomic<std::int64_t> diagnosticsRefreshDueMs{ 0 };
 std::atomic<std::int64_t> manualPhysicsTestUntilMs{ 0 };
+std::atomic<int> activeManualPhysicsTest{ -1 };  // -1 none, 0 SMP, 1 CBPC
+std::atomic<int> pendingQuickAction{ -1 };       // -1 none, 0 SMP test, 1 CBPC test, 2 repair
+std::atomic<std::int64_t> pendingQuickActionUntilMs{ 0 };
+std::atomic<std::int64_t> startupReconcileDueMs{ 0 };
+std::atomic<std::int64_t> startupReconcileUntilMs{ 0 };
+std::atomic<std::int64_t> postSwitchVerificationDueMs{ 0 };
+std::atomic<std::int64_t> postSwitchVerificationUntilMs{ 0 };
 std::atomic<std::int64_t> externalOwnerRepairDueMs{ 0 };
-std::atomic<std::int64_t> lastExternalOwnerRepairMs{ 0 };
+std::atomic<std::int64_t> externalOwnerRepairUntilMs{ 0 };
+std::atomic<std::int64_t> lastOwnerRestorationMs{ 0 };
 std::atomic<std::int64_t> ignoreNodeEventsUntilMs{ 0 };
 std::atomic<std::int64_t> papyrusDispatchAllowedAfterMs{ 0 };
 std::atomic<int> appliedBend{ -1 };
@@ -256,7 +269,7 @@ std::atomic<SPS::API::ListenerHandle> nextAPIListenerHandle{ 1 };
 std::atomic<unsigned> apiRequestsAccepted{ 0 };
 std::atomic<unsigned> apiRequestsReleased{ 0 };
 std::atomic<unsigned> externalResetNotices{ 0 };
-std::atomic<unsigned> externalOwnerRepairs{ 0 };
+std::atomic<unsigned> ownerRestorations{ 0 };
 std::jthread pollThread;
 std::jthread erectionAnimationThread;
 std::jthread debugCaptureThread;
@@ -289,6 +302,7 @@ std::optional<ExternalPhysicsRequest> ActiveAPIRequest();
 void ClearAPIRequests();
 void ScheduleExternalOwnerRepair(int delayMs, std::string_view reason);
 bool SetOwner(bool cbpc, bool force = false);
+void ProcessPendingQuickAction();
 
 const char* SexLabRoleName(int role) {
     switch (role) {
@@ -323,6 +337,7 @@ void ScheduleExternalOwnerRepair(int delayMs, std::string_view reason) {
     if (!stateKnown.load()) return;
     const auto due = NowMs() + std::clamp(delayMs, 100, 5000);
     externalOwnerRepairDueMs.store(due);
+    externalOwnerRepairUntilMs.store(due + 10000);
     ++externalResetNotices;
     logger::info("Physics owner re-check scheduled after {}", reason);
 }
@@ -729,6 +744,26 @@ void ClearArousalError() {
     if (lastError.starts_with("SPS-002:")) lastError.clear();
 }
 
+void ClearResolvedOwnerError() {
+    std::scoped_lock lock(activityLock);
+    if (lastError.starts_with("SPS-010:") || lastError.starts_with("SPS-020:"))
+        lastError.clear();
+}
+
+void ClearResolvedRefreshError() {
+    std::scoped_lock lock(activityLock);
+    if (lastError.starts_with("SPS-017:") || lastError.starts_with("SPS-018:") ||
+        lastError.starts_with("SPS-019:"))
+        lastError.clear();
+}
+
+bool CoreReady(const Diagnostics& d, const Settings& copy) {
+    const bool arousalReady = copy.mode != 0 || (d.oslModuleLoaded && d.oslPluginLoaded);
+    return d.menuFrameworkLoaded && arousalReady && d.fsmpModuleLoaded && d.cbpcModuleLoaded &&
+        d.playerBonesFound == 6 && d.compatibleXmlFiles > 0 && d.compatibleCbpcMaps > 0 &&
+        d.compatibleCbpcParameters > 0 && !d.sosPhysicsManagerLoaded;
+}
+
 void CaptureState(std::string_view reason) {
     Settings copy;
     { std::scoped_lock lock(settingsLock); copy = settings; }
@@ -746,9 +781,11 @@ void CaptureState(std::string_view reason) {
 
 std::vector<std::pair<std::string, std::string>> SuggestedFixes(const Diagnostics& d) {
     std::vector<std::pair<std::string, std::string>> fixes;
+    Settings copy;
+    { std::scoped_lock lock(settingsLock); copy = settings; }
     if (!d.menuFrameworkLoaded)
         fixes.emplace_back("SPS-001", "Install or update SKSE Menu Framework 3, then fully restart Skyrim.");
-    if (!d.oslModuleLoaded || !d.oslPluginLoaded)
+    if (copy.mode == 0 && (!d.oslModuleLoaded || !d.oslPluginLoaded))
         fixes.emplace_back("SPS-002", "Install OSL Aroused, SLO Aroused NG, or classic SexLab Aroused and enable its plugin.");
     if (!d.fsmpModuleLoaded)
         fixes.emplace_back("SPS-003", "Install Faster HDT-SMP and its requirements.");
@@ -776,7 +813,7 @@ std::vector<std::pair<std::string, std::string>> SuggestedFixes(const Diagnostic
         fixes.emplace_back("SPS-010", "A physics handoff failed. Check SchlongPhysicsSwapper.log and confirm both FSMP and CBPC load correctly.");
     if (PositionBackendAvailable() &&
         (positionAutoSuspended.load() || (!lastBendSucceeded.load() && requestedBend.load() >= 0)))
-        fixes.emplace_back("SPS-011", "The erect angle could not be applied. Use Repair current state, then check for another mod controlling the angle.");
+        fixes.emplace_back("SPS-011", "The erect angle could not be applied. Use Repair current physics, then check for another mod controlling the angle.");
     if (fixes.empty())
         fixes.emplace_back("SPS-000", "Everything appears ready.");
     return fixes;
@@ -1028,11 +1065,7 @@ bool SetCBPCPhysics(RE::Actor* actor, bool enabled) {
 }
 
 bool ConfirmCurrentPhysicsOwner(std::string_view reason) {
-    externalOwnerRepairDueMs.store(0);
-    if (!PapyrusReadyForDispatch()) {
-        externalOwnerRepairDueMs.store(NowMs() + 1000);
-        return false;
-    }
+    if (!PapyrusReadyForDispatch()) return false;
     Settings copy;
     { std::scoped_lock lock(settingsLock); copy = settings; }
     if (!copy.enabled || !stateKnown.load()) return false;
@@ -1053,17 +1086,17 @@ bool ConfirmCurrentPhysicsOwner(std::string_view reason) {
     smpConnected.store(smpOK);
     cbpcConnected.store(cbpcOK);
     if (!smpOK || !cbpcOK) {
-        Record(fmt::format("SPS-010: Could not restore {} after {} (FSMP: {}, CBPC: {})",
+        logger::warn("Could not restore {} after {} (FSMP: {}, CBPC: {})",
             expectCBPC ? "CBPC" : "SMP", reason,
-            smpOK ? "OK" : "no response", cbpcOK ? "OK" : "no response"), true);
+            smpOK ? "OK" : "no response", cbpcOK ? "OK" : "no response");
         return false;
     }
 
     const auto now = NowMs();
-    lastExternalOwnerRepairMs.store(now);
+    lastOwnerRestorationMs.store(now);
     ignoreNodeEventsUntilMs.store(now + 2000);
-    if (expectCBPC) cbpcConfirmationDueMs.store(now + 750);
-    ++externalOwnerRepairs;
+    ++ownerRestorations;
+    ClearResolvedOwnerError();
     Record(fmt::format("{} ownership restored after {}",
         expectCBPC ? "CBPC" : "SMP", reason));
     return true;
@@ -1494,6 +1527,29 @@ bool AutomaticBendAllowed(const Settings& copy) {
     return true;
 }
 
+int AnimationEventBend(int bend, bool tngBackend) {
+    bend = std::clamp(bend, 0, 20);
+    if (tngBackend) {
+        // TNG follows the SOS/SAM event API but exposes the complete signed
+        // range: SOSBend-9 is its lowest erect stage and SOSBend9 its highest.
+        // SOSFlaccid remains the separate fully soft event.
+        return std::clamp(static_cast<int>(std::lround(bend * 18.0 / 20.0)) - 9, -9, 9);
+    }
+    return std::clamp(static_cast<int>(std::lround(bend * 9.0 / 20.0)), 0, 9);
+}
+
+bool SendPositionEvent(RE::Actor* actor, const RE::BSFixedString& eventName, bool tngBackend) {
+    if (!actor) return false;
+    if (tngBackend) {
+        // TNG's own MCM uses Debug.SendAnimationEvent. Dispatching the same
+        // Papyrus call is important because NotifyAnimationGraph can return
+        // false even when TNG visibly processes the event, which previously
+        // produced false SPS-011 errors and an unreliable soft transition.
+        return Call("Debug", "SendAnimationEvent", actor, eventName);
+    }
+    return actor->NotifyAnimationGraph(eventName);
+}
+
 bool ApplyBend(RE::Actor* actor, int bend, bool flaccid = false, bool animate = false, bool automatic = false) {
     bend = std::clamp(bend, 0, 20);
     Settings copy;
@@ -1506,7 +1562,8 @@ bool ApplyBend(RE::Actor* actor, int bend, bool flaccid = false, bool animate = 
         return false;
     }
 
-    const auto legacyBend = std::clamp(static_cast<int>(std::lround(bend * 9.0 / 20.0)), 0, 9);
+    const bool tngBackend = TngLoaded();
+    const int eventBend = AnimationEventBend(bend, tngBackend);
     // A loose SOSAE_SKSE.pex does not prove that its native functions were
     // registered. Calling it without the SOS AE-NG DLL loaded can crash the
     // Papyrus VM, particularly on 1.5.97 legacy SOS setups. Legacy SOS and TNG
@@ -1525,9 +1582,9 @@ bool ApplyBend(RE::Actor* actor, int bend, bool flaccid = false, bool animate = 
 
     bool graphOK = false;
     if (useGraph) {
-        graphOK = flaccid
-            ? actor->NotifyAnimationGraph("SOSFlaccid")
-            : actor->NotifyAnimationGraph(RE::BSFixedString(fmt::format("SOSBend{}", legacyBend)));
+        graphOK = SendPositionEvent(actor, flaccid
+            ? RE::BSFixedString("SOSFlaccid")
+            : RE::BSFixedString(fmt::format("SOSBend{}", eventBend)), tngBackend);
     }
     const bool nativeOK = useNative && CallSosAeBend(actor, bend);
     lastBendMethod.store(useGraph && useNative ? 2 : (useGraph ? 1 : 0));
@@ -1590,7 +1647,8 @@ void StartBendAnimation(int startBend, int targetBend, int durationMs, bool rela
     Settings copy;
     { std::scoped_lock lock(settingsLock); copy = settings; }
     const bool nativeBackend = SosAeNativeLoaded();
-    const bool useGraphEvents = (TngLoaded() || LegacySosLoaded()) &&
+    const bool tngBackend = TngLoaded();
+    const bool useGraphEvents = (tngBackend || LegacySosLoaded()) &&
         (!nativeBackend || copy.bendMethod == 1);
     if (!nativeBackend && !useGraphEvents) {
         erectionAnimating.store(false);
@@ -1601,7 +1659,7 @@ void StartBendAnimation(int startBend, int targetBend, int durationMs, bool rela
         return;
     }
 
-    erectionAnimationThread = std::jthread([generation, startBend, targetBend, durationMs, useGraphEvents, relaxing](std::stop_token token) {
+    erectionAnimationThread = std::jthread([generation, startBend, targetBend, durationMs, useGraphEvents, tngBackend, relaxing](std::stop_token token) {
         while (!token.stop_requested() && erectionAnimating.load() &&
             generation == erectionAnimationGeneration.load()) {
             const auto elapsed = std::max<std::int64_t>(0, NowMs() - erectionAnimationStartMs.load());
@@ -1609,18 +1667,19 @@ void StartBendAnimation(int startBend, int targetBend, int durationMs, bool rela
             const float eased = t * t * (3.0F - 2.0F * t);
             const int bend = std::clamp(static_cast<int>(std::lround(
                 startBend + (targetBend - startBend) * eased)), 0, 20);
-            const int eventBend = std::clamp(static_cast<int>(std::lround(bend * 9.0 / 20.0)), 0, 9);
+            const int eventBend = AnimationEventBend(bend, tngBackend);
             const int queueKey = useGraphEvents ? eventBend : bend;
             const int previousQueueKey = erectionAnimationLastQueuedBend.exchange(queueKey);
             if (queueKey != previousQueueKey || t >= 1.0F) {
                 if (auto* tasks = SKSE::GetTaskInterface()) {
-                    tasks->AddTask([generation, bend, eventBend, targetBend, useGraphEvents, relaxing] {
+                    tasks->AddTask([generation, bend, eventBend, targetBend, useGraphEvents, tngBackend, relaxing] {
                         if (!erectionAnimating.load() || generation != erectionAnimationGeneration.load() ||
                             !stateKnown.load() || !usingCBPC.load()) return;
                         auto* player = RE::PlayerCharacter::GetSingleton();
                         if (!player) return;
                         const bool ok = useGraphEvents
-                            ? player->NotifyAnimationGraph(RE::BSFixedString(fmt::format("SOSBend{}", eventBend)))
+                            ? SendPositionEvent(static_cast<RE::Actor*>(player),
+                                RE::BSFixedString(fmt::format("SOSBend{}", eventBend)), tngBackend)
                             : CallSosAeBend(static_cast<RE::Actor*>(player), bend);
                         if (!ok) {
                             // Some SOS AE builds stop accepting native bend values just
@@ -1630,8 +1689,16 @@ void StartBendAnimation(int startBend, int targetBend, int durationMs, bool rela
                             // and restarting the same 5 -> 0 animation every poll.
                             if (relaxing) {
                                 const bool flaccidEventAccepted =
-                                    player->NotifyAnimationGraph(RE::BSFixedString("SOSFlaccid"));
+                                    SendPositionEvent(static_cast<RE::Actor*>(player),
+                                        RE::BSFixedString("SOSFlaccid"), tngBackend);
                                 CancelErectionAnimation();
+                                // Keep the transition marked as relaxing until
+                                // SMP actually accepts ownership. Otherwise the
+                                // ordinary CBPC repair pass can see CBPC still
+                                // active for one Papyrus tick and replay the
+                                // erect angle immediately before the soft
+                                // handoff.
+                                erectionRelaxing.store(true);
                                 requestedBend.store(targetBend);
                                 appliedBend.store(targetBend);
                                 lastBendSucceeded.store(flaccidEventAccepted);
@@ -1667,21 +1734,17 @@ void StartBendAnimation(int startBend, int targetBend, int durationMs, bool rela
                         ClearResolvedPositionError();
                         lastBendApplyMs.store(NowMs());
                         ignoreNodeEventsUntilMs.store(NowMs() + 2000);
-                        // Animation-event backends expose only ten visible SOS
-                        // positions. Their visible soft angle can therefore be
-                        // reached one internal 0-20 step before `bend` equals
-                        // the target. Finish the handoff as soon as the angle
-                        // the player can actually see reaches the requested
-                        // position instead of holding CBPC for the remainder of
-                        // the easing curve.
-                        const int targetEventBend = std::clamp(static_cast<int>(std::lround(
-                            targetBend * 9.0 / 20.0)), 0, 9);
+                        // Animation-event backends expose discrete visible SOS
+                        // positions (signed -9..9 in TNG, 0..9 in legacy SOS).
+                        // Finish the handoff as soon as the visible stage reaches
+                        // the target instead of holding CBPC for the remainder
+                        // of the internal 0-20 easing curve.
+                        const int targetEventBend = AnimationEventBend(targetBend, tngBackend);
                         const bool reachedVisibleTarget = useGraphEvents ?
                             eventBend == targetEventBend : bend == targetBend;
                         if (reachedVisibleTarget) {
                             erectionAnimating.store(false);
                             appliedBend.store(targetBend);
-                            if (relaxing) erectionRelaxing.store(false);
                             // SOS AE can rebuild or finish its graph transition
                             // just after the gradual native updates complete.
                             // Replay the final value once through compatibility
@@ -1717,6 +1780,13 @@ void StartGradualRelaxation(const Settings& copy) {
     const int targetBend = copy.flaccidAngleControl && SosAeNativeLoaded() ? copy.flaccidBend : 0;
     if (erectionAnimating.load() && erectionRelaxing.load() &&
         erectionAnimationTargetBend.load() == targetBend) return;
+    // From this point onward the requested state is soft. Any delayed erect
+    // confirmation, retry or replacement-mesh replay belongs to the previous
+    // state and must not be allowed to race the CBPC -> SMP handoff.
+    bendSettleDueMs.store(0);
+    bendConfirmationDueMs.store(0);
+    bendRetryDueMs.store(0);
+    erectMeshReplayDueMs.store(0);
     StartBendAnimation(startBend, targetBend, copy.softeningDurationMs, true);
 }
 
@@ -1782,57 +1852,55 @@ void ApplyRequestedSoftBend(bool force = false, bool animate = false) {
     }
 }
 
-void ConfirmSoftState() {
-    if (!stateKnown.load() || usingCBPC.load()) return;
-    if (!PapyrusReadyForDispatch()) {
-        softConfirmationDueMs.store(NowMs() + 1000);
-        return;
-    }
+bool ConfirmSoftState() {
+    if (!stateKnown.load() || usingCBPC.load()) return true;
+    if (!PapyrusReadyForDispatch()) return false;
     // A live PPA scene owns these transforms. Retry instead of consuming the
     // only confirmation, otherwise the shaft can stay erect with SMP enabled.
     if (PPAOwnsPosition()) {
-        softConfirmationDueMs.store(NowMs() + 500);
-        return;
+        return false;
     }
     auto* player = RE::PlayerCharacter::GetSingleton();
-    if (!player) return;
+    if (!player) return false;
     auto* actor = static_cast<RE::Actor*>(player);
     const bool cbpcOK = SetCBPCPhysics(actor, false);
     const bool smpOK = Call("DynamicHDT", "TogglePhysics", actor, PhysicsBones(), true);
     cbpcConnected.store(cbpcOK);
     smpConnected.store(smpOK);
     if (!cbpcOK || !smpOK) {
-        Record(fmt::format("SPS-010: Soft-state confirmation failed (FSMP: {}, CBPC: {})",
-            smpOK ? "OK" : "no response", cbpcOK ? "OK" : "no response"), true);
-        return;
+        logger::warn("Soft-state confirmation failed (FSMP: {}, CBPC: {})",
+            smpOK ? "OK" : "no response", cbpcOK ? "OK" : "no response");
+        return false;
     }
     ApplyRequestedSoftBend(true, true);
+    ClearResolvedOwnerError();
     Record("Soft state confirmed after physics handoff");
+    return true;
 }
 
-void ConfirmCBPCState() {
-    if (!stateKnown.load() || !usingCBPC.load()) return;
-    if (!PapyrusReadyForDispatch()) {
-        cbpcConfirmationDueMs.store(NowMs() + 1000);
-        return;
-    }
+bool ConfirmCBPCState() {
+    if (!stateKnown.load() || !usingCBPC.load()) return true;
+    if (!PapyrusReadyForDispatch()) return false;
     auto* player = RE::PlayerCharacter::GetSingleton();
-    if (!player) {
-        cbpcConfirmationDueMs.store(NowMs() + 1000);
-        return;
-    }
+    if (!player) return false;
 
-    // SetOwner reasserts SMP-off before this delayed pass. Starting CBPC on a
-    // later game tick avoids the two asynchronous Papyrus calls racing while
-    // FSMP or a SexLab/PPA skeleton rebuild is still settling.
-    const bool cbpcOK = SetCBPCPhysics(static_cast<RE::Actor*>(player), true);
+    // Repeat both halves of the handoff on a later game tick. A successful
+    // Papyrus dispatch only means the calls were queued; during a new game or
+    // skeleton rebuild either physics engine can finish after the other one.
+    // Reasserting SMP-off before CBPC-on makes the final owner deterministic.
+    auto* actor = static_cast<RE::Actor*>(player);
+    const bool smpOK = Call("DynamicHDT", "TogglePhysics", actor, PhysicsBones(), false);
+    const bool cbpcOK = SetCBPCPhysics(actor, true);
+    smpConnected.store(smpOK);
     cbpcConnected.store(cbpcOK);
-    if (!cbpcOK) {
-        cbpcConfirmationDueMs.store(NowMs() + 1000);
-        Record("SPS-010: Erect-state confirmation failed; retry queued", true);
-        return;
+    if (!smpOK || !cbpcOK) {
+        logger::warn("Erect-state confirmation failed (FSMP: {}, CBPC: {})",
+            smpOK ? "OK" : "no response", cbpcOK ? "OK" : "no response");
+        return false;
     }
+    ClearResolvedOwnerError();
     Record("CBPC state confirmed after physics handoff");
+    return true;
 }
 
 void RunLoadSMPReset() {
@@ -1865,6 +1933,7 @@ void RunLoadSMPReset() {
     // ResetPhysics is executed by Papyrus and FSMP queues its mesh rebuild on
     // the game thread. Give it time to finish before restoring SPS ownership.
     loadSMPResetRestoreDueMs.store(now + 750);
+    ClearResolvedRefreshError();
     Record("Player SMP reset completed after loading; physics state re-check queued");
 }
 
@@ -1912,6 +1981,7 @@ void RunSoftAngleRefresh() {
         return;
     }
     softAngleRefreshRestoreDueMs.store(NowMs() + 750);
+    ClearResolvedRefreshError();
     Record("Soft angle changed; refreshing the player's SMP pose");
 }
 
@@ -1938,11 +2008,16 @@ bool RefreshSMPAfterPlayerMeshChange() {
 void RunSoftHandoffSMPReset() {
     if (!stateKnown.load() || usingCBPC.load() || PPAOwnsPosition()) {
         softHandoffResetDueMs.store(0);
+        softHandoffResetUntilMs.store(0);
         softHandoffResetRestoreDueMs.store(0);
         return;
     }
     if (!PapyrusReadyForDispatch()) {
-        softHandoffResetDueMs.store(NowMs() + 1000);
+        const auto now = NowMs();
+        if (now < softHandoffResetUntilMs.load())
+            softHandoffResetDueMs.store(now + 1000);
+        else
+            Record("SPS-019: Soft-handoff refresh stopped because Papyrus did not become ready", true);
         return;
     }
     auto* player = RE::PlayerCharacter::GetSingleton();
@@ -1951,19 +2026,29 @@ void RunSoftHandoffSMPReset() {
     // TogglePhysics can report success while FSMP keeps the previous simulated
     // shape. Rebuilding just the player after a real CBPC -> SMP handoff is the
     // actor-scoped equivalent of the FSMP "SMP reset" button that repairs it.
+    // ResetPhysics(..., true) already snaps the actor to the reference pose and
+    // clears velocity. Freezing the six bones immediately before that reset can
+    // make FSMP rebuild from the frozen transitional shape, leaving the soft
+    // mesh visibly stretched even though the ownership calls all succeeded.
     const auto now = NowMs();
     ignoreNodeEventsUntilMs.store(now + 3000);
-    const bool dispatched = Call("DynamicHDT", "ResetPhysics",
-        static_cast<RE::Actor*>(player), true);
+    auto* actor = static_cast<RE::Actor*>(player);
+    const bool dispatched = Call("DynamicHDT", "ResetPhysics", actor, true);
     if (!dispatched) {
-        softHandoffResetDueMs.store(now + 1000);
-        Record("SPS-019: Faster HDT-SMP did not accept the soft-handoff refresh; retry queued", true);
+        if (now < softHandoffResetUntilMs.load()) {
+            softHandoffResetDueMs.store(now + 1000);
+            logger::warn("Faster HDT-SMP did not accept the soft-handoff refresh; bounded retry queued");
+        } else {
+            Record("SPS-019: Faster HDT-SMP did not accept the soft-handoff refresh", true);
+        }
         return;
     }
 
+    softHandoffResetUntilMs.store(0);
     softConfirmationDueMs.store(0);
     softHandoffResetRestoreDueMs.store(now + 750);
-    Record("Soft physics handoff refreshed the player's SMP pose");
+    ClearResolvedRefreshError();
+    Record("Soft physics handoff rebuilt the player's SMP pose");
 }
 
 bool SetOwner(bool cbpc, bool force) {
@@ -1973,16 +2058,9 @@ bool SetOwner(bool cbpc, bool force) {
         return false;
     }
     if (!force && stateKnown.load() && usingCBPC.load() == cbpc) {
-        if (cbpc) {
-            // `smp reset` reloads FSMP meshes and restores their bones to the
-            // XML's dynamic state. It has no public reset event, so reassert
-            // only the SMP-off half of the confirmed erect owner. FSMP's API
-            // is idempotent and does nothing when the bones are already off.
-            if (auto* player = RE::PlayerCharacter::GetSingleton()) {
-                smpConnected.store(Call("DynamicHDT", "TogglePhysics",
-                    static_cast<RE::Actor*>(player), PhysicsBones(), false));
-            }
-        }
+        // Mesh changes, API reset notices and the bounded post-switch check
+        // schedule targeted repairs. Repeating an FSMP call on every ordinary
+        // poll only adds Papyrus traffic without proving who owns the bones.
         return true;
     }
     if (!force && now < retryAfterMs.load()) return false;
@@ -1993,6 +2071,7 @@ bool SetOwner(bool cbpc, bool force) {
 
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (!player) return false;
+    const bool softTransitionPending = !cbpc && erectionRelaxing.load();
     const auto previousState = stateKnown.load() ?
         (usingCBPC.load() ? SPS::API::PhysicsState::CBPC : SPS::API::PhysicsState::SMP) :
         SPS::API::PhysicsState::Unknown;
@@ -2025,6 +2104,8 @@ bool SetOwner(bool cbpc, bool force) {
             }
         }
         ++switchFailures;
+        if (softTransitionPending)
+            erectionRelaxing.store(true);
         retryAfterMs.store(now + 1000);
         Record(fmt::format("SPS-010: Physics handoff to {} failed (FSMP: {}, CBPC: {}); retry queued",
             cbpc ? "CBPC" : "SMP", smpOK ? "OK" : "no response", cbpcOK ? "OK" : "no response"), true);
@@ -2035,6 +2116,7 @@ bool SetOwner(bool cbpc, bool force) {
     stateKnown.store(true);
     if (cbpc) {
         softHandoffResetDueMs.store(0);
+        softHandoffResetUntilMs.store(0);
         softHandoffResetRestoreDueMs.store(0);
         softAngleRefreshDueMs.store(0);
         softAngleRefreshRestoreDueMs.store(0);
@@ -2043,17 +2125,27 @@ bool SetOwner(bool cbpc, bool force) {
     ignoreNodeEventsUntilMs.store(now + 4000);
     retryAfterMs.store(0);
     ++switchSuccesses;
+    ClearResolvedOwnerError();
     ResetPositionRecovery();
     appliedBend.store(-1);
     const bool realSoftHandoff = !cbpc && previousState == SPS::API::PhysicsState::CBPC;
     if (realSoftHandoff) {
         softConfirmationDueMs.store(0);
         softHandoffResetRestoreDueMs.store(0);
-        softHandoffResetDueMs.store(now + 350);
+        // FSMP's Papyrus call can accept a full actor reset before the newly
+        // enabled physics system has finished attaching to the mesh. That is
+        // most visible after repeated high/low arousal stress tests: SPS says
+        // soft/SMP, but the last erect simulated shape remains on screen until
+        // the user runs FSMP's global reset. Keep the ownership switch
+        // immediate, but let the safer player-only rebuild reach a stable mesh.
+        softHandoffResetDueMs.store(now + 1500);
+        softHandoffResetUntilMs.store(now + 10000);
     } else {
         softConfirmationDueMs.store(cbpc ? 0 : now + 750);
     }
+    softConfirmationUntilMs.store(cbpc ? 0 : now + 15000);
     cbpcConfirmationDueMs.store(cbpc ? now + 750 : 0);
+    cbpcConfirmationUntilMs.store(cbpc ? now + 15000 : 0);
     if (copy.positionControl) {
         if (cbpc) {
             requestedBend.store(DesiredBend(copy));
@@ -2072,6 +2164,14 @@ bool SetOwner(bool cbpc, bool force) {
             bendConfirmationDueMs.store(0);
             if (!PPAOwnsPosition()) ApplyRequestedSoftBend(true, true);
         }
+    }
+    // ResetPhysics is useful for rebuilding a soft SMP mesh after loading, but
+    // running it after the first successful erect handoff gives FSMP the bones
+    // back and creates a second, visibly late correction. An initially erect
+    // state already has its own bounded CBPC confirmation and needs no reset.
+    if (cbpc && previousState == SPS::API::PhysicsState::Unknown) {
+        loadSMPResetDueMs.store(0);
+        loadSMPResetRestoreDueMs.store(0);
     }
     Record(fmt::format("Physics switched to {} ({})", cbpc ? "CBPC" : "SMP", cbpc ? "erect" : "soft"));
     const auto currentState = cbpc ? SPS::API::PhysicsState::CBPC : SPS::API::PhysicsState::SMP;
@@ -2282,7 +2382,15 @@ void Evaluate(bool force) {
     }
 
     if (normalControl && erectionRelaxing.load()) {
-        if (!cbpc) return;
+        if (!cbpc) {
+            // A backend can reach its lowest visible angle before Papyrus is
+            // ready to accept the owner switch. The animation has finished,
+            // but the soft transition remains pending; retry only the handoff
+            // and never restore the erect angle in this gap.
+            if (!erectionAnimating.load() && stateKnown.load() && usingCBPC.load())
+                SetOwner(false, force);
+            return;
+        }
         CancelErectionAnimation();
         appliedBend.store(-1);
     }
@@ -2303,7 +2411,11 @@ void Evaluate(bool force) {
 void Tick() {
     Settings copy;
     { std::scoped_lock lock(settingsLock); copy = settings; }
+    const auto now = NowMs();
+
+    ProcessPendingQuickAction();
     if (!copy.enabled) return;
+
     if (copy.mode == 0)
         QueryArousal();
     else
@@ -2312,10 +2424,67 @@ void Tick() {
     if (copy.sexLabOverride && copy.sexLabRoleSwitching && sexLabActive.load()) QuerySexLabRole();
     if (copy.ostimOverride && copy.ostimRoleSwitching && ostimActive.load()) QueryOStimRole();
     UpdateRandomErection(copy);
-    Evaluate();
+    bool forceStartupDecision = false;
+    auto startupDue = startupReconcileDueMs.load();
+    const bool arousalProviderPresent =
+        OslArousedLoaded() || SloArousedLoaded() || ClassicArousedLoaded();
+    const bool waitingForInitialArousal = startupDue > 0 && !stateKnown.load() &&
+        copy.mode == 0 && arousalProviderPresent && !arousalValid.load() &&
+        !RandomErectionActive() && !AnySceneHasPriority(copy) &&
+        !ActiveAPIRequest().has_value();
+    if (startupDue > 0 && now >= startupDue) {
+        if (now >= startupReconcileUntilMs.load()) {
+            startupReconcileDueMs.store(0);
+            startupReconcileUntilMs.store(0);
+            Record("SPS-020: Startup physics check is still waiting for the game; use Repair current physics once loading finishes", true);
+        } else if (!stateKnown.load()) {
+            // In Automatic mode, do not force the temporary soft fallback while
+            // a detected arousal provider is still returning its first value.
+            // That old path produced soft -> erect during every high-arousal
+            // load and doubled the number of Papyrus physics handoffs precisely
+            // while the VM and player mesh were busiest.
+            forceStartupDecision = !waitingForInitialArousal;
+            startupReconcileDueMs.store(now + (waitingForInitialArousal ? 500 : 1000));
+        } else {
+            startupReconcileDueMs.store(0);
+            startupReconcileUntilMs.store(0);
+            Record("Startup physics state selected");
+        }
+    }
+
+    // The ordinary poll uses soft as its safe fallback when no arousal value is
+    // known. During startup that fallback is not a decision: it merely creates
+    // a needless soft handoff before the already-dispatched arousal query can
+    // return. Leave the current mesh alone until a provider replies or the
+    // bounded startup window expires.
+    if (!waitingForInitialArousal)
+        Evaluate(forceStartupDecision);
     CaptureState("poll");
 
-    const auto now = NowMs();
+    if (startupReconcileDueMs.load() > 0 && stateKnown.load()) {
+        startupReconcileDueMs.store(0);
+        startupReconcileUntilMs.store(0);
+        Record("Startup physics state selected");
+    }
+
+    if (activeManualPhysicsTest.load() >= 0 && now >= manualPhysicsTestUntilMs.load()) {
+        activeManualPhysicsTest.store(-1);
+        Record("Physics test finished; normal control resumed");
+    }
+
+    auto postSwitchDue = postSwitchVerificationDueMs.load();
+    if (postSwitchDue > 0 && now >= postSwitchDue &&
+        postSwitchVerificationDueMs.compare_exchange_strong(postSwitchDue, 0)) {
+        if (ConfirmCurrentPhysicsOwner("the completed physics switch")) {
+            postSwitchVerificationUntilMs.store(0);
+        } else if (now < postSwitchVerificationUntilMs.load()) {
+            postSwitchVerificationDueMs.store(now + 1000);
+        } else {
+            postSwitchVerificationUntilMs.store(0);
+            Record("SPS-010: Final physics handoff check failed after several bounded attempts", true);
+        }
+    }
+
     auto diagnosticsDue = diagnosticsRefreshDueMs.load();
     if (diagnosticsDue > 0 && now >= diagnosticsDue &&
         diagnosticsRefreshDueMs.compare_exchange_strong(diagnosticsDue, 0)) {
@@ -2325,7 +2494,14 @@ void Tick() {
     auto ownerRepairDue = externalOwnerRepairDueMs.load();
     if (ownerRepairDue > 0 && now >= ownerRepairDue &&
         externalOwnerRepairDueMs.compare_exchange_strong(ownerRepairDue, 0)) {
-        ConfirmCurrentPhysicsOwner("an external physics reset");
+        if (ConfirmCurrentPhysicsOwner("an external physics reset")) {
+            externalOwnerRepairUntilMs.store(0);
+        } else if (now < externalOwnerRepairUntilMs.load()) {
+            externalOwnerRepairDueMs.store(now + 1000);
+        } else {
+            externalOwnerRepairUntilMs.store(0);
+            Record("SPS-010: Physics ownership could not be restored after an external reset", true);
+        }
     }
 
     auto resetDue = loadSMPResetDueMs.load();
@@ -2358,7 +2534,7 @@ void Tick() {
     if (!usingCBPC.load() && softHandoffRestoreDue > 0 && now >= softHandoffRestoreDue &&
         softHandoffResetRestoreDueMs.compare_exchange_strong(softHandoffRestoreDue, 0)) {
         appliedBend.store(-1);
-        Evaluate(true);
+        ConfirmCurrentPhysicsOwner("the completed soft handoff refresh");
         softConfirmationDueMs.store(now + 250);
         Record("Soft physics restored after the handoff refresh");
     }
@@ -2382,26 +2558,87 @@ void Tick() {
     if (!usingCBPC.load() && nodeResetRestoreDue > 0 && now >= nodeResetRestoreDue &&
         nodeSMPResetRestoreDueMs.compare_exchange_strong(nodeResetRestoreDue, 0)) {
         appliedBend.store(-1);
-        Evaluate(true);
+        ConfirmCurrentPhysicsOwner("the completed player mesh refresh");
         softConfirmationDueMs.store(now + 250);
         Record("Soft physics restored after the player mesh change");
+    }
+
+    auto nodeCBPCDue = nodeCBPCReacquireDueMs.load();
+    if (usingCBPC.load() && nodeCBPCDue > 0 && now >= nodeCBPCDue &&
+        nodeCBPCReacquireDueMs.compare_exchange_strong(nodeCBPCDue, 0)) {
+        if (ConfirmCurrentPhysicsOwner("the rebuilt player mesh")) {
+            nodeCBPCReacquireUntilMs.store(0);
+            appliedBend.store(-1);
+            if (copy.positionControl) {
+                bendSettleDueMs.store(now + copy.settleDelayMs);
+                bendConfirmationDueMs.store(now + copy.settleDelayMs + 1500);
+                erectMeshReplayDueMs.store(now + 2500);
+            }
+        } else if (now < nodeCBPCReacquireUntilMs.load()) {
+            nodeCBPCReacquireDueMs.store(now + 1000);
+        } else {
+            nodeCBPCReacquireUntilMs.store(0);
+            Record("SPS-010: Erect physics could not reconnect after the player equipment change", true);
+        }
     }
 
     auto softDue = softConfirmationDueMs.load();
     if (!usingCBPC.load() && softDue > 0 && now >= softDue &&
         softConfirmationDueMs.compare_exchange_strong(softDue, 0)) {
-        ConfirmSoftState();
+        auto until = softConfirmationUntilMs.load();
+        if (until == 0) {
+            until = now + 10000;
+            softConfirmationUntilMs.store(until);
+        }
+        if (ConfirmSoftState()) {
+            softConfirmationUntilMs.store(0);
+        } else if (now < until) {
+            softConfirmationDueMs.store(now + 1000);
+        } else {
+            softConfirmationUntilMs.store(0);
+            Record("SPS-010: Soft-state confirmation stopped after several bounded attempts", true);
+        }
     }
 
     auto cbpcDue = cbpcConfirmationDueMs.load();
     if (usingCBPC.load() && cbpcDue > 0 && now >= cbpcDue &&
         cbpcConfirmationDueMs.compare_exchange_strong(cbpcDue, 0)) {
-        ConfirmCBPCState();
+        auto until = cbpcConfirmationUntilMs.load();
+        if (until == 0) {
+            until = now + 10000;
+            cbpcConfirmationUntilMs.store(until);
+        }
+        if (ConfirmCBPCState()) {
+            cbpcConfirmationUntilMs.store(0);
+        } else if (now < until) {
+            cbpcConfirmationDueMs.store(now + 1000);
+        } else {
+            cbpcConfirmationUntilMs.store(0);
+            Record("SPS-010: Erect-state confirmation stopped after several bounded attempts", true);
+        }
+    }
+
+    bool targetStillWantsCBPC = false;
+    if (const auto request = ActiveAPIRequest())
+        targetStillWantsCBPC = request->state == SPS::API::PhysicsState::CBPC;
+    else if (OStimHasPriority(copy))
+        targetStillWantsCBPC = OStimSceneWantsCBPC(copy);
+    else if (SexLabHasPriority(copy))
+        targetStillWantsCBPC = SexLabSceneWantsCBPC(copy);
+    else
+        targetStillWantsCBPC = NormalSettingsWantCBPC(copy);
+
+    if (!targetStillWantsCBPC) {
+        // No delayed erect-position callback may survive a decision to soften.
+        bendSettleDueMs.store(0);
+        bendConfirmationDueMs.store(0);
+        bendRetryDueMs.store(0);
     }
 
     bool settledNow = false;
     auto settleDue = bendSettleDueMs.load();
-    if (usingCBPC.load() && settleDue > 0 && now >= settleDue && bendSettleDueMs.compare_exchange_strong(settleDue, 0)) {
+    if (usingCBPC.load() && targetStillWantsCBPC && settleDue > 0 && now >= settleDue &&
+        bendSettleDueMs.compare_exchange_strong(settleDue, 0)) {
         const bool timedGradual = copy.gradualErection &&
             (!copy.arousalBasedErection || RandomErectionActive());
         if (timedGradual && !AnySceneHasPriority(copy) && !PPAOwnsPosition())
@@ -2415,12 +2652,18 @@ void Tick() {
     // Confirm the final value once, after it has settled, without replaying an
     // animation or creating the old continuous repair loop.
     auto confirmDue = bendConfirmationDueMs.load();
-    if (usingCBPC.load() && confirmDue > 0 && now >= confirmDue &&
+    if (usingCBPC.load() && targetStillWantsCBPC && confirmDue > 0 && now >= confirmDue &&
         bendConfirmationDueMs.compare_exchange_strong(confirmDue, 0)) {
         ApplyRequestedBend(true, true, true);
     }
 
-    if (!settledNow && usingCBPC.load() && copy.positionControl) {
+    // During a failed or delayed CBPC -> SMP handoff the confirmed owner can
+    // still be CBPC for another tick even though the requested state is soft.
+    // The old maintenance pass interpreted that gap as a lost erect angle and
+    // started raising 0 back to 17/20 at zero arousal. Only maintain the erect
+    // angle while the current control source still actually wants CBPC.
+    if (!settledNow && usingCBPC.load() && targetStillWantsCBPC &&
+        copy.positionControl && !erectionRelaxing.load()) {
         const int desired = DesiredBend(copy);
         const auto retryDue = bendRetryDueMs.load();
         if (appliedBend.load() != desired && bendSettleDueMs.load() == 0 &&
@@ -2436,21 +2679,37 @@ void Tick() {
         if (stateKnown.load() && !usingCBPC.load() && RefreshSMPAfterPlayerMeshChange()) {
             // The player-only reset restores the owner and angle after FSMP
             // finishes rebuilding the newly equipped schlong mesh.
-        } else if (stateKnown.load()) {
-            ConfirmCurrentPhysicsOwner("a player skeleton rebuild");
-        }
-        if (stateKnown.load() && usingCBPC.load() && copy.positionControl) {
+        } else if (stateKnown.load() && usingCBPC.load()) {
+            // CBPC can remain attached to the old genital nodes when armour or
+            // the equipped schlong replaces the player mesh. Stop the stale
+            // bindings first, then reacquire the newly-created bones on a later
+            // tick. A direct equipment listener also reaches this path when a
+            // mod does not emit an SKSE NiNode update event.
             CancelErectionAnimation();
+            ResetPositionRecovery();
             appliedBend.store(-1);
-            bendSettleDueMs.store(now + copy.settleDelayMs);
-            bendConfirmationDueMs.store(now + copy.settleDelayMs + 1500);
-            Record("Player skeleton changed; erect position queued for one repair");
+            bendSettleDueMs.store(0);
+            bendConfirmationDueMs.store(0);
+            cbpcConfirmationDueMs.store(0);
+            if (!PapyrusReadyForDispatch()) {
+                nodeCBPCReacquireDueMs.store(now + 1000);
+                nodeCBPCReacquireUntilMs.store(now + 10000);
+            } else if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+                auto* actor = static_cast<RE::Actor*>(player);
+                const bool cbpcStopped = SetCBPCPhysics(actor, false);
+                const bool smpDisabled = Call("DynamicHDT", "TogglePhysics",
+                    actor, PhysicsBones(), false);
+                nodeCBPCReacquireDueMs.store(now + (cbpcStopped && smpDisabled ? 350 : 1000));
+                nodeCBPCReacquireUntilMs.store(now + 10000);
+                if (cbpcStopped && smpDisabled)
+                    Record("Player mesh changed; reconnecting erect physics to its new bones");
+                else
+                    logger::warn("Could not release the old erect-physics bindings; bounded retry queued");
+            }
         } else if (stateKnown.load() && !usingCBPC.load() && nodeSMPResetRestoreDueMs.load() == 0) {
             softConfirmationDueMs.store(now + 750);
         }
         nodeRefreshFollowupDueMs.store(now + 1500);
-        if (stateKnown.load() && usingCBPC.load() && copy.positionControl)
-            erectMeshReplayDueMs.store(now + 3250);
     }
 
     auto nodeFollowupDue = nodeRefreshFollowupDueMs.load();
@@ -2616,6 +2875,17 @@ void StatusLine(const char* label, const char* status, int level) {
     ImGuiMCP::TextColored(color, "%s", status);
 }
 
+void PageHeading(const char* title, const char* description) {
+    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "%s", title);
+    if (description && description[0] != '\0')
+        ImGuiMCP::TextWrapped("%s", description);
+    ImGuiMCP::Separator();
+}
+
+void SectionHeading(const char* title) {
+    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "%s", title);
+}
+
 void UseRecommendedSettings(Settings& value) {
     value.hysteresis = 5.0F;
     value.pollMs = 1000;
@@ -2725,67 +2995,68 @@ void __stdcall RenderMain() {
     Diagnostics d;
     { std::scoped_lock lock(diagnosticsLock); d = diagnostics; }
     const bool healthChecked = d.checkedAtMs > 0;
-    const bool coreReady = d.menuFrameworkLoaded && d.oslModuleLoaded && d.oslPluginLoaded &&
-        d.fsmpModuleLoaded && d.cbpcModuleLoaded && d.playerBonesFound == 6 &&
-        d.compatibleXmlFiles > 0 && d.compatibleCbpcMaps > 0 && d.compatibleCbpcParameters > 0 &&
-        !d.sosPhysicsManagerLoaded;
+    const bool coreReady = CoreReady(d, copy);
 
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "RIGHT NOW");
-    StatusLine("SPS", !healthChecked ? "Checking your setup..." : (coreReady ? (stateKnown.load() ? "Ready" : "Waiting for the player") : "Needs attention"), !healthChecked || !stateKnown.load() ? 1 : (coreReady ? 2 : 0));
-    const auto arousalText = arousalValid.load() ? fmt::format("Current arousal: {:.0f} / 100", arousal.load()) : "Waiting for your arousal mod";
-    ImGuiMCP::ProgressBar(arousalValid.load() ? arousal.load() / 100.0F : 0.0F, ImGuiMCP::ImVec2(-1.0F, 0.0F), arousalText.c_str());
-    StatusLine("Current state", stateKnown.load() ? (usingCBPC.load() ? "Erect - CBPC" : "Soft - SMP") : "Not decided yet", stateKnown.load() ? 2 : 1);
+    PageHeading("HOME", "See what SPS is doing and change its everyday behaviour.");
+
+    SectionHeading("CURRENT STATUS");
+    StatusLine("SPS", !healthChecked ? "Checking setup..." :
+        (coreReady ? (stateKnown.load() ? "Ready" : "Waiting for the player") : "Needs attention"),
+        !healthChecked || !stateKnown.load() ? 1 : (coreReady ? 2 : 0));
+    StatusLine("Physics", stateKnown.load() ?
+        (usingCBPC.load() ? "Erect (CBPC)" : "Soft (SMP)") : "Not decided yet",
+        stateKnown.load() ? 2 : 1);
+    const char* modeStatus[]{ "Automatic - follows arousal", "Always soft (SMP)", "Always erect (CBPC)" };
+    StatusLine("Mode", modeStatus[std::clamp(copy.mode, 0, 2)], copy.enabled ? 2 : 1);
+    if (copy.mode == 0) {
+        const auto arousalText = arousalValid.load() ?
+            fmt::format("Arousal: {:.0f} / 100", arousal.load()) :
+            std::string("Waiting for the selected arousal mod");
+        ImGuiMCP::ProgressBar(arousalValid.load() ? arousal.load() / 100.0F : 0.0F,
+            ImGuiMCP::ImVec2(-1.0F, 0.0F), arousalText.c_str());
+    } else {
+        StatusLine("Arousal", "Not used in manual mode", 2);
+    }
     if (ostimActive.load())
-        StatusLine("Current OStim role", ostimRoleValid.load() ? OStimRoleName(ostimRole.load()) : "Checking...", ostimRoleValid.load() ? 2 : 1);
+        StatusLine("OStim role", ostimRoleValid.load() ? OStimRoleName(ostimRole.load()) : "Checking...", ostimRoleValid.load() ? 2 : 1);
     else if (sexLabActive.load())
-        StatusLine("Current scene role", sexLabRoleValid.load() ? SexLabRoleName(sexLabRole.load()) : "Checking...", sexLabRoleValid.load() ? 2 : 1);
+        StatusLine("SexLab role", sexLabRoleValid.load() ? SexLabRoleName(sexLabRole.load()) : "Checking...", sexLabRoleValid.load() ? 2 : 1);
     if (healthChecked && !coreReady)
-        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F), "Open Help and reports to see what needs attention.");
+        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F),
+            "Open Troubleshooting to see what needs attention.");
 
     ImGuiMCP::Separator();
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "EVERYDAY SETTINGS");
-    changed |= ImGuiMCP::Checkbox("Turn SPS on", &copy.enabled);
-    const char* modes[]{ "Automatic - follow arousal", "Keep soft - SMP", "Keep erect - CBPC" };
-    changed |= ImGuiMCP::Combo("What should SPS do?", &copy.mode, modes, 3);
+    SectionHeading("MAIN CONTROLS");
+    changed |= ImGuiMCP::Checkbox("Enable SPS", &copy.enabled);
+    const char* modes[]{ "Automatic - follow arousal", "Always soft - use SMP", "Always erect - use CBPC" };
+    changed |= ImGuiMCP::Combo("Physics mode", &copy.mode, modes, 3);
 
-    ImGuiMCP::BeginDisabled(copy.mode != 0);
-    if (ImGuiMCP::SliderFloat(copy.arousalBasedErection ?
-        "Arousal needed to become fully erect" : "Arousal needed to become erect",
-        &copy.threshold, 0, 100, "%.0f")) {
-        if (copy.arousalBasedErection && copy.threshold <= copy.erectionStartArousal)
-            copy.erectionStartArousal = std::max(0.0F, copy.threshold - 1.0F);
-        changed = true;
-    }
-    ImGuiMCP::EndDisabled();
     if (copy.mode == 0) {
+        if (ImGuiMCP::SliderFloat("Become erect at arousal", &copy.threshold, 0, 100, "%.0f")) {
+            if (copy.arousalBasedErection && copy.threshold <= copy.erectionStartArousal)
+                copy.erectionStartArousal = std::max(0.0F, copy.threshold - 1.0F);
+            changed = true;
+        }
         if (copy.arousalBasedErection)
-            ImGuiMCP::TextWrapped("Starts rising at %.0f arousal and is fully erect at %.0f.",
+            ImGuiMCP::TextWrapped("The angle begins rising at %.0f arousal and reaches the selected erect angle at %.0f.",
                 copy.erectionStartArousal, copy.threshold);
         else
-            ImGuiMCP::TextWrapped("Becomes erect at %.0f arousal. Returns to soft below %.0f.",
+            ImGuiMCP::TextWrapped("SPS becomes erect at %.0f arousal and returns to soft below %.0f.",
                 copy.threshold, std::max(0.0F, copy.threshold - copy.hysteresis));
+    } else if (copy.mode == 1) {
+        ImGuiMCP::TextWrapped("SPS will keep the player soft with SMP. An arousal mod is not required.");
+    } else {
+        ImGuiMCP::TextWrapped("SPS will keep the player erect with CBPC. An arousal mod is not required.");
     }
-    ImGuiMCP::TextWrapped("Angles, gradual rising and random erections are on the Looks and erections page.");
+    ImGuiMCP::TextWrapped("The soft and erect positions below define the two states SPS switches between.");
 
     ImGuiMCP::Separator();
-    if (ImGuiMCP::Button("Check now"))
-        if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { QueryArousal(); QuerySexLab(); QuerySexLabRole(); QueryOStimRole(); Evaluate(); });
-    ImGuiMCP::SameLine();
-    if (ImGuiMCP::Button("Reset to recommended settings")) { UseRecommendedSettings(copy); changed = true; }
-    if (changed) SaveSettingsAndApply(copy, previous);
-}
+    SectionHeading("POSITION");
+    if (!copy.positionControl)
+        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F),
+            "Angle control is disabled in Advanced settings. Physics switching still works.");
 
-void __stdcall RenderLooks() {
-    Settings copy;
-    { std::scoped_lock lock(settingsLock); copy = settings; }
-    const Settings previous = copy;
-    bool changed = false;
-
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "LOOKS AND ERECTIONS");
-    ImGuiMCP::TextWrapped("Choose the soft and erect positions, then decide how erections happen outside scenes.");
-
-    ImGuiMCP::Separator();
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "SOFT LOOK");
+    ImGuiMCP::Text("Soft");
     const bool softAngleAvailable = SosAeNativeLoaded();
     ImGuiMCP::BeginDisabled(!copy.positionControl || !softAngleAvailable);
     changed |= ImGuiMCP::Checkbox("Use a custom soft angle", &copy.flaccidAngleControl);
@@ -2794,7 +3065,7 @@ void __stdcall RenderLooks() {
     ImGuiMCP::EndDisabled();
     ImGuiMCP::EndDisabled();
     if (softAngleAvailable)
-        ImGuiMCP::TextWrapped("0 hangs at the normal resting angle. SPS refreshes SMP automatically after you stop moving the slider.");
+        ImGuiMCP::TextWrapped("0 is the normal hanging position. SPS refreshes SMP after you finish moving the slider.");
     else
         ImGuiMCP::TextWrapped("Custom soft angles need SOS AE-NG. Legacy SOS and TNG keep their normal floppy pose.");
     ImGuiMCP::BeginDisabled(!copy.positionControl || !copy.flaccidAngleControl ||
@@ -2807,8 +3078,7 @@ void __stdcall RenderLooks() {
     }
     ImGuiMCP::EndDisabled();
 
-    ImGuiMCP::Separator();
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "ERECT LOOK");
+    ImGuiMCP::Text("Erect");
     ImGuiMCP::BeginDisabled(!copy.positionControl);
     changed |= ImGuiMCP::SliderInt("Erect angle", &copy.erectBend, 0, 20);
     ImGuiMCP::EndDisabled();
@@ -2823,7 +3093,24 @@ void __stdcall RenderLooks() {
     ImGuiMCP::EndDisabled();
 
     ImGuiMCP::Separator();
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "HOW IT GETS ERECT");
+    SectionHeading("QUICK ACTIONS");
+    if (ImGuiMCP::Button("Refresh status"))
+        if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { QueryArousal(); QuerySexLab(); QuerySexLabRole(); QueryOStimRole(); Evaluate(); });
+    if (ImGuiMCP::CollapsingHeader("Reset options")) {
+        ImGuiMCP::TextWrapped("This restores the recommended SPS settings. It does not uninstall anything or change other mods.");
+        if (ImGuiMCP::Button("Restore recommended settings")) { UseRecommendedSettings(copy); changed = true; }
+    }
+    if (changed) SaveSettingsAndApply(copy, previous);
+}
+
+void __stdcall RenderLooks() {
+    Settings copy;
+    { std::scoped_lock lock(settingsLock); copy = settings; }
+    const Settings previous = copy;
+    bool changed = false;
+
+    PageHeading("APPEARANCE", "Control how SPS transitions between the soft and erect positions selected on Home.");
+    SectionHeading("TRANSITION");
     ImGuiMCP::BeginDisabled(copy.mode != 0);
     const bool arousalRiseChanged = ImGuiMCP::Checkbox(
         "Rise gradually as arousal increases", &copy.arousalBasedErection);
@@ -2856,68 +3143,62 @@ void __stdcall RenderLooks() {
     ImGuiMCP::EndDisabled();
     if (copy.arousalBasedErection)
         ImGuiMCP::TextWrapped("The timed rise is still used for random erections. Normal arousal changes follow the live arousal value.");
-    ImGuiMCP::TextWrapped("Erect physics keeps a small amount of natural movement while staying stable. Soft physics supplies the looser sway and follow-through.");
+    ImGuiMCP::TextWrapped("Erect physics stays stable with a little natural movement. Soft physics provides the looser sway.");
 
     ImGuiMCP::Separator();
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "RANDOM ERECTIONS");
-    ImGuiMCP::BeginDisabled(copy.mode != 0);
-    changed |= ImGuiMCP::Checkbox("Allow random erections", &copy.randomErections);
-    ImGuiMCP::BeginDisabled(!copy.randomErections);
-    if (ImGuiMCP::SliderInt("Shortest random interval (minutes)",
-        &copy.randomErectionMinMinutes, 1, 120)) {
-        copy.randomErectionMaxMinutes = std::max(copy.randomErectionMinMinutes,
-            copy.randomErectionMaxMinutes);
-        changed = true;
-    }
-    if (ImGuiMCP::SliderInt("Longest random interval (minutes)",
-        &copy.randomErectionMaxMinutes, 1, 240)) {
-        copy.randomErectionMinMinutes = std::min(copy.randomErectionMinMinutes,
-            copy.randomErectionMaxMinutes);
-        changed = true;
-    }
-    changed |= ImGuiMCP::SliderInt("How long it lasts (seconds)",
-        &copy.randomErectionDurationSeconds, 5, 600);
-    changed |= ImGuiMCP::Checkbox("Only trigger during normal gameplay",
-        &copy.randomErectionSafeMoments);
-    ImGuiMCP::EndDisabled();
-    ImGuiMCP::EndDisabled();
-    ImGuiMCP::TextWrapped("SPS chooses a new random time between the two limits after every erection. The normal-gameplay option waits during combat, dialogue, loading, paused menus and similar interruptions.");
+    if (ImGuiMCP::CollapsingHeader("Spontaneous erections (optional)")) {
+        ImGuiMCP::TextWrapped("These options only run in Automatic mode and never override an active scene.");
+        ImGuiMCP::BeginDisabled(copy.mode != 0);
+        changed |= ImGuiMCP::Checkbox("Allow random erections", &copy.randomErections);
+        ImGuiMCP::BeginDisabled(!copy.randomErections);
+        if (ImGuiMCP::SliderInt("Shortest interval (minutes)",
+            &copy.randomErectionMinMinutes, 1, 120)) {
+            copy.randomErectionMaxMinutes = std::max(copy.randomErectionMinMinutes,
+                copy.randomErectionMaxMinutes);
+            changed = true;
+        }
+        if (ImGuiMCP::SliderInt("Longest interval (minutes)",
+            &copy.randomErectionMaxMinutes, 1, 240)) {
+            copy.randomErectionMinMinutes = std::min(copy.randomErectionMinMinutes,
+                copy.randomErectionMaxMinutes);
+            changed = true;
+        }
+        changed |= ImGuiMCP::SliderInt("Duration (seconds)",
+            &copy.randomErectionDurationSeconds, 5, 600);
+        changed |= ImGuiMCP::Checkbox("Wait for a suitable moment",
+            &copy.randomErectionSafeMoments);
+        ImGuiMCP::EndDisabled();
 
-    ImGuiMCP::Separator();
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "NATURAL EXTRAS");
-    ImGuiMCP::BeginDisabled(copy.mode != 0);
-    changed |= ImGuiMCP::Checkbox("Use a recovery break after spontaneous erections",
-        &copy.spontaneousRefractory);
-    ImGuiMCP::BeginDisabled(!copy.spontaneousRefractory);
-    changed |= ImGuiMCP::SliderInt("Recovery time (minutes)", &copy.refractoryMinutes, 1, 60);
-    ImGuiMCP::EndDisabled();
-    changed |= ImGuiMCP::Checkbox("Allow morning erections after resting", &copy.morningErections);
-    ImGuiMCP::BeginDisabled(!copy.morningErections);
-    changed |= ImGuiMCP::SliderInt("Morning erection length (seconds)",
-        &copy.morningErectionDurationSeconds, 10, 600);
-    ImGuiMCP::EndDisabled();
-    ImGuiMCP::EndDisabled();
-    ImGuiMCP::TextWrapped("Morning erections can happen after sleeping or waiting for at least three in-game hours. Recovery time prevents spontaneous erections from happening back to back.");
-    if (RandomErectionActive())
-        StatusLine("Spontaneous erection", morningErectionActive.load() ? "Morning erection active" : "Active", 2);
-    else if (copy.randomErections)
-        StatusLine("Spontaneous erection", "Waiting for a random interval", 1);
+        changed |= ImGuiMCP::Checkbox("Use a recovery break", &copy.spontaneousRefractory);
+        ImGuiMCP::BeginDisabled(!copy.spontaneousRefractory);
+        changed |= ImGuiMCP::SliderInt("Recovery time (minutes)", &copy.refractoryMinutes, 1, 60);
+        ImGuiMCP::EndDisabled();
+        changed |= ImGuiMCP::Checkbox("Allow morning erections after resting", &copy.morningErections);
+        ImGuiMCP::BeginDisabled(!copy.morningErections);
+        changed |= ImGuiMCP::SliderInt("Morning duration (seconds)",
+            &copy.morningErectionDurationSeconds, 10, 600);
+        ImGuiMCP::EndDisabled();
+        ImGuiMCP::EndDisabled();
 
-    const bool randomTestBlocked = !copy.randomErections || copy.mode != 0 ||
-        AnySceneHasPriority(copy) || ActiveAPIRequest().has_value() || usingCBPC.load();
-    ImGuiMCP::BeginDisabled(randomTestBlocked);
-    if (ImGuiMCP::Button("Test a random erection now")) {
-        randomErectionNextMs.store(0);
-        randomErectionUntilMs.store(NowMs() +
-            static_cast<std::int64_t>(copy.randomErectionDurationSeconds) * 1000);
-        randomErectionManualTest.store(true);
-        if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { Evaluate(true); });
-        Record("Random erection test started");
+        ImGuiMCP::TextWrapped("Suitable moments exclude combat, dialogue, loading screens, paused menus and similar interruptions. Recovery prevents spontaneous erections from happening back to back.");
+        if (RandomErectionActive())
+            StatusLine("Current status", morningErectionActive.load() ? "Morning erection active" : "Random erection active", 2);
+        else if (copy.randomErections)
+            StatusLine("Current status", "Waiting for a random interval", 1);
+
+        const bool randomTestBlocked = !copy.randomErections || copy.mode != 0 ||
+            AnySceneHasPriority(copy) || ActiveAPIRequest().has_value() || usingCBPC.load();
+        ImGuiMCP::BeginDisabled(randomTestBlocked);
+        if (ImGuiMCP::Button("Test now")) {
+            randomErectionNextMs.store(0);
+            randomErectionUntilMs.store(NowMs() +
+                static_cast<std::int64_t>(copy.randomErectionDurationSeconds) * 1000);
+            randomErectionManualTest.store(true);
+            if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { Evaluate(true); });
+            Record("Random erection test started");
+        }
+        ImGuiMCP::EndDisabled();
     }
-    ImGuiMCP::EndDisabled();
-
-    if (!copy.positionControl)
-        ImGuiMCP::TextWrapped("Angle control is off on the Fine tuning page. Physics switching will still work.");
     if (changed) SaveSettingsAndApply(copy, previous);
 }
 
@@ -2933,25 +3214,24 @@ void __stdcall RenderScenes() {
     const bool ostimLoaded = d.ostimPluginLoaded;
     const bool ppaLoaded = ::GetModuleHandleW(L"AccuratePenetration.dll") != nullptr;
 
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "SCENE STATUS");
-    StatusLine("SexLab P+", sexLabLoaded ? (sexLabConnected.load() ? "Ready" : "Loading...") : "Not installed (optional)", sexLabLoaded ? (sexLabConnected.load() ? 2 : 1) : 1);
-    StatusLine("OStim Standalone", ostimLoaded ? (d.ostimRoleBridgePresent ? "Ready (experimental)" : "Bridge not installed") : "Not installed (optional)", ostimLoaded ? (d.ostimRoleBridgePresent ? 2 : 0) : 1);
-    if (ostimActive.load())
-        StatusLine("Player scene", ostimRoleValid.load() ? OStimRoleName(ostimRole.load()) : "OStim running - checking role", ostimRoleValid.load() ? 2 : 1);
-    else
-        StatusLine("Player scene", sexLabActive.load() ? (sexLabRoleValid.load() ? SexLabRoleName(sexLabRole.load()) : "SexLab running - checking role") : "Not running", sexLabActive.load() ? (sexLabRoleValid.load() ? 2 : 1) : 2);
-    StatusLine("PPA", ppaLoaded ? (PPAOwnsPosition() ? "Controlling the scene angle" : "Ready") : "Not installed (optional)", ppaLoaded ? 2 : 1);
+    PageHeading("SCENES", "Choose how SPS behaves during SexLab or OStim scenes. These settings do not affect normal gameplay.");
+
+    SectionHeading("SCENE FRAMEWORKS");
+    changed |= ImGuiMCP::Checkbox("Manage SexLab scenes", &copy.sexLabOverride);
+    ImGuiMCP::BeginDisabled(!copy.sexLabOverride);
+    changed |= ImGuiMCP::Checkbox("Follow the player's SexLab role", &copy.sexLabRoleSwitching);
+    ImGuiMCP::EndDisabled();
+
+    changed |= ImGuiMCP::Checkbox("Manage OStim scenes", &copy.ostimOverride);
+    ImGuiMCP::BeginDisabled(!copy.ostimOverride);
+    changed |= ImGuiMCP::Checkbox("Follow the player's OStim role", &copy.ostimRoleSwitching);
+    ImGuiMCP::EndDisabled();
+    if (ostimLoaded && !d.ostimRoleBridgePresent)
+        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.35F, 0.35F, 1.0F),
+            "OStim is installed, but the optional SPS OStim bridge is missing. Rerun the FOMOD to add it.");
 
     ImGuiMCP::Separator();
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "HOW SPS HANDLES SCENES");
-    changed |= ImGuiMCP::Checkbox("Manage SexLab P+ scenes", &copy.sexLabOverride);
-    changed |= ImGuiMCP::Checkbox("Manage OStim Standalone scenes (experimental)", &copy.ostimOverride);
-    ImGuiMCP::BeginDisabled(!copy.sexLabOverride);
-    changed |= ImGuiMCP::Checkbox("Use the player's SexLab role", &copy.sexLabRoleSwitching);
-    ImGuiMCP::EndDisabled();
-    ImGuiMCP::BeginDisabled(!copy.ostimOverride);
-    changed |= ImGuiMCP::Checkbox("Use the player's OStim role", &copy.ostimRoleSwitching);
-    ImGuiMCP::EndDisabled();
+    SectionHeading("SCENE BEHAVIOUR");
     const bool anyRoleSwitching = (copy.sexLabOverride && copy.sexLabRoleSwitching) ||
         (copy.ostimOverride && copy.ostimRoleSwitching);
     ImGuiMCP::BeginDisabled(!anyRoleSwitching);
@@ -2970,10 +3250,10 @@ void __stdcall RenderScenes() {
         changed = true;
     }
     ImGuiMCP::EndDisabled();
-    ImGuiMCP::TextWrapped("Recommended: receiving keeps the state from just before the scene. Penetrating uses CBPC. OStim support is optional and experimental.");
+    ImGuiMCP::TextWrapped("Recommended: receiving keeps the state from before the scene, while penetrating uses erect physics. OStim support is experimental.");
 
     ImGuiMCP::Separator();
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "SCENE ANGLE");
+    SectionHeading("ANGLE DURING SCENES");
     const bool sexLabPositionChanged = ImGuiMCP::Checkbox("Use a different erect angle in scenes", &copy.useSexLabBend);
     changed |= sexLabPositionChanged;
     if (sexLabPositionChanged && copy.useSexLabBend) copy.sexLabOverride = true;
@@ -2983,10 +3263,27 @@ void __stdcall RenderScenes() {
     if (ppaLoaded)
         ImGuiMCP::TextWrapped("PPA controls the live angle during its scenes. SPS only decides whether physics should be soft or erect.");
 
-    if (ImGuiMCP::CollapsingHeader("Unusual or unrecognised scenes")) {
+    if (ImGuiMCP::CollapsingHeader("Unrecognised scene roles")) {
         const char* unknownRoles[]{ "Keep the current state (recommended)", "Use soft physics", "Use erect physics" };
         changed |= ImGuiMCP::Combo("If SPS cannot identify the role", &copy.sexLabUnknownRole, unknownRoles, 3);
         ImGuiMCP::TextWrapped("Keeping the current state avoids a sudden visible change when a scene does not report a clear role.");
+    }
+
+    ImGuiMCP::Separator();
+    if (ImGuiMCP::CollapsingHeader("Scene status and compatibility")) {
+        StatusLine("SexLab", sexLabLoaded ? (sexLabConnected.load() ? "Ready" : "Still loading") :
+            "Not installed (optional)", sexLabLoaded ? (sexLabConnected.load() ? 2 : 1) : 1);
+        StatusLine("OStim", ostimLoaded ? (d.ostimRoleBridgePresent ? "Ready (experimental)" :
+            "Bridge missing") : "Not installed (optional)", ostimLoaded ? (d.ostimRoleBridgePresent ? 2 : 0) : 1);
+        if (ostimActive.load())
+            StatusLine("Current role", ostimRoleValid.load() ? OStimRoleName(ostimRole.load()) :
+                "OStim running - checking", ostimRoleValid.load() ? 2 : 1);
+        else
+            StatusLine("Current role", sexLabActive.load() ?
+                (sexLabRoleValid.load() ? SexLabRoleName(sexLabRole.load()) : "SexLab running - checking") :
+                "No scene running", sexLabActive.load() ? (sexLabRoleValid.load() ? 2 : 1) : 2);
+        StatusLine("PPA", ppaLoaded ? (PPAOwnsPosition() ? "Controlling the live angle" : "Ready") :
+            "Not installed (optional)", ppaLoaded ? 2 : 1);
     }
 
     if (changed) SaveSettingsAndApply(copy, previous);
@@ -2998,25 +3295,24 @@ void __stdcall RenderAdvanced() {
     const Settings previous = copy;
     bool changed = false;
 
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "FINE TUNING");
-    ImGuiMCP::TextWrapped("Most people can leave this page alone. The recommended settings are designed to work without extra tuning.");
+    PageHeading("ADVANCED", "Reliability and compatibility controls. The recommended values should suit most setups.");
 
-    ImGuiMCP::Separator();
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "AFTER LOADING A SAVE");
-    changed |= ImGuiMCP::Checkbox("Fix player physics once after loading", &copy.resetSMPAfterLoad);
+    SectionHeading("AUTOMATIC RECOVERY");
+    changed |= ImGuiMCP::Checkbox("Refresh player physics after loading", &copy.resetSMPAfterLoad);
     ImGuiMCP::BeginDisabled(!copy.resetSMPAfterLoad);
     float loadResetSeconds = copy.loadResetDelayMs / 1000.0F;
-    if (ImGuiMCP::SliderFloat("Wait before the load fix", &loadResetSeconds, 1.0F, 30.0F, "%.0f seconds")) {
+    if (ImGuiMCP::SliderFloat("Delay after loading", &loadResetSeconds, 1.0F, 30.0F, "%.0f seconds")) {
         copy.loadResetDelayMs = static_cast<int>(std::lround(loadResetSeconds * 1000.0F));
         changed = true;
     }
     ImGuiMCP::EndDisabled();
     ImGuiMCP::TextWrapped("SPS resets the player's SMP once, then restores the correct soft or erect state.");
-    changed |= ImGuiMCP::Checkbox("Repair physics after changing armour or schlong",
+    changed |= ImGuiMCP::Checkbox("Refresh after changing armour or schlong",
         &copy.equipmentChangeRecovery);
-    ImGuiMCP::TextWrapped("Recommended. SPS quietly checks the player again after an outfit or schlong swap so physics and the chosen angle do not get left behind.");
+    ImGuiMCP::TextWrapped("Recommended. These player-only refreshes restore the selected physics and angle after the mesh changes.");
 
-    if (ImGuiMCP::CollapsingHeader("Arousal switching timing")) {
+    if (ImGuiMCP::CollapsingHeader("Automatic switching timing (advanced)")) {
+        ImGuiMCP::BeginDisabled(copy.mode != 0);
         changed |= ImGuiMCP::SliderFloat("Soft return gap", &copy.hysteresis, 0, 25, "%.0f arousal");
         ImGuiMCP::TextWrapped("After becoming erect, SPS waits until arousal falls below %.0f before returning to soft. This prevents rapid switching.", std::max(0.0F, copy.threshold - copy.hysteresis));
         float pollSeconds = copy.pollMs / 1000.0F;
@@ -3029,12 +3325,15 @@ void __stdcall RenderAdvanced() {
             copy.switchCooldownMs = static_cast<int>(std::lround(cooldownSeconds * 1000.0F));
             changed = true;
         }
+        ImGuiMCP::EndDisabled();
+        if (copy.mode != 0)
+            ImGuiMCP::TextWrapped("These values are only used in Automatic mode.");
     }
 
     ImGuiMCP::Separator();
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "ANGLE CONTROL");
-    changed |= ImGuiMCP::Checkbox("Let SPS control the erect angle", &copy.positionControl);
-    ImGuiMCP::TextWrapped("Turn this off only when another mod should control the angle. Soft/erect physics switching will still work.");
+    SectionHeading("ANGLE CONTROL");
+    changed |= ImGuiMCP::Checkbox("Let SPS control the angle", &copy.positionControl);
+    ImGuiMCP::TextWrapped("Turn this off only if another mod should own the angle. Soft/erect physics switching will continue to work.");
     ImGuiMCP::BeginDisabled(!copy.positionControl);
     const char* bendMethods[]{ "SOS AE direct control", "SOS / TNG animation stages", "Choose automatically (recommended)" };
     changed |= ImGuiMCP::Combo("How SPS sets the angle", &copy.bendMethod, bendMethods, 3);
@@ -3042,12 +3341,16 @@ void __stdcall RenderAdvanced() {
     changed |= ImGuiMCP::Checkbox("Stop repeated bouncing", &copy.bounceGuard);
     ImGuiMCP::EndDisabled();
 
-    if (positionAutoSuspended.load() && ImGuiMCP::Button("Resume position recovery")) {
-        ResetPositionRecovery();
-        appliedBend.store(-1);
+    if (positionAutoSuspended.load()) {
+        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F),
+            "Automatic angle recovery paused after repeated failures.");
+        if (ImGuiMCP::Button("Try angle recovery again")) {
+            ResetPositionRecovery();
+            appliedBend.store(-1);
+        }
     }
 
-    if (ImGuiMCP::CollapsingHeader("Angle recovery timing")) {
+    if (ImGuiMCP::CollapsingHeader("Angle recovery timing (advanced)")) {
         ImGuiMCP::BeginDisabled(!copy.positionControl);
         float settleSeconds = copy.settleDelayMs / 1000.0F;
         if (ImGuiMCP::SliderFloat("Wait before setting the angle", &settleSeconds, 0.0F, 5.0F, "%.2f seconds")) {
@@ -3060,7 +3363,10 @@ void __stdcall RenderAdvanced() {
     }
 
     ImGuiMCP::Separator();
-    if (ImGuiMCP::Button("Reset fine tuning to recommended")) { UseRecommendedSettings(copy); changed = true; }
+    if (ImGuiMCP::CollapsingHeader("Reset advanced settings")) {
+        ImGuiMCP::TextWrapped("This restores every SPS recommendation, including the settings on the other pages.");
+        if (ImGuiMCP::Button("Restore all recommended settings")) { UseRecommendedSettings(copy); changed = true; }
+    }
 
     if (changed) SaveSettingsAndApply(copy, previous);
 }
@@ -3079,6 +3385,12 @@ std::string BuildReport() {
     { std::scoped_lock lock(apiLock); activeAPIRequestCount = apiRequests.size(); }
     for (const auto& [code, suggestion] : SuggestedFixes(d))
         fixes += fmt::format("{}: {}\n", code, suggestion);
+    if (OslArousedLoaded())
+        fixes += "Compatibility: With OSL Aroused 2.9.3+, turn off Enable SOS so it does not fight SPS for the player's angle. OSL 2.9.0 through 2.9.2 may use the legacy SPS FOMOD option instead.\n";
+    else if (SloArousedLoaded())
+        fixes += "Compatibility: Turn off Use SOS in SLO Aroused NG so it does not fight SPS for the player's angle.\n";
+    else if (d.classicArousedPluginLoaded)
+        fixes += "Compatibility: Turn off Enable SOS in SexLab Aroused Redux so it does not fight SPS for the player's angle.\n";
     return fmt::format(
         "Schlong Physics Swapper {} diagnostics\n"
         "SkyrimRuntime={} SKSE={}\n"
@@ -3103,7 +3415,7 @@ std::string BuildReport() {
         stateKnown.load() ? (usingCBPC.load() ? "CBPC" : "SMP") : "unknown", stateKnown.load(), arousal.load(), ArousalProviderName(), oslConnected.load(), sexLabActive.load(), sexLabConnected.load(), SexLabRoleName(sexLabRole.load()), sexLabRoleValid.load(),
         ostimActive.load(), ostimConnected.load(), OStimRoleName(ostimRole.load()), ostimRoleValid.load(),
         SPS::API::kVersion, activeAPIRequestCount, activeAPIRequest ? activeAPIRequest->requester : "none", apiRequestsAccepted.load(), apiRequestsReleased.load(),
-        externalResetNotices.load(), externalOwnerRepairs.load(), lastExternalOwnerRepairMs.load(),
+        externalResetNotices.load(), ownerRestorations.load(), lastOwnerRestorationMs.load(),
         d.menuFrameworkLoaded, d.oslModuleLoaded && d.oslPluginLoaded, d.fsmpModuleLoaded, d.cbpcModuleLoaded, d.sexLabModuleLoaded && d.sexLabPluginLoaded,
         PositionBackendAvailable(), d.supportedAddonLoaded,
         d.playerBonesFound, d.compatibleXmlFiles, d.xmlFiles, d.xmlSummary, d.compatibleCbpcMaps, d.cbpcMapFiles, d.cbpcMapSummary,
@@ -3166,24 +3478,83 @@ void StartDebugCapture() {
 }
 
 void TestPhysicsState(bool cbpc) {
-    manualPhysicsTestUntilMs.store(NowMs() + 5000);
     if (!SetOwner(cbpc, true)) {
+        const int action = cbpc ? 1 : 0;
+        const bool newlyQueued = pendingQuickAction.exchange(action) != action;
+        if (newlyQueued || pendingQuickActionUntilMs.load() == 0)
+            pendingQuickActionUntilMs.store(NowMs() + 15000);
+        activeManualPhysicsTest.store(-1);
         manualPhysicsTestUntilMs.store(0);
+        if (newlyQueued)
+            Record(fmt::format("{} physics test queued; waiting for the player and Papyrus to finish loading",
+                cbpc ? "Erect" : "Soft"));
         return;
     }
-    if (!cbpc) ConfirmSoftState();
+    pendingQuickAction.store(-1);
+    pendingQuickActionUntilMs.store(0);
+    activeManualPhysicsTest.store(cbpc ? 1 : 0);
+    // Start the visible test period after the Papyrus handoff completes. On a
+    // busy new game that handoff can take several seconds, so using the time
+    // captured before SetOwner made the advertised ten-second test much shorter.
+    const auto testStartedMs = NowMs();
+    manualPhysicsTestUntilMs.store(testStartedMs + 10000);
+    if (!cbpc) softConfirmationDueMs.store(testStartedMs + 250);
+    Record(fmt::format("{} physics test active for 10 seconds",
+        cbpc ? "Erect" : "Soft"));
     CaptureState(cbpc ? "manual erect test" : "manual soft test");
 }
 
 void RepairPhysics() {
+    const bool retryingQueuedRepair = pendingQuickAction.load() == 2;
     manualPhysicsTestUntilMs.store(0);
+    activeManualPhysicsTest.store(-1);
     ResetPositionRecovery();
     retryAfterMs.store(0);
     appliedBend.store(-1);
-    Record("Physics repair requested");
+    if (!retryingQueuedRepair) Record("Physics repair requested");
+    if (!PapyrusReadyForDispatch()) {
+        const bool newlyQueued = pendingQuickAction.exchange(2) != 2;
+        if (newlyQueued || pendingQuickActionUntilMs.load() == 0)
+            pendingQuickActionUntilMs.store(NowMs() + 15000);
+        if (newlyQueued)
+            Record("Repair queued; waiting for the player and Papyrus to finish loading");
+        return;
+    }
     Evaluate(true);
+    if (!stateKnown.load()) {
+        const bool newlyQueued = pendingQuickAction.exchange(2) != 2;
+        if (newlyQueued || pendingQuickActionUntilMs.load() == 0)
+            pendingQuickActionUntilMs.store(NowMs() + 15000);
+        if (newlyQueued)
+            Record("Repair is waiting for a usable player physics state");
+        return;
+    }
+    pendingQuickAction.store(-1);
+    pendingQuickActionUntilMs.store(0);
+    postSwitchVerificationDueMs.store(NowMs() + 1000);
+    Record("Repair applied; final handoff check queued");
     RefreshDiagnostics();
     CaptureState("manual repair");
+}
+
+void ProcessPendingQuickAction() {
+    const int action = pendingQuickAction.load();
+    if (action < 0) return;
+    const auto now = NowMs();
+    if (now >= pendingQuickActionUntilMs.load()) {
+        pendingQuickAction.store(-1);
+        pendingQuickActionUntilMs.store(0);
+        Record("SPS-020: The requested quick fix could not run while the game was still loading", true);
+        return;
+    }
+    if (!PapyrusReadyForDispatch()) return;
+
+    // Leave the action marked as pending during the attempt so a failure keeps
+    // the original 15-second deadline instead of extending it forever.
+    if (action == 2)
+        RepairPhysics();
+    else
+        TestPhysicsState(action == 1);
 }
 
 void __stdcall RenderDebug() {
@@ -3193,50 +3564,82 @@ void __stdcall RenderDebug() {
     { std::scoped_lock lock(settingsLock); debugSettings = settings; }
     const Settings previousDebugSettings = debugSettings;
 
-    const bool coreReady = d.menuFrameworkLoaded && d.oslModuleLoaded && d.oslPluginLoaded &&
-        d.fsmpModuleLoaded && d.cbpcModuleLoaded && d.playerBonesFound == 6 &&
-        d.compatibleXmlFiles > 0 && d.compatibleCbpcMaps > 0 && d.compatibleCbpcParameters > 0 &&
-        !d.sosPhysicsManagerLoaded;
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "HELP AND REPORTS");
+    const bool coreReady = CoreReady(d, debugSettings);
+    PageHeading("TROUBLESHOOTING", "Check the setup, test each physics state and create a report if something still goes wrong.");
+    SectionHeading("SETUP CHECK");
     StatusLine("Setup", d.checkedAtMs == 0 ? "Not checked yet" : (coreReady ? "Everything looks good" : "Something needs attention"), d.checkedAtMs == 0 ? 1 : (coreReady ? 2 : 0));
-    if (ImGuiMCP::Button("Check my setup again"))
+    if (ImGuiMCP::Button("Check setup again"))
         if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask(RefreshDiagnostics);
     ImGuiMCP::SameLine();
-    if (ImGuiMCP::Button("Repair settings")) {
+    if (ImGuiMCP::Button("Restore recommended settings")) {
         Settings fixed;
         { std::scoped_lock lock(settingsLock); fixed = settings; }
         const Settings previous = fixed;
         UseRecommendedSettings(fixed);
         SaveSettingsAndApply(fixed, previous);
     }
-    ImGuiMCP::TextWrapped("Green means ready, yellow means optional or still checking, and red means something needs fixing. Repair settings restores SPS's safe choices but cannot install missing mods.");
+    ImGuiMCP::TextWrapped("Green is ready, yellow is optional or still checking, and red needs attention. Restoring settings cannot install a missing requirement.");
+
+    const auto suggestions = SuggestedFixes(d);
+    if (suggestions.size() == 1 && suggestions.front().first == "SPS-000")
+        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.35F, 1.0F, 0.45F, 1.0F), "No setup fixes are currently needed.");
+    else {
+        SectionHeading("WHAT TO FIX");
+        for (const auto& item : suggestions)
+            ImGuiMCP::TextWrapped("- %s", item.second.c_str());
+    }
+    {
+        std::scoped_lock lock(activityLock);
+        if (!lastError.empty())
+            ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.45F, 0.35F, 1.0F),
+                "Most recent problem: %s", lastError.c_str());
+    }
     ImGuiMCP::Separator();
 
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "QUICK FIXES");
-    if (ImGuiMCP::Button("Show soft physics"))
+    SectionHeading("TEST AND REPAIR");
+    if (ImGuiMCP::Button("Test soft (10 seconds)"))
         if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { TestPhysicsState(false); });
     ImGuiMCP::SameLine();
-    if (ImGuiMCP::Button("Show erect physics"))
+    if (ImGuiMCP::Button("Test erect (10 seconds)"))
         if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { TestPhysicsState(true); });
     ImGuiMCP::SameLine();
-    if (ImGuiMCP::Button("Repair current state"))
+    if (ImGuiMCP::Button("Repair current physics"))
         if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask(RepairPhysics);
-    ImGuiMCP::TextWrapped("The two test buttons hold their result for 5 seconds, then automatic control resumes.");
+    const int queuedAction = pendingQuickAction.load();
+    if (queuedAction >= 0) {
+        const char* queuedName = queuedAction == 0 ? "soft test" : (queuedAction == 1 ? "erect test" : "repair");
+        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F),
+            "Waiting to run the %s as soon as loading finishes...", queuedName);
+    } else if (activeManualPhysicsTest.load() >= 0 && NowMs() < manualPhysicsTestUntilMs.load()) {
+        const auto remaining = std::max<std::int64_t>(0, manualPhysicsTestUntilMs.load() - NowMs());
+        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.35F, 1.0F, 0.45F, 1.0F),
+            "%s physics test is active (%lld seconds left)",
+            activeManualPhysicsTest.load() == 1 ? "Erect" : "Soft", (remaining + 999) / 1000);
+    }
+    ImGuiMCP::TextWrapped("Tests temporarily force one state, then normal control resumes. Repair reapplies the state SPS currently expects. Actions wait briefly if the game is still loading.");
     ImGuiMCP::Separator();
 
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "WHAT SPS FOUND");
+    SectionHeading("DETECTED COMPONENTS");
     const auto providerName = ArousalProviderName();
-    StatusLine("Arousal mod", d.oslModuleLoaded && d.oslPluginLoaded ? (oslConnected.load() ? fmt::format("{} - ready", providerName).c_str() : fmt::format("{} - still checking", providerName).c_str()) : "Missing", d.oslModuleLoaded && d.oslPluginLoaded ? (oslConnected.load() ? 2 : 1) : 0);
+    if (debugSettings.mode != 0 && (!d.oslModuleLoaded || !d.oslPluginLoaded))
+        StatusLine("Arousal mod", "Not installed - not needed in manual mode", 2);
+    else
+        StatusLine("Arousal mod", d.oslModuleLoaded && d.oslPluginLoaded ? (oslConnected.load() ? fmt::format("{} - ready", providerName).c_str() : fmt::format("{} - still checking", providerName).c_str()) : "Missing", d.oslModuleLoaded && d.oslPluginLoaded ? (oslConnected.load() ? 2 : 1) : 0);
     StatusLine("Soft physics", d.fsmpModuleLoaded ? (smpConnected.load() ? "SMP - ready" : "SMP found - not tested yet") : "Faster HDT-SMP is missing", d.fsmpModuleLoaded ? (smpConnected.load() ? 2 : 1) : 0);
     StatusLine("Erect physics", d.cbpcModuleLoaded ? (cbpcConnected.load() ? "CBPC - ready" : "CBPC found - not tested yet") : "CBPC is missing", d.cbpcModuleLoaded ? (cbpcConnected.load() ? 2 : 1) : 0);
     StatusLine("Compatible schlong", d.playerBonesFound == 6 ? "All 6 physics bones found" : fmt::format("Only {}/6 physics bones found", d.playerBonesFound).c_str(), d.playerBonesFound == 6 ? 2 : 0);
     const bool positionBackendFound = PositionBackendAvailable();
     StatusLine("Erect angle control", positionBackendFound ? fmt::format("{} - ready", PositionBackendName()).c_str() : "Not available - physics switching still works", positionBackendFound ? 2 : 1);
 
-    if (SloArousedLoaded())
-        ImGuiMCP::TextWrapped("SLO Aroused users: leave SLO's Use SOS option off so both mods do not change the angle.");
-    if (d.classicArousedPluginLoaded)
-        ImGuiMCP::TextWrapped("SexLab Aroused Redux users: leave Enable SOS off so both mods do not change the angle.");
+    if (OslArousedLoaded())
+        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F),
+            "OSL 2.9.3+ users: turn off Enable SOS so OSL does not fight SPS for the player's angle. The legacy FOMOD option is only for OSL 2.9.0 through 2.9.2.");
+    else if (SloArousedLoaded())
+        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F),
+            "SLO Aroused NG users: turn off Use SOS so SLO does not fight SPS for the player's angle.");
+    else if (d.classicArousedPluginLoaded)
+        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F),
+            "SexLab Aroused Redux users: turn off Enable SOS so Redux does not fight SPS for the player's angle.");
 
     if (d.physicsEditorLoaded)
         ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F), "Physics Editor is installed. It can stay installed, but disable its schlong controls if SPS changes unexpectedly.");
@@ -3274,7 +3677,7 @@ void __stdcall RenderDebug() {
         { std::scoped_lock lock(apiLock); activeRequests = apiRequests.size(); }
         StatusLine("Mod compatibility API", "V1 - ready", 2);
         ImGuiMCP::Text("Other mods currently controlling physics: %zu", activeRequests);
-        ImGuiMCP::Text("External reset repairs: %u", externalOwnerRepairs.load());
+        ImGuiMCP::Text("Confirmed owner restorations: %u", ownerRestorations.load());
         ImGuiMCP::Text("Successful physics changes: %u", switchSuccesses.load());
         ImGuiMCP::Text("Failed physics changes: %u", switchFailures.load());
         ImGuiMCP::Text("Erect angle applications: %u", bendRepairs.load());
@@ -3285,31 +3688,21 @@ void __stdcall RenderDebug() {
     }
 
     ImGuiMCP::Separator();
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "WHAT TO DO NEXT");
-    const auto suggestions = SuggestedFixes(d);
-    if (suggestions.size() == 1 && suggestions.front().first == "SPS-000")
-        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.35F, 1.0F, 0.45F, 1.0F), "No fixes are currently needed.");
-    else {
-        for (const auto& item : suggestions)
-            ImGuiMCP::TextWrapped("- %s", item.second.c_str());
-    }
     {
         std::scoped_lock lock(activityLock);
-        if (!lastError.empty())
-            ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.45F, 0.35F, 1.0F), "Most recent problem: %s", lastError.c_str());
-        if (ImGuiMCP::CollapsingHeader("Recent SPS activity")) {
+        if (ImGuiMCP::CollapsingHeader("Recent activity")) {
             ImGuiMCP::TextWrapped("Last action: %s", lastAction.c_str());
             for (const auto& entry : activity) ImGuiMCP::TextWrapped("- %s", entry.c_str());
         }
     }
 
     ImGuiMCP::Separator();
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "NEED HELP?");
-    ImGuiMCP::TextWrapped("If you can repeat a problem, record the next 30 seconds, close the menu, make it happen, then return here and save the report.");
+    SectionHeading("CREATE A SUPPORT REPORT");
+    ImGuiMCP::TextWrapped("For a repeatable problem, start the recording, close the menu, reproduce it, then return here and save the report.");
     if (DebugCaptureActive()) {
         const auto remaining = std::max<std::int64_t>(0, debugCaptureUntilMs.load() - NowMs());
         ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F), "Recording... reproduce the problem now (%lld seconds left)", (remaining + 999) / 1000);
-    } else if (ImGuiMCP::Button("Record the next 30 seconds")) {
+    } else if (ImGuiMCP::Button("Record 30 seconds")) {
         StartDebugCapture();
     }
     if (ImGuiMCP::Button("Copy report")) {
@@ -3326,7 +3719,7 @@ void __stdcall RenderDebug() {
     }
     ImGuiMCP::TextWrapped("The report contains SPS settings, detected mods and relevant filenames. It does not include your Windows username, save name or full computer paths.");
 
-    if (ImGuiMCP::CollapsingHeader("Extra logging")) {
+    if (ImGuiMCP::CollapsingHeader("Extra logging (advanced)")) {
         if (ImGuiMCP::Checkbox("Write more detail to the log", &debugSettings.verboseLogging)) {
             SaveSettingsAndApply(debugSettings, previousDebugSettings);
             Record(debugSettings.verboseLogging ? "Verbose logging enabled" : "Verbose logging disabled");
@@ -3339,10 +3732,10 @@ void RegisterMenu() {
     if (!SKSEMenuFramework::IsInstalled()) { Record("SKSE Menu Framework not found", true); return; }
     SKSEMenuFramework::SetSection(kName);
     SKSEMenuFramework::AddSectionItem("Home", RenderMain);
-    SKSEMenuFramework::AddSectionItem("Looks and erections", RenderLooks);
-    SKSEMenuFramework::AddSectionItem("Scene behaviour", RenderScenes);
-    SKSEMenuFramework::AddSectionItem("Fine tuning", RenderAdvanced);
-    SKSEMenuFramework::AddSectionItem("Help and reports", RenderDebug);
+    SKSEMenuFramework::AddSectionItem("Appearance", RenderLooks);
+    SKSEMenuFramework::AddSectionItem("Scenes", RenderScenes);
+    SKSEMenuFramework::AddSectionItem("Advanced", RenderAdvanced);
+    SKSEMenuFramework::AddSectionItem("Troubleshooting", RenderDebug);
 }
 
 class ModEventSink final : public RE::BSTEventSink<SKSE::ModCallbackEvent> {
@@ -3443,6 +3836,29 @@ public:
     }
 };
 
+class EquipEventSink final : public RE::BSTEventSink<RE::TESEquipEvent> {
+public:
+    RE::BSEventNotifyControl ProcessEvent(const RE::TESEquipEvent* event,
+        RE::BSTEventSource<RE::TESEquipEvent>*) override {
+        if (!event || event->actor.get() != RE::PlayerCharacter::GetSingleton())
+            return RE::BSEventNotifyControl::kContinue;
+
+        auto* changedForm = RE::TESForm::LookupByID(event->baseObject);
+        if (!changedForm || changedForm->GetFormType() != RE::FormType::Armor)
+            return RE::BSEventNotifyControl::kContinue;
+
+        bool enabled = false;
+        { std::scoped_lock lock(settingsLock); enabled = settings.equipmentChangeRecovery; }
+        if (enabled) {
+            // Some armour managers replace the genital mesh without emitting
+            // an SKSE NiNode update. Debounce paired equip/unequip events and
+            // run the same owner recovery after the replacement nodes settle.
+            nodeRefreshDueMs.store(NowMs() + 1000);
+        }
+        return RE::BSEventNotifyControl::kContinue;
+    }
+};
+
 class MenuSink final : public RE::BSTEventSink<RE::MenuOpenCloseEvent> {
 public:
     RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* event,
@@ -3469,8 +3885,46 @@ public:
     }
 };
 
+void ResetTransientTimers() {
+    lastSwitchMs.store(0);
+    retryAfterMs.store(0);
+    loadSMPResetDueMs.store(0);
+    loadSMPResetRestoreDueMs.store(0);
+    softHandoffResetDueMs.store(0);
+    softHandoffResetUntilMs.store(0);
+    softHandoffResetRestoreDueMs.store(0);
+    softAngleRefreshDueMs.store(0);
+    softAngleRefreshRestoreDueMs.store(0);
+    bendSettleDueMs.store(0);
+    bendConfirmationDueMs.store(0);
+    bendRetryDueMs.store(0);
+    softConfirmationDueMs.store(0);
+    softConfirmationUntilMs.store(0);
+    cbpcConfirmationDueMs.store(0);
+    cbpcConfirmationUntilMs.store(0);
+    nodeRefreshDueMs.store(0);
+    nodeRefreshFollowupDueMs.store(0);
+    nodeCBPCReacquireDueMs.store(0);
+    nodeCBPCReacquireUntilMs.store(0);
+    erectMeshReplayDueMs.store(0);
+    nodeSMPResetRestoreDueMs.store(0);
+    diagnosticsRefreshDueMs.store(0);
+    manualPhysicsTestUntilMs.store(0);
+    activeManualPhysicsTest.store(-1);
+    pendingQuickAction.store(-1);
+    pendingQuickActionUntilMs.store(0);
+    startupReconcileDueMs.store(0);
+    startupReconcileUntilMs.store(0);
+    postSwitchVerificationDueMs.store(0);
+    postSwitchVerificationUntilMs.store(0);
+    externalOwnerRepairDueMs.store(0);
+    externalOwnerRepairUntilMs.store(0);
+    ignoreNodeEventsUntilMs.store(0);
+}
+
 ModEventSink modEventSink;
 NiNodeSink niNodeSink;
+EquipEventSink equipEventSink;
 MenuSink menuSink;
 
 void OnMessage(SKSE::MessagingInterface::Message* message) {
@@ -3495,16 +3949,7 @@ void OnMessage(SKSE::MessagingInterface::Message* message) {
         morningErectionActive.store(false);
         sleepWaitStartedHours.store(-1.0F);
         CancelErectionAnimation();
-        nodeRefreshDueMs.store(0);
-        nodeRefreshFollowupDueMs.store(0);
-        erectMeshReplayDueMs.store(0);
-        nodeSMPResetRestoreDueMs.store(0);
-        diagnosticsRefreshDueMs.store(0);
-        manualPhysicsTestUntilMs.store(0);
-        softHandoffResetDueMs.store(0);
-        softHandoffResetRestoreDueMs.store(0);
-        softAngleRefreshDueMs.store(0);
-        softAngleRefreshRestoreDueMs.store(0);
+        ResetTransientTimers();
         return;
     }
     if (message->type == SKSE::MessagingInterface::kDataLoaded) {
@@ -3513,15 +3958,20 @@ void OnMessage(SKSE::MessagingInterface::Message* message) {
         RegisterPPAAPI();
         if (auto* source = SKSE::GetModCallbackEventSource()) source->AddEventSink(&modEventSink);
         if (auto* source = SKSE::GetNiNodeUpdateEventSource()) source->AddEventSink(&niNodeSink);
+        if (auto* source = RE::ScriptEventSourceHolder::GetSingleton()) source->AddEventSink(&equipEventSink);
         if (auto* ui = RE::UI::GetSingleton()) ui->AddEventSink(&menuSink);
         RefreshDiagnostics();
         return;
     }
     if (message->type == SKSE::MessagingInterface::kPostLoadGame ||
         message->type == SKSE::MessagingInterface::kNewGame) {
-        InvalidatePapyrusQueries(3000);
+        // PreLoadGame already invalidated callbacks from the previous save.
+        // A shorter post-load gate still lets the new VM finish binding while
+        // avoiding an unnecessary multi-second delay before the first arousal
+        // query and physics decision.
+        InvalidatePapyrusQueries(1000);
         ClearAPIRequests();
-        externalOwnerRepairDueMs.store(0);
+        ResetTransientTimers();
         StartPolling();
         arousalValid.store(false);
         sexLabValid.store(false);
@@ -3544,26 +3994,18 @@ void OnMessage(SKSE::MessagingInterface::Message* message) {
         morningErectionActive.store(false);
         sleepWaitStartedHours.store(-1.0F);
         CancelErectionAnimation();
-        nodeRefreshDueMs.store(0);
-        nodeRefreshFollowupDueMs.store(0);
         // The live genital skeleton can be replaced a few seconds after the
         // save has loaded. Replay an already-selected erect angle once after
         // that late replacement, without changing the user's physics mode.
         erectMeshReplayDueMs.store(NowMs() + 5000);
-        nodeSMPResetRestoreDueMs.store(0);
         diagnosticsRefreshDueMs.store(NowMs() + 2000);
-        manualPhysicsTestUntilMs.store(0);
-        softHandoffResetDueMs.store(0);
-        softHandoffResetRestoreDueMs.store(0);
-        ignoreNodeEventsUntilMs.store(0);
-        softAngleRefreshDueMs.store(0);
-        softAngleRefreshRestoreDueMs.store(0);
         ResetPPASceneTracking(2000);
         stateKnown.store(false);
+        startupReconcileDueMs.store(NowMs() + 1000);
+        startupReconcileUntilMs.store(NowMs() + 30000);
         ScheduleLoadSMPReset();
         if (auto* tasks = SKSE::GetTaskInterface()) {
             tasks->AddTask([] {
-                SetOwner(false, true);
                 Settings copy;
                 { std::scoped_lock lock(settingsLock); copy = settings; }
                 if (copy.mode == 0)
