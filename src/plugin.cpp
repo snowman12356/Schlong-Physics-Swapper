@@ -31,7 +31,7 @@ namespace Mod {
 namespace fs = std::filesystem;
 
 constexpr auto kName = "Schlong Physics Swapper";
-constexpr auto kVersion = "1.9.3";
+constexpr auto kVersion = "1.9.4";
 constexpr auto kIni = "Data/SKSE/Plugins/SchlongPhysicsSwapper.ini";
 constexpr auto kLegacyIni = "Data/SKSE/Plugins/UBEPhysicsSwitch.ini";
 constexpr auto kReport = "Data/SKSE/Plugins/SchlongPhysicsSwapper_Diagnostics.txt";
@@ -1065,12 +1065,23 @@ const std::vector<RE::BSFixedString>& PhysicsBones() {
     return bones;
 }
 
+class DiscardPapyrusResultCallback final : public RE::BSScript::IStackCallbackFunctor {
+public:
+    void operator()(RE::BSScript::Variable) override {}
+    void SetObject(const RE::BSTSmartPointer<RE::BSScript::Object>&) override {}
+};
+
 template <class... Args>
 bool Call(const char* script, const char* function, Args... values) {
     auto* vm = VM();
     if (!vm || !PapyrusReadyForDispatch()) return false;
     auto* args = RE::MakeFunctionArguments(std::move(values)...);
-    RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
+    // Some native Papyrus functions, including FSMP's TogglePhysics, return a
+    // value even when SPS does not need it. Always provide a callback so the
+    // VM never tries to deliver that result through a null functor.
+    RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{
+        new DiscardPapyrusResultCallback()
+    };
     return vm->DispatchStaticCall(script, function, args, callback);
 }
 
