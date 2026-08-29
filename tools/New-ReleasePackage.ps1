@@ -51,6 +51,54 @@ function Copy-ReleaseDirectory {
     }
 }
 
+function New-DeterministicZip {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceDirectory,
+        [Parameter(Mandatory = $true)][string]$DestinationPath
+    )
+
+    $destinationParent = Split-Path -Parent $DestinationPath
+    $temporaryZip = Join-Path $destinationParent (
+        '.{0}.{1}.tmp' -f ([IO.Path]::GetFileName($DestinationPath)), [guid]::NewGuid())
+    $fixedTimestamp = [DateTimeOffset]::new(2000, 1, 1, 0, 0, 0, [TimeSpan]::Zero)
+
+    try {
+        $output = [IO.File]::Open($temporaryZip, [IO.FileMode]::CreateNew,
+            [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        try {
+            $archive = [IO.Compression.ZipArchive]::new(
+                $output, [IO.Compression.ZipArchiveMode]::Create, $false)
+            try {
+                $files = Get-ChildItem -LiteralPath $SourceDirectory -File -Recurse |
+                    Sort-Object { [IO.Path]::GetRelativePath($SourceDirectory, $_.FullName) }
+                foreach ($file in $files) {
+                    $entryName = [IO.Path]::GetRelativePath(
+                        $SourceDirectory, $file.FullName).Replace('\', '/')
+                    $entry = $archive.CreateEntry(
+                        $entryName, [IO.Compression.CompressionLevel]::Optimal)
+                    $entry.LastWriteTime = $fixedTimestamp
+                    $input = [IO.File]::OpenRead($file.FullName)
+                    try {
+                        $entryStream = $entry.Open()
+                        try { $input.CopyTo($entryStream) }
+                        finally { $entryStream.Dispose() }
+                    }
+                    finally { $input.Dispose() }
+                }
+            }
+            finally { $archive.Dispose() }
+        }
+        finally { $output.Dispose() }
+
+        Move-Item -LiteralPath $temporaryZip -Destination $DestinationPath -Force
+    }
+    finally {
+        if (Test-Path -LiteralPath $temporaryZip -PathType Leaf) {
+            Remove-Item -LiteralPath $temporaryZip -Force
+        }
+    }
+}
+
 $dll = Join-Path $build 'SchlongPhysicsSwapper.dll'
 if (-not (Test-Path -LiteralPath $dll -PathType Leaf)) {
     throw "Build the DLL first: $dll"
@@ -87,7 +135,7 @@ if (-not $?) { throw 'Release validation failed.' }
 
 if ($CreateZip) {
     $zip = Join-Path $dist ("Schlong-Physics-Swapper-{0}.zip" -f $Version)
-    Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -Force
+    New-DeterministicZip -SourceDirectory $stage -DestinationPath $zip
     Write-Output "Created: $zip"
 }
 Write-Output "Staged: $stage"

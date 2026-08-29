@@ -14,10 +14,13 @@ param(
 
     [string]$CommonLib = $env:COMMONLIB_SSE_FOLDER,
 
-    [string]$VcpkgRoot = $env:VCPKG_ROOT
+    [string]$VcpkgRoot = $env:VCPKG_ROOT,
+
+    [string]$CMake = $env:SPS_CMAKE
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'SPS.BuildTools.ps1')
 
 $repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $workspace = Split-Path -Path $repo -Parent
@@ -49,19 +52,7 @@ else {
     $physicalArtifactDirectory = [IO.Path]::GetFullPath((Join-Path $repo $ArtifactDirectory))
 }
 
-function Resolve-FirstExistingPath {
-    param([string[]]$Candidates)
-
-    foreach ($candidate in $Candidates) {
-        if (-not [string]::IsNullOrWhiteSpace($candidate) -and
-            (Test-Path -LiteralPath $candidate -PathType Container)) {
-            return (Resolve-Path -LiteralPath $candidate).Path
-        }
-    }
-    return $null
-}
-
-$CommonLib = Resolve-FirstExistingPath @(
+$CommonLib = Resolve-SPSFirstDirectory @(
     $CommonLib,
     (Join-Path $workspace '.research-commonlib-download\CommonLibSSE-NG-ng')
 )
@@ -69,9 +60,9 @@ if (-not $CommonLib) {
     throw 'CommonLibSSE-NG was not found. Set COMMONLIB_SSE_FOLDER or pass -CommonLib.'
 }
 
-$VcpkgRoot = Resolve-FirstExistingPath @(
-    (Join-Path $workspace '.research-vcpkg-download\vcpkg-master'),
+$VcpkgRoot = Resolve-SPSVcpkgRoot @(
     $VcpkgRoot,
+    (Join-Path $workspace '.research-vcpkg-download\vcpkg-master'),
     'C:\vcpkg-master'
 )
 if (-not $VcpkgRoot) {
@@ -83,10 +74,7 @@ if (-not (Test-Path -LiteralPath $toolchain -PathType Leaf)) {
     throw "The vcpkg CMake toolchain was not found: $toolchain"
 }
 
-$cmakeCommand = Get-Command cmake.exe -ErrorAction SilentlyContinue
-if (-not $cmakeCommand) {
-    throw 'CMake was not found on PATH.'
-}
+$cmakeCommand = Resolve-SPSCMake -ExplicitPath $CMake -VcpkgRoot $VcpkgRoot
 
 $cacheFile = Join-Path $physicalBuild 'CMakeCache.txt'
 $cachedDriveLetter = $null
@@ -99,15 +87,34 @@ if (Test-Path -LiteralPath $cacheFile -PathType Leaf) {
     }
 }
 
+$substMappings = Get-SPSSubstMappings
+$workspaceTarget = [IO.Path]::GetFullPath($workspace).TrimEnd('\')
+$existingWorkspaceDrive = $substMappings.GetEnumerator() |
+    Where-Object { $_.Value.Equals($workspaceTarget, [StringComparison]::OrdinalIgnoreCase) } |
+    Select-Object -First 1
+
 if ($cachedDriveLetter) {
-    if (Test-Path -LiteralPath ("{0}:\" -f $cachedDriveLetter)) {
-        throw "Cached build requires temporary drive $cachedDriveLetter`: but that drive is already in use."
+    if ($substMappings.ContainsKey($cachedDriveLetter)) {
+        if (-not $substMappings[$cachedDriveLetter].Equals(
+                $workspaceTarget, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Cached build requires $cachedDriveLetter`: but it maps to $($substMappings[$cachedDriveLetter])."
+        }
+        $driveLetter = $cachedDriveLetter
     }
-    $driveLetter = $cachedDriveLetter
+    else {
+        if (Test-Path -LiteralPath ("{0}:\" -f $cachedDriveLetter)) {
+            throw "Cached build requires $cachedDriveLetter`: but that drive is already in use."
+        }
+        $driveLetter = $cachedDriveLetter
+    }
+}
+elseif ($existingWorkspaceDrive) {
+    $driveLetter = [string]$existingWorkspaceDrive.Key
 }
 else {
     $driveLetter = @('R', 'S', 'T', 'U', 'V', 'W') |
-        Where-Object { -not (Test-Path -LiteralPath ("{0}:\" -f $_)) } |
+        Where-Object { -not $substMappings.ContainsKey($_) -and
+            -not (Test-Path -LiteralPath ("{0}:\" -f $_)) } |
         Select-Object -First 1
 }
 if (-not $driveLetter) {
@@ -135,22 +142,30 @@ function Convert-ToMappedPath {
 $mappedCommonLib = Convert-ToMappedPath $CommonLib
 $mappedToolchain = Convert-ToMappedPath $toolchain
 $mappedBuild = Convert-ToMappedPath $physicalBuild
-$mcpSource = Resolve-FirstExistingPath @(
+$mcpSource = Resolve-SPSFirstDirectory @(
     (Join-Path $workspace '.research-mcp-example-download\SKSE-Menu-Framework-3-Example-master')
 )
 
 Write-Host "SPS source: $repo"
 Write-Host "Build folder: $physicalBuild"
 Write-Host "Parallel jobs: $Jobs"
+Write-Host "CMake: $($cmakeCommand.Version) at $($cmakeCommand.Path)"
 Write-Host "Temporary path: $mappedRepo"
 
-& subst.exe $drive $workspace
-if ($LASTEXITCODE -ne 0) {
-    throw "Could not create temporary build drive $drive"
+$driveCreated = $false
+if (-not $substMappings.ContainsKey($driveLetter)) {
+    & subst.exe $drive $workspace
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not create temporary build drive $drive"
+    }
+    $driveCreated = $true
 }
 
 try {
-    $env:COMMONLIB_SSE_FOLDER = $mappedCommonLib
+    $cleanEnvironment = Get-SPSCleanEnvironment -Overrides @{
+        COMMONLIB_SSE_FOLDER = $mappedCommonLib
+        VCPKG_ROOT = (Convert-ToMappedPath $VcpkgRoot)
+    }
 
     $solutionFile = Join-Path $physicalBuild 'SchlongPhysicsSwapper.sln'
     $configurationReady = (Test-Path -LiteralPath $cacheFile -PathType Leaf) -and
@@ -170,20 +185,21 @@ try {
             $configureArguments += "-DFETCHCONTENT_SOURCE_DIR_MCP_SDK=$(Convert-ToMappedPath $mcpSource)"
         }
 
-        & $cmakeCommand.Source @configureArguments
-        if ($LASTEXITCODE -ne 0) {
-            throw "CMake configuration failed with exit code $LASTEXITCODE."
-        }
+        Invoke-SPSProcess -FilePath $cmakeCommand.Path -ArgumentList $configureArguments `
+            -Environment $cleanEnvironment -Description 'CMake configuration'
     }
     else {
         Write-Host 'Reusing the existing CMake configuration.'
     }
 
-    & $cmakeCommand.Source --build $mappedBuild --config $Configuration `
-        --target SchlongPhysicsSwapper --parallel $Jobs
-    if ($LASTEXITCODE -ne 0) {
-        throw "SPS build failed with exit code $LASTEXITCODE."
-    }
+    $buildArguments = @(
+        '--build', $mappedBuild,
+        '--config', $Configuration,
+        '--target', 'SchlongPhysicsSwapper',
+        '--parallel', [string]$Jobs
+    )
+    Invoke-SPSProcess -FilePath $cmakeCommand.Path -ArgumentList $buildArguments `
+        -Environment $cleanEnvironment -Description 'SPS build'
 
     $dll = Join-Path $physicalBuild "$Configuration\SchlongPhysicsSwapper.dll"
     if (-not (Test-Path -LiteralPath $dll -PathType Leaf)) {
@@ -203,5 +219,7 @@ try {
     Write-Host "SHA-256: $hash"
 }
 finally {
-    & subst.exe $drive /d | Out-Null
+    if ($driveCreated) {
+        & subst.exe $drive /d | Out-Null
+    }
 }

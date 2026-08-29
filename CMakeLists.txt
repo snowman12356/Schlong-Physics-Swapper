@@ -6,6 +6,11 @@ if(NOT DEFINED ENV{COMMONLIB_SSE_FOLDER})
   message(FATAL_ERROR "Set COMMONLIB_SSE_FOLDER to CommonLibSSE-NG")
 endif()
 include(FetchContent)
+if(POLICY CMP0169)
+  # The Menu Framework dependency is used only for its headers. Avoid adding
+  # the example plugin's own targets while keeping CMake 4.x configuration quiet.
+  cmake_policy(SET CMP0169 OLD)
+endif()
 FetchContent_Declare(mcp_sdk URL https://github.com/QTR-Modding/SKSE-Menu-Framework-3-Example/archive/refs/heads/master.zip DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_GetProperties(mcp_sdk)
 if(NOT mcp_sdk_POPULATED)
