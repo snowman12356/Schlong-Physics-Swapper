@@ -1,4 +1,4 @@
-# Schlong Physics Swapper 1.9.2
+# Schlong Physics Swapper 1.9.3
 
 Native SKSE plugin for compatible SOS six-bone schlongs. Faster HDT-SMP owns
 Gen01-Gen06 while arousal is below a configurable threshold; CBPC owns them
@@ -37,7 +37,7 @@ with it.
 - Skyrim SE 1.5.97, AE 1.6.x, or Skyrim VR 1.4.15, with the matching SKSE
 - Address Library for SKSE Plugins
 - SKSE Menu Framework 3
-- Faster HDT-SMP
+- Faster HDT-SMP 4.0.1 or newer; 4.1.1 or newer is recommended (select the build matching your Skyrim runtime)
 - CBPC 
 - OSL Aroused, SLO Aroused NG, or classic SexLab Aroused Redux for Automatic
   mode. Manual Keep soft and Keep erect modes work without an arousal mod.
@@ -288,6 +288,20 @@ computer paths.
 When reporting a problem, attach the diagnostic report or 30-second capture and
 include the schlong addon, Skyrim runtime, mod-manager name, expected result,
 actual result, and short reproduction steps. See [SUPPORT.md](docs/SUPPORT.md).
+
+## 1.9.3 changes
+
+- Prevented a startup crash on Skyrim 1.5.97 when an older FSMP build was
+  installed.
+- Added a proper FSMP version check before SPS calls its actor physics API.
+- Older unsupported FSMP versions now show a clear update warning instead of
+  crashing or leaving a half-applied physics state.
+- Set FSMP 4.0.1 as the minimum supported version, with 4.1.1 or newer
+  recommended.
+- Reduced OSL and SLO arousal polling while the value is stable, while still
+  reacting immediately when the arousal mod reports a change.
+- Avoided unnecessary physics evaluations when the arousal value has not
+  changed.
 
 ## 1.9.2 changes
 

@@ -31,7 +31,7 @@ namespace Mod {
 namespace fs = std::filesystem;
 
 constexpr auto kName = "Schlong Physics Swapper";
-constexpr auto kVersion = "1.9.2";
+constexpr auto kVersion = "1.9.3";
 constexpr auto kIni = "Data/SKSE/Plugins/SchlongPhysicsSwapper.ini";
 constexpr auto kLegacyIni = "Data/SKSE/Plugins/UBEPhysicsSwitch.ini";
 constexpr auto kReport = "Data/SKSE/Plugins/SchlongPhysicsSwapper_Diagnostics.txt";
@@ -90,6 +90,7 @@ struct Diagnostics {
     bool menuFrameworkLoaded{ false };
     bool oslModuleLoaded{ false };
     bool fsmpModuleLoaded{ false };
+    bool fsmpActorApiAvailable{ false };
     bool cbpcModuleLoaded{ false };
     bool sexLabModuleLoaded{ false };
     bool sexLabPluginLoaded{ false };
@@ -151,6 +152,7 @@ std::atomic<bool> arousalValid{ false };
 std::atomic<bool> queryPending{ false };
 std::atomic<std::int64_t> queryStartedMs{ 0 };
 std::atomic<std::int64_t> arousalRetryAfterMs{ 0 };
+std::atomic<std::int64_t> arousalNextQueryMs{ 0 };
 std::atomic<std::uint64_t> arousalQueryGeneration{ 0 };
 std::atomic<bool> sexLabActive{ false };
 std::atomic<bool> sexLabValid{ false };
@@ -270,6 +272,7 @@ std::atomic<unsigned> apiRequestsAccepted{ 0 };
 std::atomic<unsigned> apiRequestsReleased{ 0 };
 std::atomic<unsigned> externalResetNotices{ 0 };
 std::atomic<unsigned> ownerRestorations{ 0 };
+std::atomic<bool> fsmpCompatibilityWarningShown{ false };
 std::jthread pollThread;
 std::jthread erectionAnimationThread;
 std::jthread debugCaptureThread;
@@ -632,15 +635,28 @@ void RegisterPPAAPI() {
     if (ppaListener) Record("PPA V1 listener connected; live scene hand-off enabled");
 }
 
-std::string LoadedDllVersion(const wchar_t* name) {
+std::optional<REL::Version> LoadedDllVersionValue(const wchar_t* name) {
     const auto module = ::GetModuleHandleW(name);
-    if (!module) return "not loaded";
+    if (!module) return std::nullopt;
     std::array<wchar_t, 32768> path{};
     if (::GetModuleFileNameW(module, path.data(), static_cast<DWORD>(path.size())) == 0)
-        return "loaded (version unavailable)";
-    if (const auto version = REL::GetFileVersion(path.data()))
-        return version->string(".");
+        return std::nullopt;
+    return REL::GetFileVersion(path.data());
+}
+
+std::string LoadedDllVersion(const wchar_t* name) {
+    if (::GetModuleHandleW(name) == nullptr) return "not loaded";
+    if (const auto version = LoadedDllVersionValue(name)) return version->string(".");
     return "loaded (version unavailable)";
+}
+
+bool FsmpActorApiAvailable() {
+    // TogglePhysics and ResetPhysics are part of FSMP 4's DynamicHDT API.
+    // Older FSMP builds can still load on Skyrim 1.5.97, but dispatching the
+    // newer ResetPhysics signature to their Papyrus VM can dereference a null
+    // native function and crash the game.
+    const auto version = LoadedDllVersionValue(L"hdtsmp64.dll");
+    return version && *version >= REL::Version{ 4, 0, 1, 0 };
 }
 
 bool SloArousedLoaded() {
@@ -759,7 +775,7 @@ void ClearResolvedRefreshError() {
 
 bool CoreReady(const Diagnostics& d, const Settings& copy) {
     const bool arousalReady = copy.mode != 0 || (d.oslModuleLoaded && d.oslPluginLoaded);
-    return d.menuFrameworkLoaded && arousalReady && d.fsmpModuleLoaded && d.cbpcModuleLoaded &&
+    return d.menuFrameworkLoaded && arousalReady && d.fsmpModuleLoaded && d.fsmpActorApiAvailable && d.cbpcModuleLoaded &&
         d.playerBonesFound == 6 && d.compatibleXmlFiles > 0 && d.compatibleCbpcMaps > 0 &&
         d.compatibleCbpcParameters > 0 && !d.sosPhysicsManagerLoaded;
 }
@@ -789,6 +805,8 @@ std::vector<std::pair<std::string, std::string>> SuggestedFixes(const Diagnostic
         fixes.emplace_back("SPS-002", "Install OSL Aroused, SLO Aroused NG, or classic SexLab Aroused and enable its plugin.");
     if (!d.fsmpModuleLoaded)
         fixes.emplace_back("SPS-003", "Install Faster HDT-SMP and its requirements.");
+    else if (!d.fsmpActorApiAvailable)
+        fixes.emplace_back("SPS-003", "Update Faster HDT-SMP to 4.0.1 or newer. FSMP 4.1.1 or newer is recommended.");
     if (!d.cbpcModuleLoaded)
         fixes.emplace_back("SPS-004", "Install or update CBPC, then fully restart Skyrim.");
     if (d.playerBonesFound != 6)
@@ -826,6 +844,7 @@ public:
     void operator()(RE::BSScript::Variable a_result) override {
         if (generation_ != arousalQueryGeneration.load()) return;
         bool valid = false;
+        bool readingChanged = false;
         float value = 0.0F;
         if (a_result.IsFloat()) {
             value = std::clamp(a_result.GetFloat(), 0.0F, 100.0F);
@@ -837,10 +856,14 @@ public:
         if (valid) {
             const auto previous = arousal.exchange(value);
             const auto wasValid = arousalValid.exchange(true);
+            readingChanged = !wasValid || std::abs(previous - value) >= 0.5F;
             oslConnected.store(true);
             arousalRetryAfterMs.store(0);
+            // OSL's Papyrus getter can fan out into many recorded calls. Poll
+            // quickly while arousal is moving, then back off once it is stable.
+            arousalNextQueryMs.store(NowMs() + (readingChanged ? 1000 : 5000));
             ClearArousalError();
-            if (!wasValid || std::abs(previous - value) >= 0.5F)
+            if (readingChanged)
                 logger::info("{} arousal: {:.1f}", ArousalProviderName(), value);
         } else {
             const bool haveLastReading = arousalValid.load();
@@ -851,7 +874,9 @@ public:
                 !haveLastReading);
         }
         queryPending.store(false);
-        if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { Evaluate(); });
+        if (valid && readingChanged) {
+            if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { Evaluate(); });
+        }
     }
     void SetObject(const RE::BSTSmartPointer<RE::BSScript::Object>&) override {}
 
@@ -1029,6 +1054,7 @@ void InvalidatePapyrusQueries(int delayMs) {
     sexLabRoleQueryPending.store(false);
     ostimRoleQueryPending.store(false);
     arousalRetryAfterMs.store(0);
+    arousalNextQueryMs.store(0);
     sexLabQueryRetryAfterMs.store(0);
     sexLabRoleRetryAfterMs.store(0);
     ostimRoleRetryAfterMs.store(0);
@@ -1046,6 +1072,16 @@ bool Call(const char* script, const char* function, Args... values) {
     auto* args = RE::MakeFunctionArguments(std::move(values)...);
     RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback;
     return vm->DispatchStaticCall(script, function, args, callback);
+}
+
+bool SetSMPPhysics(RE::Actor* actor, bool enabled) {
+    return actor && FsmpActorApiAvailable() &&
+        Call("DynamicHDT", "TogglePhysics", actor, PhysicsBones(), enabled);
+}
+
+bool ResetSMPPhysics(RE::Actor* actor, bool full) {
+    return actor && FsmpActorApiAvailable() &&
+        Call("DynamicHDT", "ResetPhysics", actor, full);
 }
 
 bool CallSosAeBend(RE::Actor* actor, int bend) {
@@ -1077,11 +1113,11 @@ bool ConfirmCurrentPhysicsOwner(std::string_view reason) {
     bool smpOK = false;
     bool cbpcOK = false;
     if (expectCBPC) {
-        smpOK = Call("DynamicHDT", "TogglePhysics", actor, PhysicsBones(), false);
+        smpOK = SetSMPPhysics(actor, false);
         cbpcOK = SetCBPCPhysics(actor, true);
     } else {
         cbpcOK = SetCBPCPhysics(actor, false);
-        smpOK = Call("DynamicHDT", "TogglePhysics", actor, PhysicsBones(), true);
+        smpOK = SetSMPPhysics(actor, true);
     }
     smpConnected.store(smpOK);
     cbpcConnected.store(cbpcOK);
@@ -1220,7 +1256,7 @@ void Save() {
     ini.SaveFile(kIni);
 }
 
-void QueryArousal() {
+void QueryArousal(bool force = false) {
     const auto now = NowMs();
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (!player) return;
@@ -1232,6 +1268,7 @@ void QueryArousal() {
         arousalQueryGeneration.fetch_add(1);
         queryPending.store(false);
         arousalRetryAfterMs.store(0);
+        arousalNextQueryMs.store(0);
         auto* faction = RE::TESForm::LookupByEditorID<RE::TESFaction>("sla_Arousal");
         if (!faction) {
             arousalValid.store(false);
@@ -1244,9 +1281,11 @@ void QueryArousal() {
         const auto wasValid = arousalValid.exchange(true);
         oslConnected.store(true);
         ClearArousalError();
-        if (!wasValid || std::abs(previous - value) >= 0.5F)
+        const bool readingChanged = !wasValid || std::abs(previous - value) >= 0.5F;
+        if (readingChanged)
             logger::info("{} arousal: {:.1f}", ArousalProviderName(), value);
-        if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { Evaluate(); });
+        if (readingChanged)
+            if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { Evaluate(); });
         return;
     }
 
@@ -1254,8 +1293,10 @@ void QueryArousal() {
         queryPending.store(false);
         arousalValid.store(false);
         oslConnected.store(false);
+        arousalNextQueryMs.store(0);
         return;
     }
+    if (!force && now < arousalNextQueryMs.load()) return;
     if (now < arousalRetryAfterMs.load()) return;
     if (queryPending.load()) {
         if (now - queryStartedMs.load() < 10000) return;
@@ -1275,6 +1316,7 @@ void QueryArousal() {
     }
     if (queryPending.exchange(true)) return;
     queryStartedMs.store(now);
+    arousalNextQueryMs.store(now + 1000);
     auto* vm = VM();
     if (!player || !vm) { queryPending.store(false); return; }
     const auto generation = arousalQueryGeneration.fetch_add(1) + 1;
@@ -1864,7 +1906,7 @@ bool ConfirmSoftState() {
     if (!player) return false;
     auto* actor = static_cast<RE::Actor*>(player);
     const bool cbpcOK = SetCBPCPhysics(actor, false);
-    const bool smpOK = Call("DynamicHDT", "TogglePhysics", actor, PhysicsBones(), true);
+    const bool smpOK = SetSMPPhysics(actor, true);
     cbpcConnected.store(cbpcOK);
     smpConnected.store(smpOK);
     if (!cbpcOK || !smpOK) {
@@ -1889,7 +1931,7 @@ bool ConfirmCBPCState() {
     // skeleton rebuild either physics engine can finish after the other one.
     // Reasserting SMP-off before CBPC-on makes the final owner deterministic.
     auto* actor = static_cast<RE::Actor*>(player);
-    const bool smpOK = Call("DynamicHDT", "TogglePhysics", actor, PhysicsBones(), false);
+    const bool smpOK = SetSMPPhysics(actor, false);
     const bool cbpcOK = SetCBPCPhysics(actor, true);
     smpConnected.store(smpOK);
     cbpcConnected.store(cbpcOK);
@@ -1920,8 +1962,7 @@ void RunLoadSMPReset() {
 
     // FSMP 4 exposes an actor-scoped native reset. This avoids opening the
     // console and does not reload every SMP actor in the current cell.
-    const bool dispatched = Call("DynamicHDT", "ResetPhysics",
-        static_cast<RE::Actor*>(player), true);
+    const bool dispatched = ResetSMPPhysics(static_cast<RE::Actor*>(player), true);
     if (!dispatched) {
         Record("SPS-017: Faster HDT-SMP did not accept the delayed player reset", true);
         return;
@@ -1941,7 +1982,7 @@ void ScheduleLoadSMPReset() {
     Settings copy;
     { std::scoped_lock lock(settingsLock); copy = settings; }
     loadSMPResetRestoreDueMs.store(0);
-    if (!copy.enabled || !copy.resetSMPAfterLoad) {
+    if (!copy.enabled || !copy.resetSMPAfterLoad || !FsmpActorApiAvailable()) {
         loadSMPResetDueMs.store(0);
         return;
     }
@@ -1974,8 +2015,7 @@ void RunSoftAngleRefresh() {
     // the requested value first, rebuild only the player, then apply it once
     // more after FSMP has settled.
     ApplyRequestedSoftBend(true, true);
-    const bool dispatched = Call("DynamicHDT", "ResetPhysics",
-        static_cast<RE::Actor*>(player), true);
+    const bool dispatched = ResetSMPPhysics(static_cast<RE::Actor*>(player), true);
     if (!dispatched) {
         Record("SPS-018: Faster HDT-SMP did not accept the soft-angle refresh", true);
         return;
@@ -1996,8 +2036,7 @@ bool RefreshSMPAfterPlayerMeshChange() {
 
     const auto now = NowMs();
     ignoreNodeEventsUntilMs.store(now + 3000);
-    const bool dispatched = Call("DynamicHDT", "ResetPhysics",
-        static_cast<RE::Actor*>(player), true);
+    const bool dispatched = ResetSMPPhysics(static_cast<RE::Actor*>(player), true);
     if (!dispatched) return false;
 
     nodeSMPResetRestoreDueMs.store(now + 750);
@@ -2033,7 +2072,7 @@ void RunSoftHandoffSMPReset() {
     const auto now = NowMs();
     ignoreNodeEventsUntilMs.store(now + 3000);
     auto* actor = static_cast<RE::Actor*>(player);
-    const bool dispatched = Call("DynamicHDT", "ResetPhysics", actor, true);
+    const bool dispatched = ResetSMPPhysics(actor, true);
     if (!dispatched) {
         if (now < softHandoffResetUntilMs.load()) {
             softHandoffResetDueMs.store(now + 1000);
@@ -2053,15 +2092,21 @@ void RunSoftHandoffSMPReset() {
 
 bool SetOwner(bool cbpc, bool force) {
     const auto now = NowMs();
-    if (!PapyrusReadyForDispatch()) {
-        retryAfterMs.store(now + 1000);
-        return false;
-    }
     if (!force && stateKnown.load() && usingCBPC.load() == cbpc) {
         // Mesh changes, API reset notices and the bounded post-switch check
         // schedule targeted repairs. Repeating an FSMP call on every ordinary
         // poll only adds Papyrus traffic without proving who owns the bones.
         return true;
+    }
+    if (!FsmpActorApiAvailable()) {
+        smpConnected.store(false);
+        stateKnown.store(false);
+        retryAfterMs.store(now + 10000);
+        return false;
+    }
+    if (!PapyrusReadyForDispatch()) {
+        retryAfterMs.store(now + 1000);
+        return false;
     }
     if (!force && now < retryAfterMs.load()) return false;
 
@@ -2077,16 +2122,15 @@ bool SetOwner(bool cbpc, bool force) {
         SPS::API::PhysicsState::Unknown;
     CancelErectionAnimation();
     auto* actor = static_cast<RE::Actor*>(player);
-    const auto& bones = PhysicsBones();
 
     bool smpOK = false;
     bool cbpcOK = true;
     if (cbpc) {
-        smpOK = Call("DynamicHDT", "TogglePhysics", actor, bones, false);
+        smpOK = SetSMPPhysics(actor, false);
         cbpcOK = SetCBPCPhysics(actor, true);
     } else {
         cbpcOK = SetCBPCPhysics(actor, false);
-        smpOK = Call("DynamicHDT", "TogglePhysics", actor, bones, true);
+        smpOK = SetSMPPhysics(actor, true);
     }
 
     smpConnected.store(smpOK);
@@ -2096,11 +2140,11 @@ bool SetOwner(bool cbpc, bool force) {
         // when only part of an external handoff was accepted.
         if (stateKnown.load()) {
             if (usingCBPC.load()) {
-                Call("DynamicHDT", "TogglePhysics", actor, bones, false);
+                SetSMPPhysics(actor, false);
                 SetCBPCPhysics(actor, true);
             } else {
                 SetCBPCPhysics(actor, false);
-                Call("DynamicHDT", "TogglePhysics", actor, bones, true);
+                SetSMPPhysics(actor, true);
             }
         }
         ++switchFailures;
@@ -2697,8 +2741,7 @@ void Tick() {
             } else if (auto* player = RE::PlayerCharacter::GetSingleton()) {
                 auto* actor = static_cast<RE::Actor*>(player);
                 const bool cbpcStopped = SetCBPCPhysics(actor, false);
-                const bool smpDisabled = Call("DynamicHDT", "TogglePhysics",
-                    actor, PhysicsBones(), false);
+                const bool smpDisabled = SetSMPPhysics(actor, false);
                 nodeCBPCReacquireDueMs.store(now + (cbpcStopped && smpDisabled ? 350 : 1000));
                 nodeCBPCReacquireUntilMs.store(now + 10000);
                 if (cbpcStopped && smpDisabled)
@@ -2792,6 +2835,7 @@ void RefreshDiagnostics() {
         !OslArousedLoaded() && !SloArousedLoaded();
     result.oslModuleLoaded = OslArousedLoaded() || SloArousedLoaded() || result.classicArousedPluginLoaded;
     result.fsmpModuleLoaded = ::GetModuleHandleW(L"hdtsmp64.dll") != nullptr;
+    result.fsmpActorApiAvailable = FsmpActorApiAvailable();
     result.cbpcModuleLoaded = ::GetModuleHandleW(L"cbp.dll") != nullptr;
     result.sexLabModuleLoaded = ::GetModuleHandleW(L"SexLabUtil.dll") != nullptr;
     result.sexLabPluginLoaded = PluginLoaded({ "SexLab.esm" });
@@ -2862,8 +2906,11 @@ void RefreshDiagnostics() {
         }
     }
     result.checkedAtMs = NowMs();
+    const bool incompatibleFsmp = result.fsmpModuleLoaded && !result.fsmpActorApiAvailable;
     { std::scoped_lock lock(diagnosticsLock); diagnostics = std::move(result); }
     Record("Compatibility health check completed");
+    if (incompatibleFsmp && !fsmpCompatibilityWarningShown.exchange(true))
+        Record("SPS-003: Faster HDT-SMP is too old for SPS. Update to FSMP 4.0.1 or newer.", true);
 }
 
 void StatusLine(const char* label, const char* status, int level) {
@@ -3095,7 +3142,7 @@ void __stdcall RenderMain() {
     ImGuiMCP::Separator();
     SectionHeading("QUICK ACTIONS");
     if (ImGuiMCP::Button("Refresh status"))
-        if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { QueryArousal(); QuerySexLab(); QuerySexLabRole(); QueryOStimRole(); Evaluate(); });
+        if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { QueryArousal(true); QuerySexLab(); QuerySexLabRole(); QueryOStimRole(); Evaluate(); });
     if (ImGuiMCP::CollapsingHeader("Reset options")) {
         ImGuiMCP::TextWrapped("This restores the recommended SPS settings. It does not uninstall anything or change other mods.");
         if (ImGuiMCP::Button("Restore recommended settings")) { UseRecommendedSettings(copy); changed = true; }
@@ -3398,7 +3445,7 @@ std::string BuildReport() {
         "Compatibility: TNG={} PositionBackend={} ClassicSexLabAroused={} SexLabRoleBridge={} OStimRoleBridge={} PPA={} PhysicsEditor={} SOSPhysicsManager={} AutoPhysicsReset={} CrashLogger={}\n"
         "Engine={} StateKnown={} Arousal={:.1f} Provider={} ProviderConnected={} SexLabActive={} SexLabConnected={} SexLabRole={} SexLabRoleValid={} OStimActive={} OStimConnected={} OStimRole={} OStimRoleValid={}\n"
         "CompatibilityAPI=V{} ActiveRequests={} ActiveRequester={} Accepted={} Released={} ResetNotices={} OwnerRepairs={} LastOwnerRepairMs={}\n"
-        "MenuFramework={} ArousalProvider={} FSMP={} CBPC={} SexLabPPlus={} PositionBackendReady={} SupportedAddon={}\n"
+        "MenuFramework={} ArousalProvider={} FSMP={} FSMPActorAPI={} CBPC={} SexLabPPlus={} PositionBackendReady={} SupportedAddon={}\n"
         "PlayerBones={}/6 XML={}/{} [{}]\nCBPCMap={}/{} [{}]\nCBPCParameters={}/{} [{}]\n"
         "SwitchSuccesses={} SwitchFailures={} BendApplies={} LoadSMPResets={} LastLoadSMPResetMs={} LastAction={} LastError={}\n"
         "Position: Enabled={} Requested={} Applied={} LastMethod={} LastSucceeded={} AutoSuspended={} GuardRemainingMs={}\n"
@@ -3416,7 +3463,8 @@ std::string BuildReport() {
         ostimActive.load(), ostimConnected.load(), OStimRoleName(ostimRole.load()), ostimRoleValid.load(),
         SPS::API::kVersion, activeAPIRequestCount, activeAPIRequest ? activeAPIRequest->requester : "none", apiRequestsAccepted.load(), apiRequestsReleased.load(),
         externalResetNotices.load(), ownerRestorations.load(), lastOwnerRestorationMs.load(),
-        d.menuFrameworkLoaded, d.oslModuleLoaded && d.oslPluginLoaded, d.fsmpModuleLoaded, d.cbpcModuleLoaded, d.sexLabModuleLoaded && d.sexLabPluginLoaded,
+        d.menuFrameworkLoaded, d.oslModuleLoaded && d.oslPluginLoaded, d.fsmpModuleLoaded, d.fsmpActorApiAvailable,
+        d.cbpcModuleLoaded, d.sexLabModuleLoaded && d.sexLabPluginLoaded,
         PositionBackendAvailable(), d.supportedAddonLoaded,
         d.playerBonesFound, d.compatibleXmlFiles, d.xmlFiles, d.xmlSummary, d.compatibleCbpcMaps, d.cbpcMapFiles, d.cbpcMapSummary,
         d.compatibleCbpcParameters, d.cbpcParameterFiles, d.cbpcParameterSummary, switchSuccesses.load(), switchFailures.load(), bendRepairs.load(), loadSMPResets.load(), lastLoadSMPResetMs.load(), recent, error.empty() ? "none" : error,
@@ -3625,7 +3673,10 @@ void __stdcall RenderDebug() {
         StatusLine("Arousal mod", "Not installed - not needed in manual mode", 2);
     else
         StatusLine("Arousal mod", d.oslModuleLoaded && d.oslPluginLoaded ? (oslConnected.load() ? fmt::format("{} - ready", providerName).c_str() : fmt::format("{} - still checking", providerName).c_str()) : "Missing", d.oslModuleLoaded && d.oslPluginLoaded ? (oslConnected.load() ? 2 : 1) : 0);
-    StatusLine("Soft physics", d.fsmpModuleLoaded ? (smpConnected.load() ? "SMP - ready" : "SMP found - not tested yet") : "Faster HDT-SMP is missing", d.fsmpModuleLoaded ? (smpConnected.load() ? 2 : 1) : 0);
+    StatusLine("Soft physics", !d.fsmpModuleLoaded ? "Faster HDT-SMP is missing" :
+        (!d.fsmpActorApiAvailable ? "FSMP is too old - update to 4.0.1+" :
+            (smpConnected.load() ? "SMP - ready" : "SMP found - not tested yet")),
+        !d.fsmpModuleLoaded || !d.fsmpActorApiAvailable ? 0 : (smpConnected.load() ? 2 : 1));
     StatusLine("Erect physics", d.cbpcModuleLoaded ? (cbpcConnected.load() ? "CBPC - ready" : "CBPC found - not tested yet") : "CBPC is missing", d.cbpcModuleLoaded ? (cbpcConnected.load() ? 2 : 1) : 0);
     StatusLine("Compatible schlong", d.playerBonesFound == 6 ? "All 6 physics bones found" : fmt::format("Only {}/6 physics bones found", d.playerBonesFound).c_str(), d.playerBonesFound == 6 ? 2 : 0);
     const bool positionBackendFound = PositionBackendAvailable();
@@ -3798,11 +3849,13 @@ public:
             // The callback query will evaluate the new value. Arousal updates
             // must not invalidate an already-applied bend or they create a
             // position replay loop while Automatic mode is erect.
-            if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask(QueryArousal);
+            if (auto* tasks = SKSE::GetTaskInterface())
+                tasks->AddTask([] { QueryArousal(true); });
         } else if (name == "sla_UpdateComplete") {
             // SLO Aroused NG reports a completed update globally. Querying its
             // OSL compatibility stub is cheap and avoids waiting for the next poll.
-            if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask(QueryArousal);
+            if (auto* tasks = SKSE::GetTaskInterface())
+                tasks->AddTask([] { QueryArousal(true); });
         } else if (name == "SexLabDisabled") {
             sexLabActive.store(false);
             sexLabValid.store(false);
@@ -4009,7 +4062,7 @@ void OnMessage(SKSE::MessagingInterface::Message* message) {
                 Settings copy;
                 { std::scoped_lock lock(settingsLock); copy = settings; }
                 if (copy.mode == 0)
-                    QueryArousal();
+                    QueryArousal(true);
                 else
                     ClearArousalError();
                 QuerySexLab();
