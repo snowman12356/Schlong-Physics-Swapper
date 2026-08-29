@@ -19,6 +19,8 @@ $requiredFiles = @(
     'SKSE\Plugins\CBPCMasterConfig_ZZZ_SchlongPhysicsSwapper.txt',
     'SKSE\Plugins\CBPConfig_ZZZ_SchlongPhysicsSwapper.txt',
     'Scripts\SPS_SexLabBridge.pex',
+    'Scripts\SPS_FSMPBridge.pex',
+    'Source\Scripts\SPS_FSMPBridge.psc',
     'Optional\OStim\Scripts\SPS_OStimBridge.pex',
     'Optional\OSL Legacy\Scripts\OSLAroused_Main.pex',
     'Optional\OSL Legacy\Source\OSL Aroused Compatibility\OSLAroused_Main.psc',

@@ -1,12 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
-  <moduleName>Schlong Physics Swapper 1.9.4</moduleName>
+  <moduleName>Schlong Physics Swapper 1.9.5</moduleName>
   <requiredInstallFiles>
     <file source="SKSE\Plugins\SchlongPhysicsSwapper.dll" destination="SKSE\Plugins\SchlongPhysicsSwapper.dll" priority="0" />
     <file source="SKSE\Plugins\CBPCMasterConfig_ZZZ_SchlongPhysicsSwapper.txt" destination="SKSE\Plugins\CBPCMasterConfig_ZZZ_SchlongPhysicsSwapper.txt" priority="0" />
     <file source="SKSE\Plugins\CBPConfig_ZZZ_SchlongPhysicsSwapper.txt" destination="SKSE\Plugins\CBPConfig_ZZZ_SchlongPhysicsSwapper.txt" priority="0" />
     <file source="Scripts\SPS_SexLabBridge.pex" destination="Scripts\SPS_SexLabBridge.pex" priority="0" />
     <file source="Source\Scripts\SPS_SexLabBridge.psc" destination="Source\Scripts\SPS_SexLabBridge.psc" priority="0" />
+    <file source="Scripts\SPS_FSMPBridge.pex" destination="Scripts\SPS_FSMPBridge.pex" priority="0" />
+    <file source="Source\Scripts\SPS_FSMPBridge.psc" destination="Source\Scripts\SPS_FSMPBridge.psc" priority="0" />
     <folder source="docs" destination="docs" priority="0" />
     <folder source="Licenses" destination="Licenses" priority="0" />
     <file source="README.md" destination="README.md" priority="0" />

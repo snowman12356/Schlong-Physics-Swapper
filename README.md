@@ -1,4 +1,4 @@
-# Schlong Physics Swapper 1.9.4
+# Schlong Physics Swapper 1.9.5
 
 Native SKSE plugin for compatible SOS six-bone schlongs. Faster HDT-SMP owns
 Gen01-Gen06 while arousal is below a configurable threshold; CBPC owns them
@@ -288,6 +288,14 @@ computer paths.
 When reporting a problem, attach the diagnostic report or 30-second capture and
 include the schlong addon, Skyrim runtime, mod-manager name, expected result,
 actual result, and short reproduction steps. See [SUPPORT.md](docs/SUPPORT.md).
+
+## 1.9.5 changes
+
+- Moved FSMP's six-bone physics list into a required Papyrus bridge instead of
+  allocating the array from the native plugin during startup.
+- Fixed the remaining timing-dependent crash when SPS switched FSMP physics
+  while a busy game was still completing its load transition.
+- Added setup checks and support-report details for a missing SPS FSMP bridge.
 
 ## 1.9.4 changes
 

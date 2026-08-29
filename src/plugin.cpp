@@ -31,7 +31,7 @@ namespace Mod {
 namespace fs = std::filesystem;
 
 constexpr auto kName = "Schlong Physics Swapper";
-constexpr auto kVersion = "1.9.4";
+constexpr auto kVersion = "1.9.5";
 constexpr auto kIni = "Data/SKSE/Plugins/SchlongPhysicsSwapper.ini";
 constexpr auto kLegacyIni = "Data/SKSE/Plugins/UBEPhysicsSwitch.ini";
 constexpr auto kReport = "Data/SKSE/Plugins/SchlongPhysicsSwapper_Diagnostics.txt";
@@ -91,6 +91,7 @@ struct Diagnostics {
     bool oslModuleLoaded{ false };
     bool fsmpModuleLoaded{ false };
     bool fsmpActorApiAvailable{ false };
+    bool fsmpBridgePresent{ false };
     bool cbpcModuleLoaded{ false };
     bool sexLabModuleLoaded{ false };
     bool sexLabPluginLoaded{ false };
@@ -775,7 +776,7 @@ void ClearResolvedRefreshError() {
 
 bool CoreReady(const Diagnostics& d, const Settings& copy) {
     const bool arousalReady = copy.mode != 0 || (d.oslModuleLoaded && d.oslPluginLoaded);
-    return d.menuFrameworkLoaded && arousalReady && d.fsmpModuleLoaded && d.fsmpActorApiAvailable && d.cbpcModuleLoaded &&
+    return d.menuFrameworkLoaded && arousalReady && d.fsmpModuleLoaded && d.fsmpActorApiAvailable && d.fsmpBridgePresent && d.cbpcModuleLoaded &&
         d.playerBonesFound == 6 && d.compatibleXmlFiles > 0 && d.compatibleCbpcMaps > 0 &&
         d.compatibleCbpcParameters > 0 && !d.sosPhysicsManagerLoaded;
 }
@@ -807,6 +808,8 @@ std::vector<std::pair<std::string, std::string>> SuggestedFixes(const Diagnostic
         fixes.emplace_back("SPS-003", "Install Faster HDT-SMP and its requirements.");
     else if (!d.fsmpActorApiAvailable)
         fixes.emplace_back("SPS-003", "Update Faster HDT-SMP to 4.0.1 or newer. FSMP 4.1.1 or newer is recommended.");
+    else if (!d.fsmpBridgePresent)
+        fixes.emplace_back("SPS-021", "The SPS FSMP bridge is missing. Reinstall SPS and let it replace the previous version.");
     if (!d.cbpcModuleLoaded)
         fixes.emplace_back("SPS-004", "Install or update CBPC, then fully restart Skyrim.");
     if (d.playerBonesFound != 6)
@@ -1086,8 +1089,12 @@ bool Call(const char* script, const char* function, Args... values) {
 }
 
 bool SetSMPPhysics(RE::Actor* actor, bool enabled) {
+    // DynamicHDT.TogglePhysics takes a String[] bone list. Creating that array
+    // directly through the native VM can race script loading on busy setups.
+    // The required SPS bridge builds it safely inside Papyrus instead.
     return actor && FsmpActorApiAvailable() &&
-        Call("DynamicHDT", "TogglePhysics", actor, PhysicsBones(), enabled);
+        fs::exists("Data/Scripts/SPS_FSMPBridge.pex") &&
+        Call("SPS_FSMPBridge", "TogglePhysics", actor, enabled);
 }
 
 bool ResetSMPPhysics(RE::Actor* actor, bool full) {
@@ -2847,6 +2854,7 @@ void RefreshDiagnostics() {
     result.oslModuleLoaded = OslArousedLoaded() || SloArousedLoaded() || result.classicArousedPluginLoaded;
     result.fsmpModuleLoaded = ::GetModuleHandleW(L"hdtsmp64.dll") != nullptr;
     result.fsmpActorApiAvailable = FsmpActorApiAvailable();
+    result.fsmpBridgePresent = fs::exists("Data/Scripts/SPS_FSMPBridge.pex");
     result.cbpcModuleLoaded = ::GetModuleHandleW(L"cbp.dll") != nullptr;
     result.sexLabModuleLoaded = ::GetModuleHandleW(L"SexLabUtil.dll") != nullptr;
     result.sexLabPluginLoaded = PluginLoaded({ "SexLab.esm" });
@@ -2918,10 +2926,13 @@ void RefreshDiagnostics() {
     }
     result.checkedAtMs = NowMs();
     const bool incompatibleFsmp = result.fsmpModuleLoaded && !result.fsmpActorApiAvailable;
+    const bool missingFsmpBridge = result.fsmpActorApiAvailable && !result.fsmpBridgePresent;
     { std::scoped_lock lock(diagnosticsLock); diagnostics = std::move(result); }
     Record("Compatibility health check completed");
     if (incompatibleFsmp && !fsmpCompatibilityWarningShown.exchange(true))
         Record("SPS-003: Faster HDT-SMP is too old for SPS. Update to FSMP 4.0.1 or newer.", true);
+    else if (missingFsmpBridge && !fsmpCompatibilityWarningShown.exchange(true))
+        Record("SPS-021: The SPS FSMP bridge is missing. Reinstall SPS and let it replace the previous version.", true);
 }
 
 void StatusLine(const char* label, const char* status, int level) {
@@ -3456,7 +3467,7 @@ std::string BuildReport() {
         "Compatibility: TNG={} PositionBackend={} ClassicSexLabAroused={} SexLabRoleBridge={} OStimRoleBridge={} PPA={} PhysicsEditor={} SOSPhysicsManager={} AutoPhysicsReset={} CrashLogger={}\n"
         "Engine={} StateKnown={} Arousal={:.1f} Provider={} ProviderConnected={} SexLabActive={} SexLabConnected={} SexLabRole={} SexLabRoleValid={} OStimActive={} OStimConnected={} OStimRole={} OStimRoleValid={}\n"
         "CompatibilityAPI=V{} ActiveRequests={} ActiveRequester={} Accepted={} Released={} ResetNotices={} OwnerRepairs={} LastOwnerRepairMs={}\n"
-        "MenuFramework={} ArousalProvider={} FSMP={} FSMPActorAPI={} CBPC={} SexLabPPlus={} PositionBackendReady={} SupportedAddon={}\n"
+        "MenuFramework={} ArousalProvider={} FSMP={} FSMPActorAPI={} FSMPBridge={} CBPC={} SexLabPPlus={} PositionBackendReady={} SupportedAddon={}\n"
         "PlayerBones={}/6 XML={}/{} [{}]\nCBPCMap={}/{} [{}]\nCBPCParameters={}/{} [{}]\n"
         "SwitchSuccesses={} SwitchFailures={} BendApplies={} LoadSMPResets={} LastLoadSMPResetMs={} LastAction={} LastError={}\n"
         "Position: Enabled={} Requested={} Applied={} LastMethod={} LastSucceeded={} AutoSuspended={} GuardRemainingMs={}\n"
@@ -3474,7 +3485,7 @@ std::string BuildReport() {
         ostimActive.load(), ostimConnected.load(), OStimRoleName(ostimRole.load()), ostimRoleValid.load(),
         SPS::API::kVersion, activeAPIRequestCount, activeAPIRequest ? activeAPIRequest->requester : "none", apiRequestsAccepted.load(), apiRequestsReleased.load(),
         externalResetNotices.load(), ownerRestorations.load(), lastOwnerRestorationMs.load(),
-        d.menuFrameworkLoaded, d.oslModuleLoaded && d.oslPluginLoaded, d.fsmpModuleLoaded, d.fsmpActorApiAvailable,
+        d.menuFrameworkLoaded, d.oslModuleLoaded && d.oslPluginLoaded, d.fsmpModuleLoaded, d.fsmpActorApiAvailable, d.fsmpBridgePresent,
         d.cbpcModuleLoaded, d.sexLabModuleLoaded && d.sexLabPluginLoaded,
         PositionBackendAvailable(), d.supportedAddonLoaded,
         d.playerBonesFound, d.compatibleXmlFiles, d.xmlFiles, d.xmlSummary, d.compatibleCbpcMaps, d.cbpcMapFiles, d.cbpcMapSummary,
@@ -3686,8 +3697,9 @@ void __stdcall RenderDebug() {
         StatusLine("Arousal mod", d.oslModuleLoaded && d.oslPluginLoaded ? (oslConnected.load() ? fmt::format("{} - ready", providerName).c_str() : fmt::format("{} - still checking", providerName).c_str()) : "Missing", d.oslModuleLoaded && d.oslPluginLoaded ? (oslConnected.load() ? 2 : 1) : 0);
     StatusLine("Soft physics", !d.fsmpModuleLoaded ? "Faster HDT-SMP is missing" :
         (!d.fsmpActorApiAvailable ? "FSMP is too old - update to 4.0.1+" :
-            (smpConnected.load() ? "SMP - ready" : "SMP found - not tested yet")),
-        !d.fsmpModuleLoaded || !d.fsmpActorApiAvailable ? 0 : (smpConnected.load() ? 2 : 1));
+            (!d.fsmpBridgePresent ? "SPS FSMP bridge is missing - reinstall SPS" :
+                (smpConnected.load() ? "SMP - ready" : "SMP found - not tested yet"))),
+        !d.fsmpModuleLoaded || !d.fsmpActorApiAvailable || !d.fsmpBridgePresent ? 0 : (smpConnected.load() ? 2 : 1));
     StatusLine("Erect physics", d.cbpcModuleLoaded ? (cbpcConnected.load() ? "CBPC - ready" : "CBPC found - not tested yet") : "CBPC is missing", d.cbpcModuleLoaded ? (cbpcConnected.load() ? 2 : 1) : 0);
     StatusLine("Compatible schlong", d.playerBonesFound == 6 ? "All 6 physics bones found" : fmt::format("Only {}/6 physics bones found", d.playerBonesFound).c_str(), d.playerBonesFound == 6 ? 2 : 0);
     const bool positionBackendFound = PositionBackendAvailable();
