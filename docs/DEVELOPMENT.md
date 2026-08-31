@@ -25,6 +25,10 @@ existing correct mapping safely, and launches CMake/MSBuild with one normalized
 `Path` variable. This avoids the Windows path-length and duplicate `PATH`/`Path`
 compiler failures seen in restricted development shells.
 
+The build also compiles and runs the game-independent SPS core tests. A failed
+mode, threshold or hysteresis regression stops the build before a DLL is copied
+to `build-output`.
+
 Use `-Reconfigure` after changing CMake or dependencies. The ready DLL is copied
 to `build-output\SchlongPhysicsSwapper.dll`.
 
@@ -60,3 +64,9 @@ When the preview is correct, publish it explicitly:
 
 The publisher refuses to run from an untagged commit, refuses to publish a tag
 that is not on GitHub's `main` branch, and never overwrites an existing release.
+
+## Code structure
+
+The staged modularisation plan and its regression rules are documented in
+[`CODEBASE_REWORK.md`](CODEBASE_REWORK.md). New ownership policy should go into
+the testable core instead of adding more global decisions to `plugin.cpp`.

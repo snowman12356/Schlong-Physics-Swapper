@@ -7,6 +7,7 @@
 #include <spdlog/sinks/basic_file_sink.h>
 #include <Windows.h>
 #include "PPAInterface.h"
+#include "PhysicsDecision.h"
 #include "SPSAPI.h"
 #include <algorithm>
 #include <array>
@@ -41,50 +42,7 @@ constexpr std::array<const char*, 6> kBones{
     "NPC Genitals04 [Gen04]", "NPC Genitals05 [Gen05]", "NPC Genitals06 [Gen06]"
 };
 
-struct Settings {
-    bool enabled{ true };
-    float threshold{ 60.0F };
-    float hysteresis{ 5.0F };
-    int mode{ 0 };  // 0 automatic, 1 force SMP, 2 force CBPC
-    int erectBend{ 14 };
-    bool flaccidAngleControl{ false };
-    int flaccidBend{ 0 };
-    int pollMs{ 1000 };
-    bool sexLabOverride{ true };
-    bool sexLabRoleSwitching{ true };
-    int sexLabBottomBehavior{ 0 };  // 0 keep entry, 1 live arousal, 2 SMP, 3 CBPC
-    int sexLabUnknownRole{ 0 };  // 0 keep current, 1 SMP, 2 CBPC
-    int sceneEndDelayMs{ 1500 };
-    bool ostimOverride{ true };
-    bool ostimRoleSwitching{ true };
-    int switchCooldownMs{ 750 };
-    bool resetSMPAfterLoad{ true };
-    int loadResetDelayMs{ 10000 };
-    bool positionControl{ true };
-    int bendMethod{ 2 };  // 0 native, 1 animation event, 2 compatibility
-    bool animatePosition{ true };
-    bool gradualErection{ true };
-    bool arousalBasedErection{ false };
-    float erectionStartArousal{ 20.0F };
-    int erectionDurationMs{ 3000 };
-    int softeningDurationMs{ 5000 };
-    bool randomErections{ false };
-    int randomErectionMinMinutes{ 15 };
-    int randomErectionMaxMinutes{ 45 };
-    int randomErectionDurationSeconds{ 60 };
-    bool randomErectionSafeMoments{ true };
-    bool spontaneousRefractory{ true };
-    int refractoryMinutes{ 5 };
-    bool morningErections{ false };
-    int morningErectionDurationSeconds{ 90 };
-    bool equipmentChangeRecovery{ true };
-    bool bounceGuard{ true };
-    bool useSexLabBend{ false };
-    int sexLabBend{ 14 };
-    int settleDelayMs{ 350 };
-    int maxBendFailures{ 3 };
-    bool verboseLogging{ false };
-};
+using SPS::Core::Settings;
 
 struct Diagnostics {
     bool menuFrameworkLoaded{ false };
@@ -2249,16 +2207,14 @@ bool AnySceneHasPriority(const Settings& copy) {
 }
 
 bool NormalSettingsWantCBPC(const Settings& copy) {
-    if (copy.mode == 1) return false;
-    if (copy.mode == 2) return true;
-    if (RandomErectionActive()) return true;
-    if (!arousalValid.load()) return stateKnown.load() ? usingCBPC.load() : false;
-    const float erectionPoint = copy.arousalBasedErection
-        ? std::min(copy.threshold, std::clamp(copy.erectionStartArousal, 0.0F, 99.0F))
-        : copy.threshold;
-    if (usingCBPC.load())
-        return arousal.load() > erectionPoint - copy.hysteresis;
-    return arousal.load() >= erectionPoint;
+    const SPS::Core::NormalDecisionState state{
+        arousal.load(),
+        arousalValid.load(),
+        stateKnown.load(),
+        usingCBPC.load(),
+        RandomErectionActive()
+    };
+    return SPS::Core::NormalSettingsWantCBPC(copy, state);
 }
 
 bool SexLabSceneWantsCBPC(const Settings& copy) {

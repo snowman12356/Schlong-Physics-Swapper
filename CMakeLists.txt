@@ -28,12 +28,34 @@ include(CommonLibSSE)
 # include directory directly.
 find_package(SimpleIni CONFIG QUIET)
 option(SPS_BUILD_API_TEST_PLUGIN "Build the developer-only SPS API smoke-test plugin" OFF)
+option(SPS_BUILD_CORE_TESTS "Build the game-independent SPS core tests" ON)
+
+add_library(SPSCore STATIC
+    src/PhysicsDecision.cpp
+    src/PhysicsDecision.h
+    src/Settings.h)
+target_include_directories(SPSCore PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+if(MSVC)
+  target_compile_options(SPSCore PRIVATE /W4)
+endif()
 
 add_commonlibsse_plugin(${PROJECT_NAME} AUTHOR "snowman12356" SOURCES src/plugin.cpp src/SPSAPI.h)
 target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE "${mcp_sdk_SOURCE_DIR}/include")
 target_compile_definitions(${PROJECT_NAME} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_link_libraries(${PROJECT_NAME} PRIVATE SPSCore)
 if(MSVC)
   target_compile_options(${PROJECT_NAME} PRIVATE /W4)
+endif()
+
+if(SPS_BUILD_CORE_TESTS)
+  enable_testing()
+  add_executable(SPSCoreTests tests/PhysicsDecisionTests.cpp)
+  target_link_libraries(SPSCoreTests PRIVATE SPSCore)
+  if(MSVC)
+    target_compile_options(SPSCoreTests PRIVATE /W4)
+  endif()
+  add_test(NAME SPSCoreTests COMMAND SPSCoreTests)
+  add_dependencies(${PROJECT_NAME} SPSCoreTests)
 endif()
 target_precompile_headers(${PROJECT_NAME} PRIVATE src/PCH.h)
 if(TARGET SimpleIni::SimpleIni)

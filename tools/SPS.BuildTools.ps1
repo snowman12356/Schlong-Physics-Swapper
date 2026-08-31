@@ -149,7 +149,7 @@ function Get-SPSCleanEnvironment {
 function Invoke-SPSProcess {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
-        [Parameter(Mandatory = $true)][string[]]$ArgumentList,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$ArgumentList,
         [Parameter(Mandatory = $true)][hashtable]$Environment,
         [string]$Description = 'process'
     )

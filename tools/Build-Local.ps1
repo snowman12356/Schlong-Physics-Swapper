@@ -201,6 +201,12 @@ try {
     Invoke-SPSProcess -FilePath $cmakeCommand.Path -ArgumentList $buildArguments `
         -Environment $cleanEnvironment -Description 'SPS build'
 
+    $coreTests = Join-Path $physicalBuild "$Configuration\SPSCoreTests.exe"
+    if (Test-Path -LiteralPath $coreTests -PathType Leaf) {
+        Invoke-SPSProcess -FilePath $coreTests -ArgumentList @() `
+            -Environment $cleanEnvironment -Description 'SPS core unit tests'
+    }
+
     $dll = Join-Path $physicalBuild "$Configuration\SchlongPhysicsSwapper.dll"
     if (-not (Test-Path -LiteralPath $dll -PathType Leaf)) {
         throw "The build completed but the DLL was not found: $dll"
