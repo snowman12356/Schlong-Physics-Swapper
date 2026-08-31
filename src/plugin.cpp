@@ -1,14 +1,18 @@
 #include <RE/Skyrim.h>
 #include <REL/Version.h>
 #include <SKSE/SKSE.h>
-#include <SimpleIni.h>
 #include <SKSEMenuFramework.h>
 #include <fmt/format.h>
 #include <spdlog/sinks/basic_file_sink.h>
 #include <Windows.h>
 #include "PPAInterface.h"
 #include "PhysicsDecision.h"
+#include "SettingsStore.h"
 #include "SPSAPI.h"
+#include "diagnostics/Diagnostics.h"
+#include "runtime/Compatibility.h"
+#include "runtime/PapyrusGateway.h"
+#include "runtime/PhysicsOwnershipAdapter.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -37,46 +41,21 @@ constexpr auto kIni = "Data/SKSE/Plugins/SchlongPhysicsSwapper.ini";
 constexpr auto kLegacyIni = "Data/SKSE/Plugins/UBEPhysicsSwitch.ini";
 constexpr auto kReport = "Data/SKSE/Plugins/SchlongPhysicsSwapper_Diagnostics.txt";
 constexpr auto kCaptureReport = "Data/SKSE/Plugins/SchlongPhysicsSwapper_DebugCapture.txt";
-constexpr std::array<const char*, 6> kBones{
-    "NPC Genitals01 [Gen01]", "NPC Genitals02 [Gen02]", "NPC Genitals03 [Gen03]",
-    "NPC Genitals04 [Gen04]", "NPC Genitals05 [Gen05]", "NPC Genitals06 [Gen06]"
-};
-
 using SPS::Core::Settings;
-
-struct Diagnostics {
-    bool menuFrameworkLoaded{ false };
-    bool oslModuleLoaded{ false };
-    bool fsmpModuleLoaded{ false };
-    bool fsmpActorApiAvailable{ false };
-    bool fsmpBridgePresent{ false };
-    bool cbpcModuleLoaded{ false };
-    bool sexLabModuleLoaded{ false };
-    bool sexLabPluginLoaded{ false };
-    bool sexLabRoleBridgePresent{ false };
-    bool ostimPluginLoaded{ false };
-    bool ostimRoleBridgePresent{ false };
-    bool oslPluginLoaded{ false };
-    bool classicArousedPluginLoaded{ false };
-    bool supportedAddonLoaded{ false };
-    bool sosPluginLoaded{ false };
-    bool tngPluginLoaded{ false };
-    bool sosPhysicsManagerLoaded{ false };
-    bool physicsEditorLoaded{ false };
-    bool autoPhysicsResetLoaded{ false };
-    bool crashLoggerLoaded{ false };
-    int playerBonesFound{ 0 };
-    int xmlFiles{ 0 };
-    int compatibleXmlFiles{ 0 };
-    int cbpcMapFiles{ 0 };
-    int compatibleCbpcMaps{ 0 };
-    int cbpcParameterFiles{ 0 };
-    int compatibleCbpcParameters{ 0 };
-    std::string xmlSummary{ "None found" };
-    std::string cbpcMapSummary{ "None found" };
-    std::string cbpcParameterSummary{ "None found" };
-    std::int64_t checkedAtMs{ 0 };
-};
+using Diagnostics = SPS::Diagnostics::Snapshot;
+using SPS::Runtime::ArousalProviderName;
+using SPS::Runtime::ClassicArousedLoaded;
+using SPS::Runtime::FsmpActorApiAvailable;
+using SPS::Runtime::LegacySosLoaded;
+using SPS::Runtime::LoadedDllVersion;
+using SPS::Runtime::OslArousedLoaded;
+using SPS::Runtime::PluginLoaded;
+using SPS::Runtime::PositionBackendAvailable;
+using SPS::Runtime::PositionBackendName;
+using SPS::Runtime::SloArousedLoaded;
+using SPS::Runtime::SosAeNativeLoaded;
+using SPS::Runtime::SosAeNativeModuleName;
+using SPS::Runtime::TngLoaded;
 
 struct ExternalPhysicsRequest {
     SPS::API::RequestHandle handle{ 0 };
@@ -257,7 +236,6 @@ void CancelErectionAnimation();
 void StartGradualRelaxation(const Settings& copy);
 bool ClearResolvedPositionError();
 std::string BuildReport();
-bool PluginLoaded(std::initializer_list<std::string_view> names);
 std::int64_t NowMs();
 void Record(std::string message, bool error = false);
 std::optional<ExternalPhysicsRequest> ActiveAPIRequest();
@@ -594,100 +572,8 @@ void RegisterPPAAPI() {
     if (ppaListener) Record("PPA V1 listener connected; live scene hand-off enabled");
 }
 
-std::optional<REL::Version> LoadedDllVersionValue(const wchar_t* name) {
-    const auto module = ::GetModuleHandleW(name);
-    if (!module) return std::nullopt;
-    std::array<wchar_t, 32768> path{};
-    if (::GetModuleFileNameW(module, path.data(), static_cast<DWORD>(path.size())) == 0)
-        return std::nullopt;
-    return REL::GetFileVersion(path.data());
-}
-
-std::string LoadedDllVersion(const wchar_t* name) {
-    if (::GetModuleHandleW(name) == nullptr) return "not loaded";
-    if (const auto version = LoadedDllVersionValue(name)) return version->string(".");
-    return "loaded (version unavailable)";
-}
-
-bool FsmpActorApiAvailable() {
-    // TogglePhysics and ResetPhysics are part of FSMP 4's DynamicHDT API.
-    // Older FSMP builds can still load on Skyrim 1.5.97, but dispatching the
-    // newer ResetPhysics signature to their Papyrus VM can dereference a null
-    // native function and crash the game.
-    const auto version = LoadedDllVersionValue(L"hdtsmp64.dll");
-    return version && *version >= REL::Version{ 4, 0, 1, 0 };
-}
-
-bool SloArousedLoaded() {
-    return ::GetModuleHandleW(L"SexlabArousedNG.dll") != nullptr;
-}
-
-bool OslArousedLoaded() {
-    return ::GetModuleHandleW(L"OSLAroused.dll") != nullptr;
-}
-
 const char* OStimRoleName(int role) {
     return SexLabRoleName(role);
-}
-
-const wchar_t* SosAeNativeModuleName() {
-    // Some native builds use an explicit SOSAE.dll, which is safe evidence that
-    // SOSAE_SKSE was registered on every supported runtime.
-    if (::GetModuleHandleW(L"SOSAE.dll") != nullptr)
-        return L"SOSAE.dll";
-
-    // SOS AE-NG on modern Skyrim registers SOSAE_SKSE from
-    // SchlongsOfSkyrim.dll. Legacy SOS uses that same DLL filename on 1.5.97
-    // without registering SOSAE_SKSE, so the runtime check is essential. Never
-    // use the presence of a loose .pex here: calling an unregistered native
-    // script can crash the Papyrus VM.
-    if (REL::Module::get().version() >= REL::Version{ 1, 6, 0, 0 } &&
-        ::GetModuleHandleW(L"SchlongsOfSkyrim.dll") != nullptr)
-        return L"SchlongsOfSkyrim.dll";
-    return nullptr;
-}
-
-bool SosAeNativeLoaded() {
-    return SosAeNativeModuleName() != nullptr;
-}
-
-bool ClassicArousedLoaded() {
-    return !SloArousedLoaded() && !OslArousedLoaded() &&
-        PluginLoaded({ "SexLabAroused.esm" });
-}
-
-std::string ArousalProviderName() {
-    if (SloArousedLoaded()) return "SLO Aroused NG";
-    if (OslArousedLoaded()) return "OSL Aroused";
-    if (ClassicArousedLoaded()) return "SexLab Aroused Redux";
-    return "none";
-}
-
-bool TngLoaded() {
-    // Compatibility mods sometimes ship a tiny TheNewGentleman.esp master stub.
-    // The DLL is the actual TNG runtime and is the component that supplies the
-    // SOS-style position events we rely on.
-    return ::GetModuleHandleW(L"TheNewGentleman.dll") != nullptr;
-}
-
-bool LegacySosLoaded() {
-    // Schlongs of Skyrim.esp is also commonly supplied as a dependency stub.
-    // Require the framework's Papyrus API before advertising its event backend.
-    return PluginLoaded({ "Schlongs of Skyrim.esp" }) &&
-        (fs::exists("Data/Scripts/SOS_API.pex") || fs::exists("Data/Scripts/SOS_SKSE.pex"));
-}
-
-bool PositionBackendAvailable() {
-    return SosAeNativeLoaded() || TngLoaded() || LegacySosLoaded();
-}
-
-std::string PositionBackendName() {
-    const bool sosAe = SosAeNativeLoaded();
-    if (TngLoaded() && sosAe) return "SOS AE native + TNG events";
-    if (TngLoaded()) return "TNG animation events";
-    if (sosAe) return "SOS AE native / events";
-    if (LegacySosLoaded()) return "Legacy SOS animation events";
-    return "none";
 }
 
 bool DebugCaptureActive() {
@@ -991,24 +877,10 @@ private:
     std::uint64_t generation_;
 };
 
-auto VM() { return RE::BSScript::Internal::VirtualMachine::GetSingleton(); }
+auto VM() { return SPS::Runtime::VM(); }
 
 bool PapyrusReadyForDispatch() {
-    if (NowMs() < papyrusDispatchAllowedAfterMs.load()) return false;
-    const auto* main = RE::Main::GetSingleton();
-    if (!main || !main->GetRuntimeData().gameActive) return false;
-    if (auto* ui = RE::UI::GetSingleton();
-        ui && ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME)) return false;
-    // kPostLoadGame can arrive while the player's saved references are still
-    // being rebound on heavily scripted games. DispatchStaticCall can
-    // dereference an unavailable script object during that window even though
-    // the VM already reports itself as initialized. A live cell and loaded 3D
-    // are the first reliable point at which SPS can affect player physics.
-    const auto* player = RE::PlayerCharacter::GetSingleton();
-    if (!player || !player->GetParentCell() || !player->Is3DLoaded()) return false;
-    const auto* vm = VM();
-    return vm && vm->initialized && !vm->overstressed && vm->handlePolicy && vm->objectBindPolicy &&
-        !vm->IsCompletelyFrozen();
+    return SPS::Runtime::PapyrusReady(papyrusDispatchAllowedAfterMs.load(), NowMs());
 }
 
 void InvalidatePapyrusQueries(int delayMs) {
@@ -1028,62 +900,29 @@ void InvalidatePapyrusQueries(int delayMs) {
     ostimRoleRetryAfterMs.store(0);
 }
 
-class DiscardPapyrusResultCallback final : public RE::BSScript::IStackCallbackFunctor {
-public:
-    void operator()(RE::BSScript::Variable) override {}
-    void SetObject(const RE::BSTSmartPointer<RE::BSScript::Object>&) override {}
-};
-
 template <class... Args>
 bool Call(const char* script, const char* function, Args... values) {
-    auto* vm = VM();
-    if (!vm || !PapyrusReadyForDispatch()) return false;
-    auto* args = RE::MakeFunctionArguments(std::move(values)...);
-    // Some native Papyrus functions, including FSMP's TogglePhysics, return a
-    // value even when SPS does not need it. Always provide a callback so the
-    // VM never tries to deliver that result through a null functor.
-    RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{
-        new DiscardPapyrusResultCallback()
-    };
-    return vm->DispatchStaticCall(script, function, args, callback);
-}
-
-bool OrderedFsmpBridgeAvailable() {
-    // A DLL/PEX mismatch can otherwise ask Skyrim to dispatch a static
-    // function that does not exist. The VM has been observed crashing instead
-    // of simply rejecting that call during a save transition, so fail closed.
-    static const bool available = [] {
-        std::ifstream stream("Data/Scripts/SPS_FSMPBridge.pex", std::ios::binary);
-        if (!stream) return false;
-        const std::string bytes(std::istreambuf_iterator<char>(stream), {});
-        return bytes.find("SetPlayerOwner") != std::string::npos &&
-            bytes.find("ReleasePlayerPhysics") != std::string::npos;
-    }();
-    return available;
+    return SPS::Runtime::DispatchStatic(
+        script, function, papyrusDispatchAllowedAfterMs.load(), NowMs(),
+        std::move(values)...);
 }
 
 bool ResetSMPPhysics(RE::Actor* actor, bool full) {
-    const auto* player = RE::PlayerCharacter::GetSingleton();
-    return actor && player && actor == static_cast<const RE::Actor*>(player) &&
-        FsmpActorApiAvailable() &&
-        fs::exists("Data/Scripts/SPS_FSMPBridge.pex") &&
-        Call("SPS_FSMPBridge", "ResetPlayerPhysics", full);
+    return SPS::Runtime::ResetPlayerPhysics(
+        actor, full, FsmpActorApiAvailable(),
+        papyrusDispatchAllowedAfterMs.load(), NowMs());
 }
 
 bool SetPlayerPhysicsOwner(RE::Actor* actor, bool useCBPC) {
-    const auto* player = RE::PlayerCharacter::GetSingleton();
-    return actor && player && actor == static_cast<const RE::Actor*>(player) &&
-        FsmpActorApiAvailable() &&
-        OrderedFsmpBridgeAvailable() &&
-        Call("SPS_FSMPBridge", "SetPlayerOwner", useCBPC);
+    return SPS::Runtime::SetPlayerPhysicsOwner(
+        actor, useCBPC, FsmpActorApiAvailable(),
+        papyrusDispatchAllowedAfterMs.load(), NowMs());
 }
 
 bool ReleasePlayerPhysics(RE::Actor* actor) {
-    const auto* player = RE::PlayerCharacter::GetSingleton();
-    return actor && player && actor == static_cast<const RE::Actor*>(player) &&
-        FsmpActorApiAvailable() &&
-        OrderedFsmpBridgeAvailable() &&
-        Call("SPS_FSMPBridge", "ReleasePlayerPhysics");
+    return SPS::Runtime::ReleasePlayerPhysics(
+        actor, FsmpActorApiAvailable(),
+        papyrusDispatchAllowedAfterMs.load(), NowMs());
 }
 
 bool CallSosAeBend(RE::Actor* actor, int bend) {
@@ -1124,121 +963,29 @@ bool ConfirmCurrentPhysicsOwner(std::string_view reason) {
 }
 
 void Load() {
-    const bool legacyExists = fs::exists(kLegacyIni);
-    const bool newExists = fs::exists(kIni);
-    bool preferLegacy = false;
-    if (newExists) {
-        CSimpleIniA probe;
-        probe.SetUnicode();
-        probe.LoadFile(kIni);
-        preferLegacy = probe.GetBoolValue("Migration", "PreferLegacyIfPresent", false);
-    }
-    const bool migrateLegacy = legacyExists && (!newExists || preferLegacy);
-    CSimpleIniA ini;
-    ini.SetUnicode();
-    ini.LoadFile(migrateLegacy ? kLegacyIni : kIni);
+    const auto result = SPS::Core::LoadSettings(kIni, kLegacyIni);
     {
         std::scoped_lock lock(settingsLock);
-        settings.enabled = ini.GetBoolValue("General", "Enabled", true);
-        settings.threshold = std::clamp(static_cast<float>(ini.GetDoubleValue("General", "ArousalThreshold", 60)), 0.0F, 100.0F);
-        settings.hysteresis = std::clamp(static_cast<float>(ini.GetDoubleValue("General", "Hysteresis", 5)), 0.0F, 25.0F);
-        settings.mode = std::clamp(static_cast<int>(ini.GetLongValue("General", "Mode", 0)), 0, 2);
-        settings.erectBend = std::clamp(static_cast<int>(ini.GetLongValue("General", "ErectBend", 14)), 0, 20);
-        settings.flaccidAngleControl = ini.GetBoolValue("Position", "FlaccidAngleControl", false);
-        settings.flaccidBend = std::clamp(static_cast<int>(ini.GetLongValue("Position", "FlaccidBend", 0)), 0, 20);
-        settings.pollMs = std::clamp(static_cast<int>(ini.GetLongValue("General", "PollMilliseconds", 1000)), 250, 10000);
-        settings.sexLabOverride = ini.GetBoolValue("Compatibility", "SexLabPPlusOverride", true);
-        settings.sexLabRoleSwitching = ini.GetBoolValue("Compatibility", "SexLabRoleSwitching", true);
-        settings.sexLabBottomBehavior = std::clamp(static_cast<int>(ini.GetLongValue("Compatibility", "SexLabBottomBehavior", 0)), 0, 3);
-        settings.sexLabUnknownRole = std::clamp(static_cast<int>(ini.GetLongValue("Compatibility", "SexLabUnknownRole", 0)), 0, 2);
-        settings.sceneEndDelayMs = std::clamp(static_cast<int>(ini.GetLongValue("Compatibility", "SexLabEndDelayMilliseconds", 1500)), 0, 10000);
-        settings.ostimOverride = ini.GetBoolValue("Compatibility", "OStimOverride", true);
-        settings.ostimRoleSwitching = ini.GetBoolValue("Compatibility", "OStimRoleSwitching", true);
-        settings.switchCooldownMs = std::clamp(static_cast<int>(ini.GetLongValue("Reliability", "SwitchCooldownMilliseconds", 750)), 0, 5000);
-        settings.resetSMPAfterLoad = ini.GetBoolValue("Reliability", "ResetSMPAfterLoad", true);
-        settings.loadResetDelayMs = std::clamp(static_cast<int>(ini.GetLongValue("Reliability", "SMPResetDelayMilliseconds", 10000)), 1000, 60000);
-        settings.positionControl = ini.GetBoolValue("Position", "Enabled", true);
-        settings.bendMethod = std::clamp(static_cast<int>(ini.GetLongValue("Position", "Method", 2)), 0, 2);
-        settings.animatePosition = ini.GetBoolValue("Position", "AnimateChanges", true);
-        settings.gradualErection = ini.GetBoolValue("Position", "GradualErection", true);
-        settings.arousalBasedErection = ini.GetBoolValue("NaturalBehaviour", "ArousalBasedErection", false);
-        settings.erectionStartArousal = std::clamp(static_cast<float>(ini.GetDoubleValue("NaturalBehaviour", "ErectionStartArousal", 20)), 0.0F, 99.0F);
-        settings.erectionDurationMs = std::clamp(static_cast<int>(ini.GetLongValue("Position", "ErectionDurationMilliseconds", 3000)), 500, 10000);
-        settings.softeningDurationMs = std::clamp(static_cast<int>(ini.GetLongValue("Position", "SofteningDurationMilliseconds", 5000)), 500, 15000);
-        settings.randomErections = ini.GetBoolValue("NaturalBehaviour", "RandomErections", false);
-        settings.randomErectionMinMinutes = std::clamp(static_cast<int>(ini.GetLongValue("NaturalBehaviour", "RandomMinimumMinutes", 15)), 1, 180);
-        settings.randomErectionMaxMinutes = std::clamp(static_cast<int>(ini.GetLongValue("NaturalBehaviour", "RandomMaximumMinutes", 45)), settings.randomErectionMinMinutes, 360);
-        settings.randomErectionDurationSeconds = std::clamp(static_cast<int>(ini.GetLongValue("NaturalBehaviour", "RandomDurationSeconds", 60)), 5, 600);
-        settings.randomErectionSafeMoments = ini.GetBoolValue("NaturalBehaviour", "RandomSafeMomentsOnly", true);
-        settings.spontaneousRefractory = ini.GetBoolValue("NaturalBehaviour", "SpontaneousRefractory", true);
-        settings.refractoryMinutes = std::clamp(static_cast<int>(ini.GetLongValue("NaturalBehaviour", "RefractoryMinutes", 5)), 1, 60);
-        settings.morningErections = ini.GetBoolValue("NaturalBehaviour", "MorningErections", false);
-        settings.morningErectionDurationSeconds = std::clamp(static_cast<int>(ini.GetLongValue("NaturalBehaviour", "MorningDurationSeconds", 90)), 10, 600);
-        settings.equipmentChangeRecovery = ini.GetBoolValue("Reliability", "RepairAfterEquipmentChange", true);
-        settings.bounceGuard = ini.GetBoolValue("Position", "BounceGuard", true);
-        settings.useSexLabBend = ini.GetBoolValue("Position", "UseSeparateSexLabBend", false);
-        settings.sexLabBend = std::clamp(static_cast<int>(ini.GetLongValue("Position", "SexLabBend", 14)), 0, 20);
-        settings.settleDelayMs = std::clamp(static_cast<int>(ini.GetLongValue("Position", "SettleDelayMilliseconds", 350)), 0, 5000);
-        settings.maxBendFailures = std::clamp(static_cast<int>(ini.GetLongValue("Position", "MaxAutomaticFailures", 3)), 1, 10);
-        settings.verboseLogging = ini.GetBoolValue("Debug", "VerboseLogging", false);
+        settings = result.settings;
     }
     spdlog::set_level(settings.verboseLogging ? spdlog::level::debug : spdlog::level::info);
-    if (migrateLegacy || !newExists) {
+    if (result.shouldWriteCurrent) {
         Save();
     }
-    if (migrateLegacy) {
+    if (result.migratedLegacy) {
         Record("Existing UBE Physics Switch settings migrated to Schlong Physics Swapper");
     }
 }
 
 void Save() {
-    std::scoped_lock lock(settingsLock);
-    CSimpleIniA ini;
-    ini.SetUnicode();
-    ini.SetBoolValue("General", "Enabled", settings.enabled);
-    ini.SetDoubleValue("General", "ArousalThreshold", settings.threshold);
-    ini.SetDoubleValue("General", "Hysteresis", settings.hysteresis);
-    ini.SetLongValue("General", "Mode", settings.mode);
-    ini.SetLongValue("General", "ErectBend", settings.erectBend);
-    ini.SetLongValue("General", "PollMilliseconds", settings.pollMs);
-    ini.SetBoolValue("Compatibility", "SexLabPPlusOverride", settings.sexLabOverride);
-    ini.SetBoolValue("Compatibility", "SexLabRoleSwitching", settings.sexLabRoleSwitching);
-    ini.SetLongValue("Compatibility", "SexLabBottomBehavior", settings.sexLabBottomBehavior);
-    ini.SetLongValue("Compatibility", "SexLabUnknownRole", settings.sexLabUnknownRole);
-    ini.SetLongValue("Compatibility", "SexLabEndDelayMilliseconds", settings.sceneEndDelayMs);
-    ini.SetBoolValue("Compatibility", "OStimOverride", settings.ostimOverride);
-    ini.SetBoolValue("Compatibility", "OStimRoleSwitching", settings.ostimRoleSwitching);
-    ini.SetLongValue("Reliability", "SwitchCooldownMilliseconds", settings.switchCooldownMs);
-    ini.SetBoolValue("Reliability", "ResetSMPAfterLoad", settings.resetSMPAfterLoad);
-    ini.SetLongValue("Reliability", "SMPResetDelayMilliseconds", settings.loadResetDelayMs);
-    ini.SetBoolValue("Position", "Enabled", settings.positionControl);
-    ini.SetBoolValue("Position", "FlaccidAngleControl", settings.flaccidAngleControl);
-    ini.SetLongValue("Position", "FlaccidBend", settings.flaccidBend);
-    ini.SetLongValue("Position", "Method", settings.bendMethod);
-    ini.SetBoolValue("Position", "AnimateChanges", settings.animatePosition);
-    ini.SetBoolValue("Position", "GradualErection", settings.gradualErection);
-    ini.SetBoolValue("NaturalBehaviour", "ArousalBasedErection", settings.arousalBasedErection);
-    ini.SetDoubleValue("NaturalBehaviour", "ErectionStartArousal", settings.erectionStartArousal);
-    ini.SetLongValue("Position", "ErectionDurationMilliseconds", settings.erectionDurationMs);
-    ini.SetLongValue("Position", "SofteningDurationMilliseconds", settings.softeningDurationMs);
-    ini.SetBoolValue("NaturalBehaviour", "RandomErections", settings.randomErections);
-    ini.SetLongValue("NaturalBehaviour", "RandomMinimumMinutes", settings.randomErectionMinMinutes);
-    ini.SetLongValue("NaturalBehaviour", "RandomMaximumMinutes", settings.randomErectionMaxMinutes);
-    ini.SetLongValue("NaturalBehaviour", "RandomDurationSeconds", settings.randomErectionDurationSeconds);
-    ini.SetBoolValue("NaturalBehaviour", "RandomSafeMomentsOnly", settings.randomErectionSafeMoments);
-    ini.SetBoolValue("NaturalBehaviour", "SpontaneousRefractory", settings.spontaneousRefractory);
-    ini.SetLongValue("NaturalBehaviour", "RefractoryMinutes", settings.refractoryMinutes);
-    ini.SetBoolValue("NaturalBehaviour", "MorningErections", settings.morningErections);
-    ini.SetLongValue("NaturalBehaviour", "MorningDurationSeconds", settings.morningErectionDurationSeconds);
-    ini.SetBoolValue("Reliability", "RepairAfterEquipmentChange", settings.equipmentChangeRecovery);
-    ini.SetBoolValue("Position", "BounceGuard", settings.bounceGuard);
-    ini.SetBoolValue("Position", "UseSeparateSexLabBend", settings.useSexLabBend);
-    ini.SetLongValue("Position", "SexLabBend", settings.sexLabBend);
-    ini.SetLongValue("Position", "SettleDelayMilliseconds", settings.settleDelayMs);
-    ini.SetLongValue("Position", "MaxAutomaticFailures", settings.maxBendFailures);
-    ini.SetBoolValue("Debug", "VerboseLogging", settings.verboseLogging);
-    fs::create_directories(fs::path(kIni).parent_path());
-    ini.SaveFile(kIni);
+    Settings copy;
+    {
+        std::scoped_lock lock(settingsLock);
+        copy = settings;
+    }
+    if (!SPS::Core::SaveSettings(kIni, copy)) {
+        logger::error("Failed to save SPS settings to {}", kIni);
+    }
 }
 
 void QueryArousal(bool force = false) {
@@ -2218,57 +1965,41 @@ bool NormalSettingsWantCBPC(const Settings& copy) {
 }
 
 bool SexLabSceneWantsCBPC(const Settings& copy) {
-    // Preserve the old "always erect in scenes" behavior when role switching
-    // is disabled. During the post-scene delay, keep the confirmed owner so
-    // normal arousal control cannot cause an immediate visible pop.
-    if (!copy.sexLabRoleSwitching) return true;
-    if (!sexLabActive.load()) return usingCBPC.load();
-    const auto bottomWantsCBPC = [&copy] {
-        if (copy.sexLabBottomBehavior == 1) return NormalSettingsWantCBPC(copy);
-        if (copy.sexLabBottomBehavior == 2) return false;
-        if (copy.sexLabBottomBehavior == 3) return true;
-        return sexLabEntryStateValid.load() ? sexLabEntryCBPC.load() : NormalSettingsWantCBPC(copy);
-    };
     const bool recentPPAUpdate = ppaSceneRoleValid.load() &&
         NowMs() - ppaLastUpdateMs.load() < 3000;
-
-    // Penetrating wins when either bridge can positively identify it. During
-    // stage changes P+ can briefly report bottom while PPA still has an exact
-    // penetrating relationship; accepting that transient value caused the
-    // visible CBPC -> SMP -> CBPC fight seen in the 1.8 test report.
-    if (recentPPAUpdate && ppaSceneRole.load() == 2) return true;
-    if (sexLabRoleValid.load()) {
-        // Receiving never changes the state merely because a scene started.
-        // Flaccid remains flaccid and erect remains erect until the role changes.
-        if (sexLabRole.load() == 1) return bottomWantsCBPC();
-        if (sexLabRole.load() == 2) return true;
-        if (recentPPAUpdate && ppaSceneRole.load() == 1) return bottomWantsCBPC();
-        if (copy.sexLabUnknownRole == 1) return false;
-        if (copy.sexLabUnknownRole == 2) return true;
-        return usingCBPC.load();
-    }
-    if (recentPPAUpdate && ppaSceneRole.load() == 1) return bottomWantsCBPC();
-    if (copy.sexLabUnknownRole == 1) return false;
-    if (copy.sexLabUnknownRole == 2) return true;
-    return usingCBPC.load();
+    const SPS::Core::SexLabDecisionState state{
+        {
+            sexLabActive.load(),
+            usingCBPC.load(),
+            sexLabEntryStateValid.load(),
+            sexLabEntryCBPC.load(),
+            sexLabRoleValid.load(),
+            static_cast<SPS::Core::SceneRole>(sexLabRole.load()),
+            {
+                arousal.load(), arousalValid.load(), stateKnown.load(),
+                usingCBPC.load(), RandomErectionActive()
+            }
+        },
+        recentPPAUpdate,
+        static_cast<SPS::Core::SceneRole>(ppaSceneRole.load())
+    };
+    return SPS::Core::SexLabSceneWantsCBPC(copy, state);
 }
 
 bool OStimSceneWantsCBPC(const Settings& copy) {
-    if (!copy.ostimRoleSwitching) return true;
-    if (!ostimActive.load()) return usingCBPC.load();
-    const auto bottomWantsCBPC = [&copy] {
-        if (copy.sexLabBottomBehavior == 1) return NormalSettingsWantCBPC(copy);
-        if (copy.sexLabBottomBehavior == 2) return false;
-        if (copy.sexLabBottomBehavior == 3) return true;
-        return ostimEntryStateValid.load() ? ostimEntryCBPC.load() : NormalSettingsWantCBPC(copy);
+    const SPS::Core::SceneDecisionState state{
+        ostimActive.load(),
+        usingCBPC.load(),
+        ostimEntryStateValid.load(),
+        ostimEntryCBPC.load(),
+        ostimRoleValid.load(),
+        static_cast<SPS::Core::SceneRole>(ostimRole.load()),
+        {
+            arousal.load(), arousalValid.load(), stateKnown.load(),
+            usingCBPC.load(), RandomErectionActive()
+        }
     };
-    if (ostimRoleValid.load()) {
-        if (ostimRole.load() == 1) return bottomWantsCBPC();
-        if (ostimRole.load() == 2) return true;
-    }
-    if (copy.sexLabUnknownRole == 1) return false;
-    if (copy.sexLabUnknownRole == 2) return true;
-    return usingCBPC.load();
+    return SPS::Core::OStimSceneWantsCBPC(copy, state);
 }
 
 void QuerySexLabRole() {
@@ -2759,117 +2490,8 @@ void StartPolling() {
     });
 }
 
-std::string Lower(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return value;
-}
-
-std::string ReadText(const fs::path& path) {
-    std::error_code ec;
-    const auto size = fs::file_size(path, ec);
-    if (ec || size > 8 * 1024 * 1024) return {};
-    std::ifstream stream(path, std::ios::binary);
-    return stream ? std::string(std::istreambuf_iterator<char>(stream), {}) : std::string{};
-}
-
-bool ContainsAll(const std::string& lower, const std::array<std::string, 6>& values) {
-    return std::ranges::all_of(values, [&](const auto& value) { return lower.contains(value); });
-}
-
-void AddSummary(std::string& summary, const fs::path& path, int count) {
-    if (count == 1) summary.clear();
-    if (!summary.empty()) summary += ", ";
-    summary += path.filename().string();
-}
-
-bool PluginLoaded(std::initializer_list<std::string_view> names) {
-    auto* data = RE::TESDataHandler::GetSingleton();
-    if (!data) return false;
-    return std::ranges::any_of(names, [&](auto name) {
-        return data->LookupLoadedModByName(name) != nullptr ||
-            data->LookupLoadedLightModByName(name) != nullptr;
-    });
-}
-
 void RefreshDiagnostics() {
-    Diagnostics result;
-    result.menuFrameworkLoaded = SKSEMenuFramework::IsInstalled() && ::GetModuleHandleW(L"SKSEMenuFramework.dll") != nullptr;
-    result.classicArousedPluginLoaded = PluginLoaded({ "SexLabAroused.esm" }) &&
-        !OslArousedLoaded() && !SloArousedLoaded();
-    result.oslModuleLoaded = OslArousedLoaded() || SloArousedLoaded() || result.classicArousedPluginLoaded;
-    result.fsmpModuleLoaded = ::GetModuleHandleW(L"hdtsmp64.dll") != nullptr;
-    result.fsmpActorApiAvailable = FsmpActorApiAvailable();
-    result.fsmpBridgePresent = fs::exists("Data/Scripts/SPS_FSMPBridge.pex");
-    result.cbpcModuleLoaded = ::GetModuleHandleW(L"cbp.dll") != nullptr;
-    result.sexLabModuleLoaded = ::GetModuleHandleW(L"SexLabUtil.dll") != nullptr;
-    result.sexLabPluginLoaded = PluginLoaded({ "SexLab.esm" });
-    result.sexLabRoleBridgePresent = fs::exists("Data/Scripts/SPS_SexLabBridge.pex");
-    result.ostimPluginLoaded = PluginLoaded({ "OStim.esp" }) || ::GetModuleHandleW(L"OStim.dll") != nullptr;
-    result.ostimRoleBridgePresent = fs::exists("Data/Scripts/SPS_OStimBridge.pex");
-    result.oslPluginLoaded = PluginLoaded({ "OSLAroused.esp", "OAroused.esp", "SexLabAroused.esm" });
-    result.tngPluginLoaded = TngLoaded();
-    result.supportedAddonLoaded = PluginLoaded({
-        "UBE_SOS_Addon.esp", "UBE_AllRace.esp", "3BBB UBE patch.esp",
-        "SOS - Dw3BA - Futanari Addon.esp", "TheNewGentleman.esp"
-    });
-    result.sosPluginLoaded = LegacySosLoaded();
-    result.sosPhysicsManagerLoaded = PluginLoaded({ "SOSPhysicsManager.esp" });
-    result.physicsEditorLoaded = ::GetModuleHandleW(L"PhysicsEditor.dll") != nullptr;
-    result.autoPhysicsResetLoaded = ::GetModuleHandleW(L"AutoSMPReset.dll") != nullptr ||
-        ::GetModuleHandleW(L"AutoPhysicsReset.dll") != nullptr ||
-        ::GetModuleHandleW(L"AutoPhysicsResetNG.dll") != nullptr;
-    result.crashLoggerLoaded = ::GetModuleHandleW(L"CrashLogger.dll") != nullptr;
-
-    if (auto* player = RE::PlayerCharacter::GetSingleton()) {
-        if (auto* root = player->Get3D()) {
-            for (auto bone : kBones)
-                if (root->GetObjectByName(RE::BSFixedString(bone))) ++result.playerBonesFound;
-        }
-    }
-
-    const std::array<std::string, 6> boneKeys{
-        "npc genitals01 [gen01]", "npc genitals02 [gen02]", "npc genitals03 [gen03]",
-        "npc genitals04 [gen04]", "npc genitals05 [gen05]", "npc genitals06 [gen06]"
-    };
-    const std::array<std::string, 6> parameterKeys{ "ubeps01", "ubeps02", "ubeps03", "ubeps04", "ubeps05", "ubeps06" };
-    std::error_code ec;
-    const fs::path xmlRoot{ "Data/SKSE/Plugins/hdtSkinnedMeshConfigs" };
-    if (fs::exists(xmlRoot, ec)) {
-        for (fs::recursive_directory_iterator it(xmlRoot, fs::directory_options::skip_permission_denied, ec), end; it != end; it.increment(ec)) {
-            if (ec) { ec.clear(); continue; }
-            if (!it->is_regular_file(ec) || Lower(it->path().extension().string()) != ".xml") continue;
-            ++result.xmlFiles;
-            const auto text = Lower(ReadText(it->path()));
-            if (ContainsAll(text, boneKeys) && text.contains("<system") && text.contains("</system>")) {
-                ++result.compatibleXmlFiles;
-                AddSummary(result.xmlSummary, it->path(), result.compatibleXmlFiles);
-            }
-        }
-    }
-
-    const fs::path pluginRoot{ "Data/SKSE/Plugins" };
-    if (fs::exists(pluginRoot, ec)) {
-        for (fs::directory_iterator it(pluginRoot, fs::directory_options::skip_permission_denied, ec), end; it != end; it.increment(ec)) {
-            if (ec) { ec.clear(); continue; }
-            if (!it->is_regular_file(ec) || Lower(it->path().extension().string()) != ".txt") continue;
-            const auto filename = Lower(it->path().filename().string());
-            const auto text = Lower(ReadText(it->path()));
-            if (filename.contains("cbpcmasterconfig")) {
-                ++result.cbpcMapFiles;
-                if (ContainsAll(text, boneKeys)) {
-                    ++result.compatibleCbpcMaps;
-                    AddSummary(result.cbpcMapSummary, it->path(), result.compatibleCbpcMaps);
-                }
-            } else if (filename.starts_with("cbpconfig")) {
-                ++result.cbpcParameterFiles;
-                if (ContainsAll(text, parameterKeys)) {
-                    ++result.compatibleCbpcParameters;
-                    AddSummary(result.cbpcParameterSummary, it->path(), result.compatibleCbpcParameters);
-                }
-            }
-        }
-    }
-    result.checkedAtMs = NowMs();
+    Diagnostics result = SPS::Diagnostics::Scan(NowMs());
     const bool incompatibleFsmp = result.fsmpModuleLoaded && !result.fsmpActorApiAvailable;
     const bool missingFsmpBridge = result.fsmpActorApiAvailable && !result.fsmpBridgePresent;
     { std::scoped_lock lock(diagnosticsLock); diagnostics = std::move(result); }

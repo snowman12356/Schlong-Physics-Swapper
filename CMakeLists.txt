@@ -33,13 +33,31 @@ option(SPS_BUILD_CORE_TESTS "Build the game-independent SPS core tests" ON)
 add_library(SPSCore STATIC
     src/PhysicsDecision.cpp
     src/PhysicsDecision.h
-    src/Settings.h)
+    src/Settings.h
+    src/SettingsStore.cpp
+    src/SettingsStore.h)
 target_include_directories(SPSCore PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+if(TARGET SimpleIni::SimpleIni)
+  target_link_libraries(SPSCore PUBLIC SimpleIni::SimpleIni)
+else()
+  target_include_directories(SPSCore PUBLIC
+      "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include")
+endif()
 if(MSVC)
   target_compile_options(SPSCore PRIVATE /W4)
 endif()
 
-add_commonlibsse_plugin(${PROJECT_NAME} AUTHOR "snowman12356" SOURCES src/plugin.cpp src/SPSAPI.h)
+add_commonlibsse_plugin(${PROJECT_NAME} AUTHOR "snowman12356" SOURCES
+    src/plugin.cpp
+    src/SPSAPI.h
+    src/diagnostics/Diagnostics.cpp
+    src/diagnostics/Diagnostics.h
+    src/runtime/Compatibility.cpp
+    src/runtime/Compatibility.h
+    src/runtime/PapyrusGateway.cpp
+    src/runtime/PapyrusGateway.h
+    src/runtime/PhysicsOwnershipAdapter.cpp
+    src/runtime/PhysicsOwnershipAdapter.h)
 target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE "${mcp_sdk_SOURCE_DIR}/include")
 target_compile_definitions(${PROJECT_NAME} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_link_libraries(${PROJECT_NAME} PRIVATE SPSCore)
@@ -58,13 +76,6 @@ if(SPS_BUILD_CORE_TESTS)
   add_dependencies(${PROJECT_NAME} SPSCoreTests)
 endif()
 target_precompile_headers(${PROJECT_NAME} PRIVATE src/PCH.h)
-if(TARGET SimpleIni::SimpleIni)
-  target_link_libraries(${PROJECT_NAME} PRIVATE SimpleIni::SimpleIni)
-else()
-  target_include_directories(${PROJECT_NAME} PRIVATE
-      "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include")
-endif()
-
 if(SPS_BUILD_API_TEST_PLUGIN)
   add_commonlibsse_plugin(SPSAPITestPlugin
       AUTHOR "snowman12356"

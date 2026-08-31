@@ -45,6 +45,8 @@ struct Settings {
     int settleDelayMs{ 350 };
     int maxBendFailures{ 3 };
     bool verboseLogging{ false };
+
+    bool operator==(const Settings&) const = default;
 };
 
 }
