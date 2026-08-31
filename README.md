@@ -1,4 +1,4 @@
-# Schlong Physics Swapper 1.9.5
+# Schlong Physics Swapper 1.9.6
 
 Native SKSE plugin for compatible SOS six-bone schlongs. Faster HDT-SMP owns
 Gen01-Gen06 while arousal is below a configurable threshold; CBPC owns them
@@ -288,6 +288,19 @@ computer paths.
 When reporting a problem, attach the diagnostic report or 30-second capture and
 include the schlong addon, Skyrim runtime, mod-manager name, expected result,
 actual result, and short reproduction steps. See [SUPPORT.md](docs/SUPPORT.md).
+
+## 1.9.6 changes
+
+- Fixed a save-loading crash on heavily scripted games when SPS tried to
+  dispatch a physics request before the player's cell and body were ready.
+- Moved FSMP player lookup into the SPS Papyrus bridge, so the native plugin no
+  longer passes an Actor through the unsafe startup path.
+- Applied the same protection to normal FSMP enable/disable calls.
+- Made each FSMP/CBPC ownership change one ordered Papyrus transaction with a
+  short settle period between releasing one engine and enabling the other.
+- Reduced each normal ownership change from seven Papyrus jobs to one.
+- Added a DLL/bridge compatibility check so an incomplete update fails safely
+  instead of dispatching a missing Papyrus function.
 
 ## 1.9.5 changes
 

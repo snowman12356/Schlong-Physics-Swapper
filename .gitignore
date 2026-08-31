@@ -22,6 +22,7 @@ scripts/BuildStubs/*
 !scripts/BuildStubs/SexLabFramework.psc
 !scripts/BuildStubs/sslThreadController.psc
 !scripts/BuildStubs/DynamicHDT.psc
+!scripts/BuildStubs/CBPCPluginScript.psc
 *.pex
 !scripts/SPS_SexLabBridge.pex
 !scripts/SPS_OStimBridge.pex

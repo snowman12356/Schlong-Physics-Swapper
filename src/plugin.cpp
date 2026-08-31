@@ -31,7 +31,7 @@ namespace Mod {
 namespace fs = std::filesystem;
 
 constexpr auto kName = "Schlong Physics Swapper";
-constexpr auto kVersion = "1.9.5";
+constexpr auto kVersion = "1.9.6";
 constexpr auto kIni = "Data/SKSE/Plugins/SchlongPhysicsSwapper.ini";
 constexpr auto kLegacyIni = "Data/SKSE/Plugins/UBEPhysicsSwitch.ini";
 constexpr auto kReport = "Data/SKSE/Plugins/SchlongPhysicsSwapper_Diagnostics.txt";
@@ -1041,6 +1041,13 @@ bool PapyrusReadyForDispatch() {
     if (!main || !main->GetRuntimeData().gameActive) return false;
     if (auto* ui = RE::UI::GetSingleton();
         ui && ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME)) return false;
+    // kPostLoadGame can arrive while the player's saved references are still
+    // being rebound on heavily scripted games. DispatchStaticCall can
+    // dereference an unavailable script object during that window even though
+    // the VM already reports itself as initialized. A live cell and loaded 3D
+    // are the first reliable point at which SPS can affect player physics.
+    const auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player || !player->GetParentCell() || !player->Is3DLoaded()) return false;
     const auto* vm = VM();
     return vm && vm->initialized && !vm->overstressed && vm->handlePolicy && vm->objectBindPolicy &&
         !vm->IsCompletelyFrozen();
@@ -1063,11 +1070,6 @@ void InvalidatePapyrusQueries(int delayMs) {
     ostimRoleRetryAfterMs.store(0);
 }
 
-const std::vector<RE::BSFixedString>& PhysicsBones() {
-    static const std::vector<RE::BSFixedString> bones(kBones.begin(), kBones.end());
-    return bones;
-}
-
 class DiscardPapyrusResultCallback final : public RE::BSScript::IStackCallbackFunctor {
 public:
     void operator()(RE::BSScript::Variable) override {}
@@ -1088,18 +1090,42 @@ bool Call(const char* script, const char* function, Args... values) {
     return vm->DispatchStaticCall(script, function, args, callback);
 }
 
-bool SetSMPPhysics(RE::Actor* actor, bool enabled) {
-    // DynamicHDT.TogglePhysics takes a String[] bone list. Creating that array
-    // directly through the native VM can race script loading on busy setups.
-    // The required SPS bridge builds it safely inside Papyrus instead.
-    return actor && FsmpActorApiAvailable() &&
-        fs::exists("Data/Scripts/SPS_FSMPBridge.pex") &&
-        Call("SPS_FSMPBridge", "TogglePhysics", actor, enabled);
+bool OrderedFsmpBridgeAvailable() {
+    // A DLL/PEX mismatch can otherwise ask Skyrim to dispatch a static
+    // function that does not exist. The VM has been observed crashing instead
+    // of simply rejecting that call during a save transition, so fail closed.
+    static const bool available = [] {
+        std::ifstream stream("Data/Scripts/SPS_FSMPBridge.pex", std::ios::binary);
+        if (!stream) return false;
+        const std::string bytes(std::istreambuf_iterator<char>(stream), {});
+        return bytes.find("SetPlayerOwner") != std::string::npos &&
+            bytes.find("ReleasePlayerPhysics") != std::string::npos;
+    }();
+    return available;
 }
 
 bool ResetSMPPhysics(RE::Actor* actor, bool full) {
-    return actor && FsmpActorApiAvailable() &&
-        Call("DynamicHDT", "ResetPhysics", actor, full);
+    const auto* player = RE::PlayerCharacter::GetSingleton();
+    return actor && player && actor == static_cast<const RE::Actor*>(player) &&
+        FsmpActorApiAvailable() &&
+        fs::exists("Data/Scripts/SPS_FSMPBridge.pex") &&
+        Call("SPS_FSMPBridge", "ResetPlayerPhysics", full);
+}
+
+bool SetPlayerPhysicsOwner(RE::Actor* actor, bool useCBPC) {
+    const auto* player = RE::PlayerCharacter::GetSingleton();
+    return actor && player && actor == static_cast<const RE::Actor*>(player) &&
+        FsmpActorApiAvailable() &&
+        OrderedFsmpBridgeAvailable() &&
+        Call("SPS_FSMPBridge", "SetPlayerOwner", useCBPC);
+}
+
+bool ReleasePlayerPhysics(RE::Actor* actor) {
+    const auto* player = RE::PlayerCharacter::GetSingleton();
+    return actor && player && actor == static_cast<const RE::Actor*>(player) &&
+        FsmpActorApiAvailable() &&
+        OrderedFsmpBridgeAvailable() &&
+        Call("SPS_FSMPBridge", "ReleasePlayerPhysics");
 }
 
 bool CallSosAeBend(RE::Actor* actor, int bend) {
@@ -1108,14 +1134,6 @@ bool CallSosAeBend(RE::Actor* actor, int bend) {
     // dispatching its unregistered native function can crash the Papyrus VM.
     return actor && SosAeNativeLoaded() &&
         Call("SOSAE_SKSE", "SetSchlongBend", actor, std::clamp(bend, 0, 20));
-}
-
-bool SetCBPCPhysics(RE::Actor* actor, bool enabled) {
-    bool ok = true;
-    for (const auto& bone : PhysicsBones()) {
-        ok &= Call("CBPCPluginScript", enabled ? "StartPhysics" : "StopPhysics", actor, bone);
-    }
-    return ok;
 }
 
 bool ConfirmCurrentPhysicsOwner(std::string_view reason) {
@@ -1128,21 +1146,12 @@ bool ConfirmCurrentPhysicsOwner(std::string_view reason) {
 
     auto* actor = static_cast<RE::Actor*>(player);
     const bool expectCBPC = usingCBPC.load();
-    bool smpOK = false;
-    bool cbpcOK = false;
-    if (expectCBPC) {
-        smpOK = SetSMPPhysics(actor, false);
-        cbpcOK = SetCBPCPhysics(actor, true);
-    } else {
-        cbpcOK = SetCBPCPhysics(actor, false);
-        smpOK = SetSMPPhysics(actor, true);
-    }
-    smpConnected.store(smpOK);
-    cbpcConnected.store(cbpcOK);
-    if (!smpOK || !cbpcOK) {
-        logger::warn("Could not restore {} after {} (FSMP: {}, CBPC: {})",
-            expectCBPC ? "CBPC" : "SMP", reason,
-            smpOK ? "OK" : "no response", cbpcOK ? "OK" : "no response");
+    const bool handoffQueued = SetPlayerPhysicsOwner(actor, expectCBPC);
+    smpConnected.store(handoffQueued);
+    cbpcConnected.store(handoffQueued);
+    if (!handoffQueued) {
+        logger::warn("Could not queue {} restoration after {}",
+            expectCBPC ? "CBPC" : "SMP", reason);
         return false;
     }
 
@@ -1923,13 +1932,11 @@ bool ConfirmSoftState() {
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (!player) return false;
     auto* actor = static_cast<RE::Actor*>(player);
-    const bool cbpcOK = SetCBPCPhysics(actor, false);
-    const bool smpOK = SetSMPPhysics(actor, true);
-    cbpcConnected.store(cbpcOK);
-    smpConnected.store(smpOK);
-    if (!cbpcOK || !smpOK) {
-        logger::warn("Soft-state confirmation failed (FSMP: {}, CBPC: {})",
-            smpOK ? "OK" : "no response", cbpcOK ? "OK" : "no response");
+    const bool handoffQueued = SetPlayerPhysicsOwner(actor, false);
+    cbpcConnected.store(handoffQueued);
+    smpConnected.store(handoffQueued);
+    if (!handoffQueued) {
+        logger::warn("Soft-state confirmation could not be queued");
         return false;
     }
     ApplyRequestedSoftBend(true, true);
@@ -1949,13 +1956,11 @@ bool ConfirmCBPCState() {
     // skeleton rebuild either physics engine can finish after the other one.
     // Reasserting SMP-off before CBPC-on makes the final owner deterministic.
     auto* actor = static_cast<RE::Actor*>(player);
-    const bool smpOK = SetSMPPhysics(actor, false);
-    const bool cbpcOK = SetCBPCPhysics(actor, true);
-    smpConnected.store(smpOK);
-    cbpcConnected.store(cbpcOK);
-    if (!smpOK || !cbpcOK) {
-        logger::warn("Erect-state confirmation failed (FSMP: {}, CBPC: {})",
-            smpOK ? "OK" : "no response", cbpcOK ? "OK" : "no response");
+    const bool handoffQueued = SetPlayerPhysicsOwner(actor, true);
+    smpConnected.store(handoffQueued);
+    cbpcConnected.store(handoffQueued);
+    if (!handoffQueued) {
+        logger::warn("Erect-state confirmation could not be queued");
         return false;
     }
     ClearResolvedOwnerError();
@@ -2141,36 +2146,21 @@ bool SetOwner(bool cbpc, bool force) {
     CancelErectionAnimation();
     auto* actor = static_cast<RE::Actor*>(player);
 
-    bool smpOK = false;
-    bool cbpcOK = true;
-    if (cbpc) {
-        smpOK = SetSMPPhysics(actor, false);
-        cbpcOK = SetCBPCPhysics(actor, true);
-    } else {
-        cbpcOK = SetCBPCPhysics(actor, false);
-        smpOK = SetSMPPhysics(actor, true);
-    }
-
-    smpConnected.store(smpOK);
-    cbpcConnected.store(cbpcOK);
-    if (!smpOK || !cbpcOK) {
-        // Best-effort rollback keeps the previously confirmed owner in control
-        // when only part of an external handoff was accepted.
+    const bool handoffQueued = SetPlayerPhysicsOwner(actor, cbpc);
+    smpConnected.store(handoffQueued);
+    cbpcConnected.store(handoffQueued);
+    if (!handoffQueued) {
+        // Best-effort rollback queues one ordered transaction for the previous
+        // owner instead of another set of independently scheduled calls.
         if (stateKnown.load()) {
-            if (usingCBPC.load()) {
-                SetSMPPhysics(actor, false);
-                SetCBPCPhysics(actor, true);
-            } else {
-                SetCBPCPhysics(actor, false);
-                SetSMPPhysics(actor, true);
-            }
+            SetPlayerPhysicsOwner(actor, usingCBPC.load());
         }
         ++switchFailures;
         if (softTransitionPending)
             erectionRelaxing.store(true);
         retryAfterMs.store(now + 1000);
-        Record(fmt::format("SPS-010: Physics handoff to {} failed (FSMP: {}, CBPC: {}); retry queued",
-            cbpc ? "CBPC" : "SMP", smpOK ? "OK" : "no response", cbpcOK ? "OK" : "no response"), true);
+        Record(fmt::format("SPS-010: Ordered physics handoff to {} could not be queued; retry queued",
+            cbpc ? "CBPC" : "SMP"), true);
         return false;
     }
 
@@ -2758,11 +2748,10 @@ void Tick() {
                 nodeCBPCReacquireUntilMs.store(now + 10000);
             } else if (auto* player = RE::PlayerCharacter::GetSingleton()) {
                 auto* actor = static_cast<RE::Actor*>(player);
-                const bool cbpcStopped = SetCBPCPhysics(actor, false);
-                const bool smpDisabled = SetSMPPhysics(actor, false);
-                nodeCBPCReacquireDueMs.store(now + (cbpcStopped && smpDisabled ? 350 : 1000));
+                const bool released = ReleasePlayerPhysics(actor);
+                nodeCBPCReacquireDueMs.store(now + (released ? 350 : 1000));
                 nodeCBPCReacquireUntilMs.store(now + 10000);
-                if (cbpcStopped && smpDisabled)
+                if (released)
                     Record("Player mesh changed; reconnecting erect physics to its new bones");
                 else
                     logger::warn("Could not release the old erect-physics bindings; bounded retry queued");

@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '1.9.5',
+    [string]$Version = '1.9.6',
     [string]$BuildDirectory = 'build-static',
     [switch]$CreateZip
 )
