@@ -1,5 +1,7 @@
 #include "PhysicsDecision.h"
 #include "SettingsStore.h"
+#include "api/ExternalControlRegistry.h"
+#include "diagnostics/ActivityLog.h"
 
 #include <chrono>
 #include <filesystem>
@@ -164,6 +166,37 @@ int main()
     Expect(clamped.flaccidBend == 0, "soft bend clamps to supported minimum");
     Expect(clamped.maxBendFailures == 1, "automatic failures clamp to safe minimum");
     std::filesystem::remove_all(testRoot);
+
+    SPS::Diagnostics::ActivityLog activity("starting");
+    activity.Record("normal event", false);
+    activity.Record("SPS-010: owner failed", true);
+    auto activitySnapshot = activity.Read();
+    Expect(activitySnapshot.lastAction == "SPS-010: owner failed", "activity stores the latest action");
+    Expect(activitySnapshot.lastError == "SPS-010: owner failed", "activity stores the latest error");
+    Expect(!activity.ClearErrorWithPrefixes({ "SPS-002:" }), "unrelated recovery does not clear an error");
+    Expect(activity.ClearErrorWithPrefixes({ "SPS-010:", "SPS-020:" }), "matching recovery clears an error");
+    for (int index = 0; index < 20; ++index) {
+        activity.Record("event " + std::to_string(index), false);
+    }
+    activitySnapshot = activity.Read();
+    Expect(activitySnapshot.recent.size() == 12, "activity history remains bounded");
+
+    SPS::APIControl::ExternalControlRegistry registry;
+    SPS::API::PhysicsRequest apiRequest;
+    apiRequest.state = SPS::API::PhysicsState::SMP;
+    apiRequest.requesterName = "first requester";
+    const auto firstRequest = registry.Add(apiRequest, 1000);
+    apiRequest.state = SPS::API::PhysicsState::CBPC;
+    apiRequest.durationMilliseconds = 500;
+    apiRequest.requesterName = "second requester";
+    const auto secondRequest = registry.Add(apiRequest, 1000);
+    Expect(registry.Active(1200)->handle == secondRequest.handle, "newest API request has priority");
+    Expect(registry.Active(1600)->handle == firstRequest.handle, "expired API request releases automatically");
+    Expect(registry.Release(firstRequest.handle).value_or("") == "first requester", "API release returns requester label");
+    Expect(!registry.Release(firstRequest.handle).has_value(), "API request cannot be released twice");
+    const auto registryStats = registry.GetStats();
+    Expect(registryStats.accepted == 2 && registryStats.released == 2 && registryStats.active == 0,
+        "API registry keeps accurate bounded counters");
 
     if (failures == 0) {
         std::cout << "All SPS physics-decision tests passed.\n";

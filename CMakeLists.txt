@@ -31,6 +31,10 @@ option(SPS_BUILD_API_TEST_PLUGIN "Build the developer-only SPS API smoke-test pl
 option(SPS_BUILD_CORE_TESTS "Build the game-independent SPS core tests" ON)
 
 add_library(SPSCore STATIC
+    src/api/ExternalControlRegistry.cpp
+    src/api/ExternalControlRegistry.h
+    src/diagnostics/ActivityLog.cpp
+    src/diagnostics/ActivityLog.h
     src/PhysicsDecision.cpp
     src/PhysicsDecision.h
     src/Settings.h
@@ -50,6 +54,12 @@ endif()
 add_commonlibsse_plugin(${PROJECT_NAME} AUTHOR "snowman12356" SOURCES
     src/plugin.cpp
     src/SPSAPI.h
+    src/controllers/ArousalController.cpp
+    src/controllers/ArousalController.h
+    src/controllers/ActorContext.h
+    src/controllers/SceneController.cpp
+    src/controllers/SceneController.h
+    src/controllers/SceneState.h
     src/diagnostics/Diagnostics.cpp
     src/diagnostics/Diagnostics.h
     src/runtime/Compatibility.cpp
@@ -57,7 +67,9 @@ add_commonlibsse_plugin(${PROJECT_NAME} AUTHOR "snowman12356" SOURCES
     src/runtime/PapyrusGateway.cpp
     src/runtime/PapyrusGateway.h
     src/runtime/PhysicsOwnershipAdapter.cpp
-    src/runtime/PhysicsOwnershipAdapter.h)
+    src/runtime/PhysicsOwnershipAdapter.h
+    src/runtime/PositionBackendAdapter.cpp
+    src/runtime/PositionBackendAdapter.h)
 target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE "${mcp_sdk_SOURCE_DIR}/include")
 target_compile_definitions(${PROJECT_NAME} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_link_libraries(${PROJECT_NAME} PRIVATE SPSCore)
