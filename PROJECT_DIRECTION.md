@@ -56,9 +56,16 @@ cleanup are complete, the reproducible native/Papyrus/package workflow passes,
 and the player implementation now has modular decision, runtime, ownership,
 arousal, scene, position, recovery, compatibility and diagnostics boundaries.
 
-The current development package has passed automated builds, core tests and
-package validation but has not been installed or released. The next gate is the
-documented in-game player regression pass covering load/save boundaries,
-arousal changes, soft and erect equipment changes, manual repair, SexLab and
-optional OStim behaviour. Do not begin managed NPC support until that gate has
-passed.
+The current 1.9.6 development package has passed automated builds, core tests
+and package validation. On 2026-09-01 it was installed only in the dedicated
+MO2 test mod at `D:\Modding\mods\Schlong Physics Swapper`; it has not been
+released. The clean test install uses OSL Aroused 2.9.3 support, omits the
+optional OStim and legacy OSL bridges, and preserves the user's existing SPS
+INI. Its DLL SHA-256 is
+`65D5FFC64448381A38B7E0104EACA7EAAB1AEC0BF1D0495000DA20204881FD4E`.
+
+The next gate is the documented in-game player regression pass covering
+load/save boundaries, arousal changes, soft and erect equipment changes,
+manual repair and SexLab behaviour. Optional OStim behaviour remains a separate
+experimental test when its bridge is deliberately installed. Do not begin
+managed NPC support until the player gate has passed.
