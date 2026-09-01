@@ -10,11 +10,13 @@ param(
 
     [switch]$Reconfigure,
 
-    [string]$ArtifactDirectory = 'build-output',
+    [string]$ArtifactDirectory = 'out\build',
 
     [string]$CommonLib = $env:COMMONLIB_SSE_FOLDER,
 
     [string]$VcpkgRoot = $env:VCPKG_ROOT,
+
+    [string]$MenuFramework = $env:SPS_MENU_FRAMEWORK_SOURCE,
 
     [string]$CMake = $env:SPS_CMAKE
 )
@@ -25,6 +27,13 @@ $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $workspace = Split-Path -Path $repo -Parent
 $repoName = Split-Path -Path $repo -Leaf
+$dependencyRoot = Join-Path $workspace '.sps-deps'
+$referenceRoot = if ([string]::IsNullOrWhiteSpace($env:SPS_REFERENCE_ROOT)) {
+    Join-Path $workspace 'codex-references'
+}
+else {
+    $env:SPS_REFERENCE_ROOT
+}
 
 if ([string]::IsNullOrWhiteSpace($BuildDirectory)) {
     $buildRoot = $env:SPS_BUILD_ROOT
@@ -54,6 +63,8 @@ else {
 
 $CommonLib = Resolve-SPSFirstDirectory @(
     $CommonLib,
+    (Join-Path $dependencyRoot 'CommonLibSSE-NG'),
+    (Join-Path $referenceRoot 'native\CommonLibSSE-NG'),
     (Join-Path $workspace '.research-commonlib-download\CommonLibSSE-NG-ng')
 )
 if (-not $CommonLib) {
@@ -62,6 +73,7 @@ if (-not $CommonLib) {
 
 $VcpkgRoot = Resolve-SPSVcpkgRoot @(
     $VcpkgRoot,
+    (Join-Path $dependencyRoot 'vcpkg'),
     (Join-Path $workspace '.research-vcpkg-download\vcpkg-master'),
     'C:\vcpkg-master'
 )
@@ -143,6 +155,9 @@ $mappedCommonLib = Convert-ToMappedPath $CommonLib
 $mappedToolchain = Convert-ToMappedPath $toolchain
 $mappedBuild = Convert-ToMappedPath $physicalBuild
 $mcpSource = Resolve-SPSFirstDirectory @(
+    $MenuFramework,
+    (Join-Path $dependencyRoot 'SKSE-Menu-Framework-3-Example'),
+    (Join-Path $referenceRoot 'native\SKSE-Menu-Framework-3-Example'),
     (Join-Path $workspace '.research-mcp-example-download\SKSE-Menu-Framework-3-Example-master')
 )
 

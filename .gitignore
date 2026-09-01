@@ -1,11 +1,52 @@
 # Local dependency research and downloaded archives
+.sps-deps/
+.deps/
 .research-*/
 .research-*
+research/
 
 # Build and package output
 build*/
 dist/
+out/
+.dist/
+Releases/
+staging/
 vcpkg_installed/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+Testing/
+_deps/
+compile_commands.json
+install_manifest.txt
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.ninja
+.ninja_*
+
+# Local workspaces, repair staging, packages and backups
+.work-*/
+.hotfix-*/
+.papyrus-*/
+.tools/
+*.zip
+*.7z
+*.rar
+*.bak
+*.tmp
+*.temp
+*.orig
+*.log
+logs/
+
+# Tool caches
+__pycache__/
+*.py[cod]
+node_modules/
+.pytest_cache/
 
 # Local experiments. Keep the SPS-owned P+ bridge and build declarations.
 scripts/*
@@ -23,6 +64,8 @@ scripts/BuildStubs/*
 !scripts/BuildStubs/sslThreadController.psc
 !scripts/BuildStubs/DynamicHDT.psc
 !scripts/BuildStubs/CBPCPluginScript.psc
+!scripts/BuildStubs/OThread.psc
+!scripts/BuildStubs/OMetadata.psc
 *.pex
 !scripts/SPS_SexLabBridge.pex
 !scripts/SPS_OStimBridge.pex

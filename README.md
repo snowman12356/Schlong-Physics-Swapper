@@ -507,7 +507,7 @@ skips a full configure when possible, and builds with four parallel jobs.
 The first build still has to compile CommonLib, but later builds should be
 much faster.
 
-The finished DLL is copied to `build-output\SchlongPhysicsSwapper.dll`, ready
+The finished DLL is copied to `out\build\SchlongPhysicsSwapper.dll`, ready
 for testing or packaging. Useful optional switches are:
 
 ```powershell
@@ -519,5 +519,5 @@ Set `SPS_BUILD_ROOT` if you want the persistent build cache on another fast
 local drive. To package this output, use:
 
 ```powershell
-.\tools\New-ReleasePackage.ps1 -BuildDirectory build-output
+.\tools\New-ReleasePackage.ps1 -BuildDirectory out\build
 ```

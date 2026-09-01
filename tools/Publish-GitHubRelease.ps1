@@ -14,9 +14,9 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
 }
 
 $tag = "v$Version"
-$zip = Join-Path $repo "dist\Schlong-Physics-Swapper-$Version.zip"
+$zip = Join-Path $repo "out\release\Schlong-Physics-Swapper-$Version.zip"
 if ([string]::IsNullOrWhiteSpace($NotesFile)) {
-    $NotesFile = Join-Path $repo "dist\release-notes-$Version.md"
+    $NotesFile = Join-Path $repo "out\release\release-notes-$Version.md"
 }
 elseif (-not [IO.Path]::IsPathRooted($NotesFile)) {
     $NotesFile = Join-Path $repo $NotesFile

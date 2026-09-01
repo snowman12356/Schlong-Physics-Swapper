@@ -2,6 +2,7 @@
 param(
     [string]$CommonLib = $env:COMMONLIB_SSE_FOLDER,
     [string]$VcpkgRoot = $env:VCPKG_ROOT,
+    [string]$MenuFramework = $env:SPS_MENU_FRAMEWORK_SOURCE,
     [string]$CMake = $env:SPS_CMAKE
 )
 
@@ -10,6 +11,13 @@ $ErrorActionPreference = 'Stop'
 
 $repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $workspace = Split-Path -Path $repo -Parent
+$dependencyRoot = Join-Path $workspace '.sps-deps'
+$referenceRoot = if ([string]::IsNullOrWhiteSpace($env:SPS_REFERENCE_ROOT)) {
+    Join-Path $workspace 'codex-references'
+}
+else {
+    $env:SPS_REFERENCE_ROOT
+}
 $failures = [System.Collections.Generic.List[string]]::new()
 
 function Write-Check {
@@ -38,6 +46,8 @@ Write-Check 'Visual Studio C++ tools' (-not [string]::IsNullOrWhiteSpace($vsPath
 
 $resolvedCommonLib = Resolve-SPSFirstDirectory @(
     $CommonLib,
+    (Join-Path $dependencyRoot 'CommonLibSSE-NG'),
+    (Join-Path $referenceRoot 'native\CommonLibSSE-NG'),
     (Join-Path $workspace '.research-commonlib-download\CommonLibSSE-NG-ng')
 )
 $commonLibReady = $resolvedCommonLib -and
@@ -48,6 +58,7 @@ Write-Check 'CommonLibSSE-NG' $commonLibReady `
 try {
     $resolvedVcpkg = Resolve-SPSVcpkgRoot @(
         $VcpkgRoot,
+        (Join-Path $dependencyRoot 'vcpkg'),
         (Join-Path $workspace '.research-vcpkg-download\vcpkg-master'),
         'C:\vcpkg-master'
     )
@@ -71,8 +82,15 @@ else {
     Write-Check 'Pinned CMake' $false 'vcpkg must be repaired first'
 }
 
-$mcpSource = Join-Path $workspace '.research-mcp-example-download\SKSE-Menu-Framework-3-Example-master'
-Write-Check 'SKSE Menu Framework source' (Test-Path -LiteralPath $mcpSource -PathType Container) $mcpSource
+$mcpSource = Resolve-SPSFirstDirectory @(
+    $MenuFramework,
+    (Join-Path $dependencyRoot 'SKSE-Menu-Framework-3-Example'),
+    (Join-Path $referenceRoot 'native\SKSE-Menu-Framework-3-Example'),
+    (Join-Path $workspace '.research-mcp-example-download\SKSE-Menu-Framework-3-Example-master')
+)
+$mcpReady = $mcpSource -and (Test-Path -LiteralPath $mcpSource -PathType Container)
+Write-Check 'SKSE Menu Framework source' $mcpReady `
+    $(if ($mcpReady) { $mcpSource } else { 'not found' })
 
 $git = Get-Command git.exe -ErrorAction SilentlyContinue
 $gh = Get-Command gh.exe -ErrorAction SilentlyContinue

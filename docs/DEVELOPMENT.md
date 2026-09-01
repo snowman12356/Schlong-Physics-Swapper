@@ -13,6 +13,14 @@ This checks PowerShell, Visual Studio C++ tools, CommonLibSSE-NG, the installed
 vcpkg packages, the pinned CMake executable, SKSE Menu Framework source, Git and
 GitHub CLI. It does not contact GitHub or print authentication tokens.
 
+Local build dependencies live outside the repository in the sibling
+`.sps-deps` directory. The scripts also accept `COMMONLIB_SSE_FOLDER`,
+`VCPKG_ROOT`, `SPS_MENU_FRAMEWORK_SOURCE` and `SPS_REFERENCE_ROOT` overrides.
+`SPS_SKYRIM_GAME_ROOT` can point release builds at a non-default Skyrim
+installation for the official Papyrus compiler.
+The shared Skyrim reference library remains a sibling at `codex-references` and
+is never copied into SPS.
+
 ## Build the DLL
 
 ```powershell
@@ -27,10 +35,24 @@ compiler failures seen in restricted development shells.
 
 The build also compiles and runs the game-independent SPS core tests. A failed
 mode, threshold or hysteresis regression stops the build before a DLL is copied
-to `build-output`.
+to `out\build`.
 
 Use `-Reconfigure` after changing CMake or dependencies. The ready DLL is copied
-to `build-output\SchlongPhysicsSwapper.dll`.
+to `out\build\SchlongPhysicsSwapper.dll`. CMake and compiler intermediates live
+under the per-user `SPSBuild` cache rather than in the source tree.
+
+## Build the Papyrus bridges
+
+```powershell
+.\tools\Build-PapyrusBridge.ps1 -GameRoot '<Skyrim installation>'
+```
+
+This compiles the FSMP ownership, SexLab role and optional OStim role bridges from
+`scripts\Source` using only the tracked declarations in `scripts\BuildStubs`.
+The compiler writes the paired PEX files back to `scripts`, where release
+validation checks their ABI marker and required symbols and confirms that they
+are packaged with the DLL. OStim runtime support remains optional and
+experimental even though its bridge is built reproducibly with the package.
 
 ## Build and verify a release ZIP
 
@@ -41,11 +63,13 @@ Update the version in `CMakeLists.txt`, `src/plugin.cpp`, `fomod/info.xml` and
 .\tools\Build-Release.ps1 -Version 1.9.4
 ```
 
-The release command checks all version declarations, checks the environment,
-builds the DLL, creates the FOMOD ZIP, expands the ZIP into a temporary folder,
-validates its contents and confirms the packaged DLL hash matches the build.
+The release command checks all version declarations and the environment,
+recompiles every Papyrus bridge, builds the DLL, creates the FOMOD ZIP, expands
+the ZIP into a temporary folder, validates the bridge ABI symbols and contents,
+and confirms the packaged DLL hash matches the build.
 The ZIP uses sorted entries and fixed timestamps, so identical inputs produce
-the same archive hash on repeated runs.
+the same archive hash on repeated runs. Local DLLs are placed in `out\build`;
+release staging and ZIP files are placed in `out\release`.
 
 GitHub publication remains a separate deliberate step so running a local build
 cannot accidentally push a commit, tag or release.

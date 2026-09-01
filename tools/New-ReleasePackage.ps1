@@ -1,16 +1,19 @@
 [CmdletBinding()]
 param(
     [string]$Version = '1.9.6',
-    [string]$BuildDirectory = 'build-static',
+    [string]$BuildDirectory = 'out\build',
+    [string]$OutputDirectory = 'out\release',
     [switch]$CreateZip
 )
 
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $build = (Resolve-Path -LiteralPath (Join-Path $repo $BuildDirectory)).Path
-$dist = Join-Path $repo 'dist'
+$dist = Join-Path $repo $OutputDirectory
 $stageName = "Schlong-Physics-Swapper-{0}" -f $Version
 $stage = Join-Path $dist $stageName
+
+New-Item -ItemType Directory -Path $dist -Force | Out-Null
 
 if (Test-Path -LiteralPath $stage) {
     $resolvedDist = (Resolve-Path -LiteralPath $dist).Path
