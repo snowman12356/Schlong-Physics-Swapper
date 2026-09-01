@@ -1,5 +1,9 @@
 Scriptname SPS_SexLabBridge Hidden
 
+Int Function GetSPSBridgeVersion() Global
+    Return 1
+EndFunction
+
 ; Returns 0 when P+ cannot describe the current stage, 1 when the player is
 ; receiving/servicing a partner, or 2 when the player's penis is active.
 Int Function GetPlayerRole() Global

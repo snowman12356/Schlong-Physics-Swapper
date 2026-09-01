@@ -6,7 +6,9 @@ param(
     [string]$BuildDirectory = '',
     [string]$CommonLib = $env:COMMONLIB_SSE_FOLDER,
     [string]$VcpkgRoot = $env:VCPKG_ROOT,
-    [string]$CMake = $env:SPS_CMAKE
+    [string]$MenuFramework = $env:SPS_MENU_FRAMEWORK_SOURCE,
+    [string]$CMake = $env:SPS_CMAKE,
+    [string]$GameRoot = $env:SPS_SKYRIM_GAME_ROOT
 )
 
 $ErrorActionPreference = 'Stop'
@@ -32,9 +34,10 @@ if ($fomodInfo.fomod.Version -ne $Version -or
 $buildArguments = @{
     Configuration = 'Release'
     Jobs = $Jobs
-    ArtifactDirectory = 'build-output'
+    ArtifactDirectory = 'out\build'
     CommonLib = $CommonLib
     VcpkgRoot = $VcpkgRoot
+    MenuFramework = $MenuFramework
     CMake = $CMake
 }
 if (-not [string]::IsNullOrWhiteSpace($BuildDirectory)) {
@@ -43,12 +46,17 @@ if (-not [string]::IsNullOrWhiteSpace($BuildDirectory)) {
 if ($Reconfigure) { $buildArguments.Reconfigure = $true }
 
 & (Join-Path $PSScriptRoot 'Test-Environment.ps1') `
-    -CommonLib $CommonLib -VcpkgRoot $VcpkgRoot -CMake $CMake
+    -CommonLib $CommonLib -VcpkgRoot $VcpkgRoot -MenuFramework $MenuFramework -CMake $CMake
+$papyrusArguments = @{}
+if (-not [string]::IsNullOrWhiteSpace($GameRoot)) {
+    $papyrusArguments.GameRoot = $GameRoot
+}
+& (Join-Path $PSScriptRoot 'Build-PapyrusBridge.ps1') @papyrusArguments
 & (Join-Path $PSScriptRoot 'Build-Local.ps1') @buildArguments
 & (Join-Path $PSScriptRoot 'New-ReleasePackage.ps1') `
-    -Version $Version -BuildDirectory 'build-output' -CreateZip
+    -Version $Version -BuildDirectory 'out\build' -CreateZip
 
-$zip = Join-Path $repo "dist\Schlong-Physics-Swapper-$Version.zip"
+$zip = Join-Path $repo "out\release\Schlong-Physics-Swapper-$Version.zip"
 if (-not (Test-Path -LiteralPath $zip -PathType Leaf)) {
     throw "The release archive was not created: $zip"
 }
@@ -60,7 +68,7 @@ try {
         -PackagePath $verifyRoot -Version $Version
 
     $builtHash = (Get-FileHash -Algorithm SHA256 -LiteralPath `
-        (Join-Path $repo 'build-output\SchlongPhysicsSwapper.dll')).Hash
+        (Join-Path $repo 'out\build\SchlongPhysicsSwapper.dll')).Hash
     $packedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath `
         (Join-Path $verifyRoot 'SKSE\Plugins\SchlongPhysicsSwapper.dll')).Hash
     if ($builtHash -ne $packedHash) {

@@ -1,5 +1,9 @@
 Scriptname SPS_OStimBridge Hidden
 
+Int Function GetSPSBridgeVersion() Global
+    Return 1
+EndFunction
+
 ; Returns 0 when the current OStim scene cannot describe the player's role,
 ; 1 when the player is receiving/on the bottom, or 2 when the player is
 ; dominant/on top. OStim's main player thread is thread 0.

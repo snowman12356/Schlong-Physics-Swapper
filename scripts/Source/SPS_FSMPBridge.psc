@@ -1,5 +1,9 @@
 Scriptname SPS_FSMPBridge Hidden
 
+Int Function GetSPSBridgeVersion() Global
+    Return 2
+EndFunction
+
 String[] Function GetPhysicsBones() Global
     String[] bones = new String[6]
     bones[0] = "NPC Genitals01 [Gen01]"
@@ -28,9 +32,16 @@ EndFunction
 ; native dispatches can execute late or out of order on busy games, leaving
 ; FSMP active after SPS has already reported CBPC as the selected owner.
 Function SetPlayerOwner(Bool useCBPC) Global
+    Bool ignored = SetPlayerOwnerV2(useCBPC)
+EndFunction
+
+; Version 2 returns only after the ordered transaction has run. The native
+; plugin uses this result to distinguish a queued VM call from a completed
+; handoff while preserving SetPlayerOwner for older external callers.
+Bool Function SetPlayerOwnerV2(Bool useCBPC) Global
     Actor targetActor = Game.GetPlayer()
     If targetActor == None
-        Return
+        Return false
     EndIf
 
     String[] bones = GetPhysicsBones()
@@ -54,6 +65,7 @@ Function SetPlayerOwner(Bool useCBPC) Global
         Utility.Wait(0.25)
         DynamicHDT.TogglePhysics(targetActor, bones, true)
     EndIf
+    Return true
 EndFunction
 
 ; Equipment recovery briefly releases both engines from the old mesh before

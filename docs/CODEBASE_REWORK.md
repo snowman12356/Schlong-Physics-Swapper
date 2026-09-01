@@ -77,3 +77,36 @@ Every phase must build with `/W4`, pass the core unit tests, validate the FOMOD
 and preserve these in-game paths: load soft, load erect, 0-to-100 and 100-to-0
 arousal changes, armour equip/unequip in both states, manual soft/erect, angle
 application, save switching, SexLab, optional OStim and troubleshooting repair.
+
+## Current implementation state - 2026-09-01
+
+The rework has continued from commit `29a8e70`; it was not restarted. The
+current development tree now has these boundaries:
+
+- Phase 1 is complete. Settings/storage and owner/scene decision policy are in
+  the game-independent core and are covered by the build-time regression suite.
+- Phase 2 implementation is complete. Papyrus readiness and SOS/FSMP/CBPC calls
+  are behind runtime adapters. The version-2 FSMP bridge returns only after its
+  ordered handoff stack completes, and `PhysicsOwnershipController` keeps the
+  queued/completed/failed transaction, timeout and stale-callback generation.
+  A queued call is no longer published as the selected owner.
+- Phase 3's player state extraction is complete enough for its regression gate.
+  Arousal and scene controllers remain intact; position policy, animation state,
+  bounce/failure recovery and actor-scoped recovery resets now have controller
+  APIs and snapshots. Skyrim event sequencing remains in the plugin entry point
+  so the already-working load, armour and scene order is not rewritten before
+  in-game validation.
+- Phase 4 has a central activity log, diagnostics scanner and support-report
+  formatter. Troubleshooting and advanced UI paths consume immutable ownership,
+  position and recovery snapshots and send actions through existing command
+  functions. Splitting the remaining ImGui page layout into separate files is
+  cosmetic and is not a prerequisite for the player regression gate.
+- Phase 5 has only the reusable per-actor context and tested controllers. The
+  player (`0x14`) remains the sole managed context. NPC discovery, persistence
+  and runtime management are intentionally not implemented until every player
+  regression path below passes in game.
+
+The authoritative in-game checklist is also recorded in
+`RELIABILITY_AUDIT_2026-08-25.md`. In particular, the new completion-aware
+handoff must be exercised under load/save, arousal, equipment, manual repair,
+SexLab and optional OStim timing before managed-NPC work begins.

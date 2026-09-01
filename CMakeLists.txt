@@ -35,6 +35,13 @@ add_library(SPSCore STATIC
     src/api/ExternalControlRegistry.h
     src/diagnostics/ActivityLog.cpp
     src/diagnostics/ActivityLog.h
+    src/controllers/ActorContext.h
+    src/controllers/PhysicsOwnershipController.cpp
+    src/controllers/PhysicsOwnershipController.h
+    src/controllers/PositionController.cpp
+    src/controllers/PositionController.h
+    src/controllers/RecoveryController.cpp
+    src/controllers/RecoveryController.h
     src/PhysicsDecision.cpp
     src/PhysicsDecision.h
     src/Settings.h
@@ -56,12 +63,13 @@ add_commonlibsse_plugin(${PROJECT_NAME} AUTHOR "snowman12356" SOURCES
     src/SPSAPI.h
     src/controllers/ArousalController.cpp
     src/controllers/ArousalController.h
-    src/controllers/ActorContext.h
     src/controllers/SceneController.cpp
     src/controllers/SceneController.h
     src/controllers/SceneState.h
     src/diagnostics/Diagnostics.cpp
     src/diagnostics/Diagnostics.h
+    src/diagnostics/SupportReport.cpp
+    src/diagnostics/SupportReport.h
     src/runtime/Compatibility.cpp
     src/runtime/Compatibility.h
     src/runtime/PapyrusGateway.cpp

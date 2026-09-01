@@ -19,14 +19,17 @@ foreach ($requiredPath in @($compiler, $baseSources, $flags, $sourceDirectory, $
 }
 
 $includes = "$sourceDirectory;$stubDirectory;$baseSources"
-& $compiler 'SPS_FSMPBridge.psc' "-f=$flags" "-i=$includes" "-o=$outputDirectory" '-op'
-if ($LASTEXITCODE -ne 0) {
-    throw "Papyrus bridge compilation failed with exit code $LASTEXITCODE."
-}
+$bridges = @('SPS_FSMPBridge', 'SPS_SexLabBridge', 'SPS_OStimBridge')
+foreach ($bridge in $bridges) {
+    & $compiler "$bridge.psc" "-f=$flags" "-i=$includes" "-o=$outputDirectory" '-op'
+    if ($LASTEXITCODE -ne 0) {
+        throw "$bridge Papyrus compilation failed with exit code $LASTEXITCODE."
+    }
 
-$output = Join-Path $outputDirectory 'SPS_FSMPBridge.pex'
-if (-not (Test-Path -LiteralPath $output -PathType Leaf) -or (Get-Item -LiteralPath $output).Length -eq 0) {
-    throw "Papyrus compiler did not create the expected bridge: $output"
+    $output = Join-Path $outputDirectory "$bridge.pex"
+    if (-not (Test-Path -LiteralPath $output -PathType Leaf) -or
+        (Get-Item -LiteralPath $output).Length -eq 0) {
+        throw "Papyrus compiler did not create the expected bridge: $output"
+    }
+    Write-Host "Papyrus bridge built: $output"
 }
-
-Write-Host "Papyrus bridge built: $output"

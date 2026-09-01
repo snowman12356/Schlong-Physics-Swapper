@@ -36,6 +36,26 @@ foreach ($relativePath in $requiredFiles) {
     }
 }
 
+function Test-PexSymbols {
+    param(
+        [Parameter(Mandatory = $true)][string]$RelativePath,
+        [Parameter(Mandatory = $true)][string[]]$Symbols
+    )
+
+    $pexPath = Join-Path $resolvedPackage $RelativePath
+    $bytes = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($pexPath))
+    foreach ($symbol in $Symbols) {
+        if (-not $bytes.Contains($symbol)) {
+            throw "$RelativePath is stale or incompatible; missing Papyrus symbol: $symbol"
+        }
+    }
+}
+
+Test-PexSymbols 'Scripts\SPS_FSMPBridge.pex' @(
+    'GetSPSBridgeVersion', 'SetPlayerOwner', 'SetPlayerOwnerV2', 'ReleasePlayerPhysics', 'ResetPlayerPhysics')
+Test-PexSymbols 'Scripts\SPS_SexLabBridge.pex' @('GetSPSBridgeVersion', 'GetPlayerRole')
+Test-PexSymbols 'Optional\OStim\Scripts\SPS_OStimBridge.pex' @('GetSPSBridgeVersion', 'GetPlayerRole')
+
 try {
     [xml]$info = Get-Content -LiteralPath (Join-Path $resolvedPackage 'fomod\info.xml') -Raw
     [xml]$module = Get-Content -LiteralPath (Join-Path $resolvedPackage 'fomod\ModuleConfig.xml') -Raw

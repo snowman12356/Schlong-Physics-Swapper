@@ -1,6 +1,9 @@
 #include "PhysicsDecision.h"
 #include "SettingsStore.h"
 #include "api/ExternalControlRegistry.h"
+#include "controllers/PositionController.h"
+#include "controllers/PhysicsOwnershipController.h"
+#include "controllers/RecoveryController.h"
 #include "diagnostics/ActivityLog.h"
 
 #include <chrono>
@@ -180,6 +183,110 @@ int main()
     }
     activitySnapshot = activity.Read();
     Expect(activitySnapshot.recent.size() == 12, "activity history remains bounded");
+
+    SPS::Controllers::ActorContext actorContext(0x14);
+    SPS::Controllers::PositionController position(actorContext.position);
+    SPS::Controllers::RecoveryController recovery(actorContext);
+
+    Expect(position.CheckAutomatic(1000, true).allowed, "first automatic position repair is allowed");
+    Expect(position.CheckAutomatic(1100, true).allowed, "second automatic position repair is allowed");
+    Expect(position.CheckAutomatic(1200, true).allowed, "third automatic position repair is allowed");
+    const auto bouncePause = position.CheckAutomatic(1300, true);
+    Expect(!bouncePause.allowed && bouncePause.pauseStarted,
+        "bounce guard pauses the fourth rapid automatic repair");
+    Expect(!position.CheckAutomatic(2000, true).allowed,
+        "bounce guard rejects repairs during its pause");
+    Expect(position.CheckAutomatic(6300, true).allowed,
+        "bounce guard resumes repairs after its pause");
+
+    auto dispatch = position.CompleteDispatch(12, 0, false, true, 2, 7000);
+    Expect(!dispatch.pauseStarted && actorContext.position.retryDueMs.load() == 8500,
+        "first failed automatic position dispatch uses the short retry");
+    dispatch = position.CompleteDispatch(12, 0, false, true, 2, 7100);
+    Expect(dispatch.pauseStarted && actorContext.position.automaticSuspended.load() &&
+        actorContext.position.retryDueMs.load() == 12100,
+        "bounded position failures suspend automatic repair once");
+    dispatch = position.CompleteDispatch(12, 0, true, true, 2, 13000);
+    Expect(dispatch.recovered && actorContext.position.appliedBend.load() == 12 &&
+        !actorContext.position.automaticSuspended.load(),
+        "successful position dispatch clears the failure suspension");
+
+    const auto animationGeneration = position.BeginAnimation(18, true, 14000);
+    auto positionSnapshot = position.Read();
+    Expect(positionSnapshot.animating && positionSnapshot.relaxing &&
+        positionSnapshot.animationTargetBend == 18 && animationGeneration > 0,
+        "position controller owns animation startup state");
+    position.AcceptAnimationStep(10, 1, 14500);
+    position.CompleteAnimation(18);
+    positionSnapshot = position.Read();
+    Expect(!positionSnapshot.animating && positionSnapshot.appliedBend == 18 &&
+        positionSnapshot.lastMethod == 1,
+        "position controller owns successful animation completion state");
+    position.CancelAnimation();
+    Expect(!position.Read().relaxing,
+        "cancelling an animation clears its relaxation state");
+
+    actorContext.physics.lastSwitchMs.store(1);
+    actorContext.physics.retryAfterMs.store(2);
+    actorContext.position.settleDueMs.store(3);
+    actorContext.recovery.loadSmpResetDueMs.store(4);
+    actorContext.recovery.softConfirmationDueMs.store(5);
+    actorContext.recovery.nodeRefreshDueMs.store(6);
+    actorContext.recovery.startupReconcileDueMs.store(7);
+    actorContext.recovery.externalOwnerRepairDueMs.store(8);
+    actorContext.recovery.ignoreNodeEventsUntilMs.store(9);
+    recovery.ResetTransient();
+    Expect(actorContext.physics.lastSwitchMs.load() == 0 &&
+        actorContext.physics.retryAfterMs.load() == 0 &&
+        actorContext.position.settleDueMs.load() == 0 &&
+        actorContext.recovery.loadSmpResetDueMs.load() == 0 &&
+        actorContext.recovery.softConfirmationDueMs.load() == 0 &&
+        actorContext.recovery.nodeRefreshDueMs.load() == 0 &&
+        actorContext.recovery.startupReconcileDueMs.load() == 0 &&
+        actorContext.recovery.externalOwnerRepairDueMs.load() == 0 &&
+        actorContext.recovery.ignoreNodeEventsUntilMs.load() == 0,
+        "recovery controller clears actor-scoped transient timers together");
+    recovery.ScheduleExternalOwnerRepair(20000, 1);
+    Expect(actorContext.recovery.externalOwnerRepairDueMs.load() == 20100 &&
+        actorContext.recovery.externalOwnerRepairUntilMs.load() == 30100,
+        "external owner repair scheduling keeps bounded delays");
+
+    SPS::Controllers::PhysicsOwnershipController ownership(actorContext.physics);
+    const auto firstOwnerRequest = ownership.Begin(
+        true, SPS::Controllers::OwnershipPurpose::switchOwner, false, 30000);
+    Expect(firstOwnerRequest.status == SPS::Controllers::OwnershipBeginStatus::started,
+        "ownership controller starts one staged handoff");
+    Expect(ownership.Begin(
+        true, SPS::Controllers::OwnershipPurpose::switchOwner, false, 30010).status ==
+        SPS::Controllers::OwnershipBeginStatus::alreadyPending,
+        "duplicate ownership target reuses the pending handoff");
+    Expect(ownership.Begin(
+        false, SPS::Controllers::OwnershipPurpose::switchOwner, false, 30010).status ==
+        SPS::Controllers::OwnershipBeginStatus::blocked,
+        "opposite ownership target waits for the pending handoff");
+    const auto ownerCompleted = ownership.Complete(
+        firstOwnerRequest.generation, true, 30300);
+    Expect(ownerCompleted.matched && ownerCompleted.success &&
+        actorContext.physics.known.load() && actorContext.physics.usingCBPC.load() &&
+        actorContext.physics.successes.load() == 1,
+        "completed ownership callback commits the selected owner");
+
+    const auto staleOwnerRequest = ownership.Begin(
+        false, SPS::Controllers::OwnershipPurpose::switchOwner, true, 31000);
+    ownership.ResetPending();
+    Expect(!ownership.Complete(staleOwnerRequest.generation, true, 31100).matched &&
+        actorContext.physics.usingCBPC.load(),
+        "late ownership callback cannot mutate a reset game session");
+    const auto expiringOwnerRequest = ownership.Begin(
+        false, SPS::Controllers::OwnershipPurpose::switchOwner, true, 32000);
+    Expect(!ownership.Expire(32999, 1000).matched,
+        "pending ownership handoff remains active before its timeout");
+    const auto ownerExpired = ownership.Expire(33000, 1000);
+    Expect(ownerExpired.matched && !ownerExpired.success && ownerExpired.softTransition &&
+        !actorContext.physics.pending.load() && actorContext.physics.failures.load() == 1,
+        "timed-out ownership handoff fails without changing the confirmed owner");
+    Expect(!ownership.Complete(expiringOwnerRequest.generation, true, 33100).matched,
+        "callback arriving after ownership timeout is ignored");
 
     SPS::APIControl::ExternalControlRegistry registry;
     SPS::API::PhysicsRequest apiRequest;
