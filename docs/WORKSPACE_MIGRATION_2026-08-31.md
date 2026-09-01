@@ -26,3 +26,9 @@ build dependencies were separated into the sibling `.sps-deps` directory. The
 old root checkout's tracked changes remain recoverable in Git stash
 `4c9b115ddb360f33da1b795bfd046347b4d41cb4`; the in-progress rework change also
 has a safety copy in stash `fc4473cb1634dc40baa0704593633c36fec49c1a`.
+
+The final object-store audit found 60 incomplete `tmp_obj_*` files left by old
+interrupted Git jobs. They were moved intact to the archive's
+`git-temporary-objects` category instead of being deleted. Git now reports zero
+garbage; valid unreachable objects were retained because they may still contain
+recoverable historical work.
