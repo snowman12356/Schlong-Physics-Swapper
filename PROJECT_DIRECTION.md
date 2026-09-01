@@ -4,6 +4,15 @@ This file is the permanent high-level direction for SPS. Read it before planning
 or implementing project changes. Detailed implementation plans belong in the
 `docs` directory and must remain consistent with this direction.
 
+## Permanent update rule
+
+Update this file after every change to the mod. Changes to native or Papyrus
+code, configuration, compatibility components, tests, build/package tooling or
+user-visible behaviour must update the development status and next gate below
+in the same working change whenever practical. Git history and the detailed
+documents in `docs` remain the implementation record; this file must always
+provide an accurate high-level view of where SPS stands and what comes next.
+
 ## Purpose
 
 SPS is becoming a dependable physics-management system for the player and,
@@ -40,8 +49,16 @@ requiring users to repair the state manually.
 - Do not modify an installed Skyrim mod, publish a release, or push public
   changes unless the user explicitly requests it.
 
-## Current development path
+## Current development status
 
-Development continues on `codex/codebase-rework`. Finish the reliability and
-code-health rework, validate it in game, and only then begin managed NPC support.
+Development continues on `codex/codebase-rework`. The workspace migration and
+cleanup are complete, the reproducible native/Papyrus/package workflow passes,
+and the player implementation now has modular decision, runtime, ownership,
+arousal, scene, position, recovery, compatibility and diagnostics boundaries.
 
+The current development package has passed automated builds, core tests and
+package validation but has not been installed or released. The next gate is the
+documented in-game player regression pass covering load/save boundaries,
+arousal changes, soft and erect equipment changes, manual repair, SexLab and
+optional OStim behaviour. Do not begin managed NPC support until that gate has
+passed.
