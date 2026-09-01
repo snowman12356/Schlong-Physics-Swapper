@@ -13,12 +13,14 @@ The active repository contains only SPS-owned source and project metadata:
 - `docs` - architecture, development, compatibility and support records
 - `out` - ignored local DLL and release-package output
 
-CMake intermediates are stored in the per-user `SPSBuild` cache. Large build
-dependencies are stored in the sibling `.sps-deps` directory. Skyrim source
-and API references are read from the sibling `codex-references` library; they
-must not be copied into this repository.
+CMake intermediates are generated in the per-user `SPSBuild` cache and may be
+removed between builds. Required build dependencies are stored in the sibling
+`.sps-deps` directory. Skyrim source and API references are read from the
+sibling `codex-references` library; they must not be copied into this
+repository.
 
 Temporary worktrees, research downloads, extracted mods, repair staging,
 packages and old generated builds do not belong in the repository. The items
-found during the 2026-08-31 migration were preserved in the sibling
-`schlong-smp-workspace-archive-2026-08-31` directory.
+found during the 2026-08-31 migration were audited and temporarily preserved,
+then permanently removed with explicit approval on 2026-09-01 after the active
+source, build dependencies and test installation were verified.

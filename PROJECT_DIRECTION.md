@@ -57,6 +57,10 @@ and the player implementation now has modular decision, runtime, ownership,
 arousal, scene, position, recovery, compatibility and diagnostics boundaries.
 The obsolete OneDrive workspace and reproducible build/output caches have been
 removed, and the reduced external dependency set passes the environment check.
+With explicit approval, the temporary migration archive, pre-install recovery
+copy, migration stashes and unreachable Git objects were also permanently
+removed after verification. Intentional branches, tags, shared references,
+required dependencies and the active test mod remain.
 
 The current 1.9.6 development package has passed automated builds, core tests
 and package validation. On 2026-09-01 it was installed only in the dedicated

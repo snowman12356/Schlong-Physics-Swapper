@@ -20,12 +20,11 @@ from unrelated Skyrim projects. The rework worktree metadata was repaired, its
 uncommitted change was preserved through the handoff, and the branch was made
 the active checkout at the main repository path.
 
-No potentially valuable artifact was deleted. Unrelated work, research,
-packages and generated output were moved to the sibling dated archive. SPS
-build dependencies were separated into the sibling `.sps-deps` directory. The
-old root checkout's tracked changes remain recoverable in Git stash
-`4c9b115ddb360f33da1b795bfd046347b4d41cb4`; the in-progress rework change also
-has a safety copy in stash `fc4473cb1634dc40baa0704593633c36fec49c1a`.
+During the initial migration, no potentially valuable artifact was deleted.
+Unrelated work, research, packages and generated output were moved to the
+sibling dated archive. SPS build dependencies were separated into the sibling
+`.sps-deps` directory. The old root checkout and in-progress rework change were
+temporarily retained in two Git safety stashes.
 
 The final object-store audit found 60 incomplete `tmp_obj_*` files left by old
 interrupted Git jobs. They were moved intact to the archive's
@@ -47,7 +46,9 @@ source/tooling and the pinned CMake required by the supported build; duplicate
 package trees, buildtrees, source archives, partial downloads and unused helper
 tools were removed. `Test-Environment.ps1` passed after this reduction.
 
-The broad dated archive and pre-install mod backup remain outside the active
-workspace pending separate explicit approval, because they contain unrelated
-historical task material and the only recovery copy of the former merged test
-installation respectively.
+After the concrete recovery risks were reported, the user separately confirmed
+permanent removal of the broad dated archive, the pre-install mod backup, both
+migration stashes and unreachable historical Git objects. Named branches,
+tags, remote-tracking refs, the current source and the clean active test mod
+were retained. Git garbage collection reduced unreachable notices from 2,061
+to zero and left one pack with no loose objects or garbage.
