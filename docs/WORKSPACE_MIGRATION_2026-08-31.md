@@ -10,8 +10,8 @@ recursively before cleanup, excluding Git's internal object database.
 - Same-path content differences: 0
 - New-only files: 40,860
 
-Nothing important failed to migrate. The old workspace is an exact retained
-subset of the new workspace and remains untouched as a migration backup.
+Nothing important failed to migrate. The old workspace was an exact retained
+subset of the new workspace during the migration audit.
 
 The new-only material included the intact Git repository, the
 `codex/codebase-rework` worktree, its uncommitted `ActorContext` expansion,
@@ -32,3 +32,22 @@ interrupted Git jobs. They were moved intact to the archive's
 `git-temporary-objects` category instead of being deleted. Git now reports zero
 garbage; valid unreachable objects were retained because they may still contain
 recoverable historical work.
+
+## Follow-up cleanup - 2026-09-01
+
+After the active repository, test installation and preservation copies were
+checked again, the obsolete OneDrive workspace was permanently removed at the
+user's request. Its `.git` directory was empty, it contained no unique refs or
+commits, and its 9,088 non-Git files had already been accounted for by the
+migration inventory.
+
+Ignored `out` artifacts and the per-user CMake/MSBuild cache were also removed.
+The external vcpkg dependency was reduced to the installed libraries, vcpkg
+source/tooling and the pinned CMake required by the supported build; duplicate
+package trees, buildtrees, source archives, partial downloads and unused helper
+tools were removed. `Test-Environment.ps1` passed after this reduction.
+
+The broad dated archive and pre-install mod backup remain outside the active
+workspace pending separate explicit approval, because they contain unrelated
+historical task material and the only recovery copy of the former merged test
+installation respectively.
