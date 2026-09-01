@@ -92,15 +92,17 @@ current development tree now has these boundaries:
   A queued call is no longer published as the selected owner.
 - Phase 3's player state extraction is complete enough for its regression gate.
   Arousal and scene controllers remain intact; position policy, animation state,
-  bounce/failure recovery and actor-scoped recovery resets now have controller
-  APIs and snapshots. Skyrim event sequencing remains in the plugin entry point
-  so the already-working load, armour and scene order is not rewritten before
-  in-game validation.
+  bounce/failure recovery, due-timer claims and actor-scoped recovery resets now
+  have controller APIs and snapshots. The claims are tested as one-shot actions
+  and retain queued soft/erect work until ownership and intent agree. Skyrim
+  event actions remain in the plugin entry point so the already-working load,
+  armour and scene order is not rewritten before in-game validation.
 - Phase 4 has a central activity log, diagnostics scanner and support-report
-  formatter. Troubleshooting and advanced UI paths consume immutable ownership,
-  position and recovery snapshots and send actions through existing command
-  functions. Splitting the remaining ImGui page layout into separate files is
-  cosmetic and is not a prerequisite for the player regression gate.
+  formatter. Home, appearance, troubleshooting and advanced UI paths consume
+  immutable ownership, position and recovery snapshots and send actions through
+  existing command functions. Splitting the remaining ImGui page layout into
+  separate files is cosmetic and is not a prerequisite for the player
+  regression gate.
 - Phase 5 has only the reusable per-actor context and tested controllers. The
   player (`0x14`) remains the sole managed context. NPC discovery, persistence
   and runtime management are intentionally not implemented until every player

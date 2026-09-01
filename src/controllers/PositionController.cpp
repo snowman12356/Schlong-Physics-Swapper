@@ -154,6 +154,30 @@ void PositionController::CompleteRelaxationFallback(
     }
 }
 
+bool PositionController::ClaimSettle(
+    std::int64_t now, bool usingCBPC, bool targetWantsCBPC)
+{
+    return usingCBPC && targetWantsCBPC && ClaimIfDue(state_.settleDueMs, now);
+}
+
+bool PositionController::ClaimConfirmation(
+    std::int64_t now, bool usingCBPC, bool targetWantsCBPC)
+{
+    return usingCBPC && targetWantsCBPC && ClaimIfDue(state_.confirmationDueMs, now);
+}
+
+bool PositionController::ClaimIfDue(
+    std::atomic<std::int64_t>& dueMs, std::int64_t now)
+{
+    auto due = dueMs.load();
+    while (due > 0 && now >= due) {
+        if (dueMs.compare_exchange_weak(due, 0)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 PositionSnapshot PositionController::Read() const
 {
     return {

@@ -1617,9 +1617,7 @@ void Tick() {
         Record("Physics test finished; normal control resumed");
     }
 
-    auto postSwitchDue = playerContext.recovery.postSwitchVerificationDueMs.load();
-    if (postSwitchDue > 0 && now >= postSwitchDue &&
-        playerContext.recovery.postSwitchVerificationDueMs.compare_exchange_strong(postSwitchDue, 0)) {
+    if (recoveryController.ClaimPostSwitchVerification(now)) {
         if (ConfirmCurrentPhysicsOwner("the completed physics switch")) {
             playerContext.recovery.postSwitchVerificationUntilMs.store(0);
         } else if (now < playerContext.recovery.postSwitchVerificationUntilMs.load()) {
@@ -1636,9 +1634,7 @@ void Tick() {
         RefreshDiagnostics();
     }
 
-    auto ownerRepairDue = playerContext.recovery.externalOwnerRepairDueMs.load();
-    if (ownerRepairDue > 0 && now >= ownerRepairDue &&
-        playerContext.recovery.externalOwnerRepairDueMs.compare_exchange_strong(ownerRepairDue, 0)) {
+    if (recoveryController.ClaimExternalOwnerRepair(now)) {
         if (ConfirmCurrentPhysicsOwner("an external physics reset")) {
             playerContext.recovery.externalOwnerRepairUntilMs.store(0);
         } else if (now < playerContext.recovery.externalOwnerRepairUntilMs.load()) {
@@ -1649,15 +1645,11 @@ void Tick() {
         }
     }
 
-    auto resetDue = playerContext.recovery.loadSmpResetDueMs.load();
-    if (resetDue > 0 && now >= resetDue &&
-        playerContext.recovery.loadSmpResetDueMs.compare_exchange_strong(resetDue, 0)) {
+    if (recoveryController.ClaimLoadSmpReset(now)) {
         RunLoadSMPReset();
     }
 
-    auto resetRestoreDue = playerContext.recovery.loadSmpResetRestoreDueMs.load();
-    if (resetRestoreDue > 0 && now >= resetRestoreDue &&
-        playerContext.recovery.loadSmpResetRestoreDueMs.compare_exchange_strong(resetRestoreDue, 0)) {
+    if (recoveryController.ClaimLoadSmpResetRestore(now)) {
         // A full FSMP rebuild can restore the XML's default dynamic state.
         // Reapply the current arousal/scene decision and position exactly once.
         playerContext.position.appliedBend.store(-1);
@@ -1669,48 +1661,42 @@ void Tick() {
         Record("Physics state restored after the delayed SMP reset");
     }
 
-    auto softHandoffResetDue = playerContext.recovery.softHandoffResetDueMs.load();
-    if (!playerContext.physics.usingCBPC.load() && softHandoffResetDue > 0 && now >= softHandoffResetDue &&
-        playerContext.recovery.softHandoffResetDueMs.compare_exchange_strong(softHandoffResetDue, 0)) {
+    if (recoveryController.ClaimSoftHandoffReset(
+            now, playerContext.physics.usingCBPC.load())) {
         RunSoftHandoffSMPReset();
     }
 
-    auto softHandoffRestoreDue = playerContext.recovery.softHandoffResetRestoreDueMs.load();
-    if (!playerContext.physics.usingCBPC.load() && softHandoffRestoreDue > 0 && now >= softHandoffRestoreDue &&
-        playerContext.recovery.softHandoffResetRestoreDueMs.compare_exchange_strong(softHandoffRestoreDue, 0)) {
+    if (recoveryController.ClaimSoftHandoffResetRestore(
+            now, playerContext.physics.usingCBPC.load())) {
         playerContext.position.appliedBend.store(-1);
         ConfirmCurrentPhysicsOwner("the completed soft handoff refresh");
         playerContext.recovery.softConfirmationDueMs.store(now + 250);
         Record("Soft physics restored after the handoff refresh");
     }
 
-    auto softAngleDue = playerContext.recovery.softAngleRefreshDueMs.load();
-    if (!playerContext.physics.usingCBPC.load() && softAngleDue > 0 && now >= softAngleDue &&
-        playerContext.recovery.softAngleRefreshDueMs.compare_exchange_strong(softAngleDue, 0)) {
+    if (recoveryController.ClaimSoftAngleRefresh(
+            now, playerContext.physics.usingCBPC.load())) {
         RunSoftAngleRefresh();
     }
 
-    auto softAngleRestoreDue = playerContext.recovery.softAngleRefreshRestoreDueMs.load();
-    if (!playerContext.physics.usingCBPC.load() && softAngleRestoreDue > 0 && now >= softAngleRestoreDue &&
-        playerContext.recovery.softAngleRefreshRestoreDueMs.compare_exchange_strong(softAngleRestoreDue, 0)) {
+    if (recoveryController.ClaimSoftAngleRefreshRestore(
+            now, playerContext.physics.usingCBPC.load())) {
         playerContext.position.appliedBend.store(-1);
         ApplyRequestedSoftBend(true, true);
         playerContext.recovery.softConfirmationDueMs.store(now + 250);
         Record("Soft angle restored after the SMP refresh");
     }
 
-    auto nodeResetRestoreDue = playerContext.recovery.nodeSmpResetRestoreDueMs.load();
-    if (!playerContext.physics.usingCBPC.load() && nodeResetRestoreDue > 0 && now >= nodeResetRestoreDue &&
-        playerContext.recovery.nodeSmpResetRestoreDueMs.compare_exchange_strong(nodeResetRestoreDue, 0)) {
+    if (recoveryController.ClaimNodeSmpResetRestore(
+            now, playerContext.physics.usingCBPC.load())) {
         playerContext.position.appliedBend.store(-1);
         ConfirmCurrentPhysicsOwner("the completed player mesh refresh");
         playerContext.recovery.softConfirmationDueMs.store(now + 250);
         Record("Soft physics restored after the player mesh change");
     }
 
-    auto nodeCBPCDue = playerContext.recovery.nodeCbpcReacquireDueMs.load();
-    if (playerContext.physics.usingCBPC.load() && nodeCBPCDue > 0 && now >= nodeCBPCDue &&
-        playerContext.recovery.nodeCbpcReacquireDueMs.compare_exchange_strong(nodeCBPCDue, 0)) {
+    if (recoveryController.ClaimNodeCbpcReacquire(
+            now, playerContext.physics.usingCBPC.load())) {
         if (ConfirmCurrentPhysicsOwner("the rebuilt player mesh")) {
             playerContext.recovery.nodeCbpcReacquireUntilMs.store(0);
             playerContext.position.appliedBend.store(-1);
@@ -1727,9 +1713,8 @@ void Tick() {
         }
     }
 
-    auto softDue = playerContext.recovery.softConfirmationDueMs.load();
-    if (!playerContext.physics.usingCBPC.load() && softDue > 0 && now >= softDue &&
-        playerContext.recovery.softConfirmationDueMs.compare_exchange_strong(softDue, 0)) {
+    if (recoveryController.ClaimSoftConfirmation(
+            now, playerContext.physics.usingCBPC.load())) {
         auto until = playerContext.recovery.softConfirmationUntilMs.load();
         if (until == 0) {
             until = now + 10000;
@@ -1745,9 +1730,8 @@ void Tick() {
         }
     }
 
-    auto cbpcDue = playerContext.recovery.cbpcConfirmationDueMs.load();
-    if (playerContext.physics.usingCBPC.load() && cbpcDue > 0 && now >= cbpcDue &&
-        playerContext.recovery.cbpcConfirmationDueMs.compare_exchange_strong(cbpcDue, 0)) {
+    if (recoveryController.ClaimCbpcConfirmation(
+            now, playerContext.physics.usingCBPC.load())) {
         auto until = playerContext.recovery.cbpcConfirmationUntilMs.load();
         if (until == 0) {
             until = now + 10000;
@@ -1781,9 +1765,8 @@ void Tick() {
     }
 
     bool settledNow = false;
-    auto settleDue = playerContext.position.settleDueMs.load();
-    if (playerContext.physics.usingCBPC.load() && targetStillWantsCBPC && settleDue > 0 && now >= settleDue &&
-        playerContext.position.settleDueMs.compare_exchange_strong(settleDue, 0)) {
+    if (positionController.ClaimSettle(
+            now, playerContext.physics.usingCBPC.load(), targetStillWantsCBPC)) {
         const bool timedGradual = copy.gradualErection &&
             (!copy.arousalBasedErection || RandomErectionActive());
         if (timedGradual && !AnySceneHasPriority(copy) && !PPAOwnsPosition())
@@ -1796,9 +1779,8 @@ void Tick() {
     // CBPC starts through Papyrus and may finish after the first bend request.
     // Confirm the final value once, after it has settled, without replaying an
     // animation or creating the old continuous repair loop.
-    auto confirmDue = playerContext.position.confirmationDueMs.load();
-    if (playerContext.physics.usingCBPC.load() && targetStillWantsCBPC && confirmDue > 0 && now >= confirmDue &&
-        playerContext.position.confirmationDueMs.compare_exchange_strong(confirmDue, 0)) {
+    if (positionController.ClaimConfirmation(
+            now, playerContext.physics.usingCBPC.load(), targetStillWantsCBPC)) {
         ApplyRequestedBend(true, true, true);
     }
 
@@ -1816,8 +1798,7 @@ void Tick() {
             ApplyRequestedBend(true, copy.animatePosition, true);
     }
 
-    auto nodeDue = playerContext.recovery.nodeRefreshDueMs.load();
-    if (nodeDue > 0 && now >= nodeDue && playerContext.recovery.nodeRefreshDueMs.compare_exchange_strong(nodeDue, 0)) {
+    if (recoveryController.ClaimNodeRefresh(now)) {
         // A real later rebuild may discard the bend, but it does not justify a
         // state decision. Re-confirm the existing owner once, then restore only
         // the position data that the rebuilt skeleton may have discarded.
@@ -1855,9 +1836,7 @@ void Tick() {
         playerContext.recovery.nodeRefreshFollowupDueMs.store(now + 1500);
     }
 
-    auto nodeFollowupDue = playerContext.recovery.nodeRefreshFollowupDueMs.load();
-    if (nodeFollowupDue > 0 && now >= nodeFollowupDue &&
-        playerContext.recovery.nodeRefreshFollowupDueMs.compare_exchange_strong(nodeFollowupDue, 0)) {
+    if (recoveryController.ClaimNodeRefreshFollowup(now)) {
         // Some armour managers rebuild the genital node twice. This quiet
         // second confirmation catches the late rebuild without another reset.
         ConfirmCurrentPhysicsOwner("the completed equipment change");
@@ -1868,9 +1847,7 @@ void Tick() {
             ApplyRequestedSoftBend(true, false);
     }
 
-    auto erectReplayDue = playerContext.recovery.erectMeshReplayDueMs.load();
-    if (erectReplayDue > 0 && now >= erectReplayDue &&
-        playerContext.recovery.erectMeshReplayDueMs.compare_exchange_strong(erectReplayDue, 0)) {
+    if (recoveryController.ClaimErectMeshReplay(now)) {
         // Armour and schlong changes can replace the live skeleton after both
         // the CBPC handoff and the first bend request have already succeeded.
         // Replay the saved angle once after the replacement mesh is stable.
@@ -2032,6 +2009,7 @@ void __stdcall RenderMain() {
     Settings copy;
     { std::scoped_lock lock(settingsLock); copy = settings; }
     const Settings previous = copy;
+    const auto ownership = ownershipController.Read();
     bool changed = false;
 
     Diagnostics d;
@@ -2043,11 +2021,11 @@ void __stdcall RenderMain() {
 
     SectionHeading("CURRENT STATUS");
     StatusLine("SPS", !healthChecked ? "Checking setup..." :
-        (coreReady ? (playerContext.physics.known.load() ? "Ready" : "Waiting for the player") : "Needs attention"),
-        !healthChecked || !playerContext.physics.known.load() ? 1 : (coreReady ? 2 : 0));
-    StatusLine("Physics", playerContext.physics.known.load() ?
-        (playerContext.physics.usingCBPC.load() ? "Erect (CBPC)" : "Soft (SMP)") : "Not decided yet",
-        playerContext.physics.known.load() ? 2 : 1);
+        (coreReady ? (ownership.known ? "Ready" : "Waiting for the player") : "Needs attention"),
+        !healthChecked || !ownership.known ? 1 : (coreReady ? 2 : 0));
+    StatusLine("Physics", ownership.known ?
+        (ownership.usingCBPC ? "Erect (CBPC)" : "Soft (SMP)") : "Not decided yet",
+        ownership.known ? 2 : 1);
     const char* modeStatus[]{ "Automatic - follows arousal", "Always soft (SMP)", "Always erect (CBPC)" };
     StatusLine("Mode", modeStatus[std::clamp(copy.mode, 0, 2)], copy.enabled ? 2 : 1);
     if (copy.mode == 0) {
@@ -2111,7 +2089,7 @@ void __stdcall RenderMain() {
     else
         ImGuiMCP::TextWrapped("Custom soft angles need SOS AE-NG. Legacy SOS and TNG keep their normal floppy pose.");
     ImGuiMCP::BeginDisabled(!copy.positionControl || !copy.flaccidAngleControl ||
-        !softAngleAvailable || !playerContext.physics.known.load() || playerContext.physics.usingCBPC.load());
+        !softAngleAvailable || !ownership.known || ownership.usingCBPC);
     if (ImGuiMCP::Button("Refresh soft angle now")) {
         ResetPositionRecovery();
         playerContext.position.appliedBend.store(-1);
@@ -2125,7 +2103,7 @@ void __stdcall RenderMain() {
     changed |= ImGuiMCP::SliderInt("Erect angle", &copy.erectBend, 0, 20);
     ImGuiMCP::EndDisabled();
     ImGuiMCP::TextWrapped("0 points straight out. 20 is the highest position.");
-    ImGuiMCP::BeginDisabled(!copy.positionControl || !playerContext.physics.known.load() || !playerContext.physics.usingCBPC.load());
+    ImGuiMCP::BeginDisabled(!copy.positionControl || !ownership.known || !ownership.usingCBPC);
     if (ImGuiMCP::Button("Apply erect angle now")) {
         ResetPositionRecovery();
         playerContext.position.appliedBend.store(-1);
@@ -2149,6 +2127,7 @@ void __stdcall RenderLooks() {
     Settings copy;
     { std::scoped_lock lock(settingsLock); copy = settings; }
     const Settings previous = copy;
+    const auto ownership = ownershipController.Read();
     bool changed = false;
 
     PageHeading("APPEARANCE", "Control how SPS transitions between the soft and erect positions selected on Home.");
@@ -2229,7 +2208,7 @@ void __stdcall RenderLooks() {
             StatusLine("Current status", "Waiting for a random interval", 1);
 
         const bool randomTestBlocked = !copy.randomErections || copy.mode != 0 ||
-            AnySceneHasPriority(copy) || ActiveAPIRequest().has_value() || playerContext.physics.usingCBPC.load();
+            AnySceneHasPriority(copy) || ActiveAPIRequest().has_value() || ownership.usingCBPC;
         ImGuiMCP::BeginDisabled(randomTestBlocked);
         if (ImGuiMCP::Button("Test now")) {
             playerContext.spontaneous.randomNextMs.store(0);

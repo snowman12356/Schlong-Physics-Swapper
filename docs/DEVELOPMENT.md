@@ -2,6 +2,9 @@
 
 The repository owns the build workflow. A global CMake version, a permanent
 drive mapping, and a Visual Studio developer prompt are not required.
+Run the commands below from PowerShell 7.4 or newer (`pwsh`). The environment
+check reports an older shell as a blocking problem, and the local build refuses
+to start under legacy Windows PowerShell with a clear version requirement.
 
 ## Check the machine
 

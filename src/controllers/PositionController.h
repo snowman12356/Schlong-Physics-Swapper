@@ -51,9 +51,17 @@ public:
     void CompleteRelaxationFallback(
         int targetBend, bool accepted, std::int64_t now);
 
+    [[nodiscard]] bool ClaimSettle(
+        std::int64_t now, bool usingCBPC, bool targetWantsCBPC);
+    [[nodiscard]] bool ClaimConfirmation(
+        std::int64_t now, bool usingCBPC, bool targetWantsCBPC);
+
     [[nodiscard]] PositionSnapshot Read() const;
 
 private:
+    [[nodiscard]] static bool ClaimIfDue(
+        std::atomic<std::int64_t>& dueMs, std::int64_t now);
+
     PositionState& state_;
 };
 

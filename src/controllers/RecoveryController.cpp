@@ -49,6 +49,101 @@ void RecoveryController::ScheduleExternalOwnerRepair(
     context_.recovery.externalOwnerRepairUntilMs.store(due + 10000);
 }
 
+bool RecoveryController::ClaimPostSwitchVerification(std::int64_t now)
+{
+    return ClaimIfDue(context_.recovery.postSwitchVerificationDueMs, now);
+}
+
+bool RecoveryController::ClaimExternalOwnerRepair(std::int64_t now)
+{
+    return ClaimIfDue(context_.recovery.externalOwnerRepairDueMs, now);
+}
+
+bool RecoveryController::ClaimLoadSmpReset(std::int64_t now)
+{
+    return ClaimIfDue(context_.recovery.loadSmpResetDueMs, now);
+}
+
+bool RecoveryController::ClaimLoadSmpResetRestore(std::int64_t now)
+{
+    return ClaimIfDue(context_.recovery.loadSmpResetRestoreDueMs, now);
+}
+
+bool RecoveryController::ClaimSoftHandoffReset(
+    std::int64_t now, bool usingCBPC)
+{
+    return !usingCBPC && ClaimIfDue(context_.recovery.softHandoffResetDueMs, now);
+}
+
+bool RecoveryController::ClaimSoftHandoffResetRestore(
+    std::int64_t now, bool usingCBPC)
+{
+    return !usingCBPC && ClaimIfDue(context_.recovery.softHandoffResetRestoreDueMs, now);
+}
+
+bool RecoveryController::ClaimSoftAngleRefresh(
+    std::int64_t now, bool usingCBPC)
+{
+    return !usingCBPC && ClaimIfDue(context_.recovery.softAngleRefreshDueMs, now);
+}
+
+bool RecoveryController::ClaimSoftAngleRefreshRestore(
+    std::int64_t now, bool usingCBPC)
+{
+    return !usingCBPC && ClaimIfDue(context_.recovery.softAngleRefreshRestoreDueMs, now);
+}
+
+bool RecoveryController::ClaimNodeSmpResetRestore(
+    std::int64_t now, bool usingCBPC)
+{
+    return !usingCBPC && ClaimIfDue(context_.recovery.nodeSmpResetRestoreDueMs, now);
+}
+
+bool RecoveryController::ClaimNodeCbpcReacquire(
+    std::int64_t now, bool usingCBPC)
+{
+    return usingCBPC && ClaimIfDue(context_.recovery.nodeCbpcReacquireDueMs, now);
+}
+
+bool RecoveryController::ClaimSoftConfirmation(
+    std::int64_t now, bool usingCBPC)
+{
+    return !usingCBPC && ClaimIfDue(context_.recovery.softConfirmationDueMs, now);
+}
+
+bool RecoveryController::ClaimCbpcConfirmation(
+    std::int64_t now, bool usingCBPC)
+{
+    return usingCBPC && ClaimIfDue(context_.recovery.cbpcConfirmationDueMs, now);
+}
+
+bool RecoveryController::ClaimNodeRefresh(std::int64_t now)
+{
+    return ClaimIfDue(context_.recovery.nodeRefreshDueMs, now);
+}
+
+bool RecoveryController::ClaimNodeRefreshFollowup(std::int64_t now)
+{
+    return ClaimIfDue(context_.recovery.nodeRefreshFollowupDueMs, now);
+}
+
+bool RecoveryController::ClaimErectMeshReplay(std::int64_t now)
+{
+    return ClaimIfDue(context_.recovery.erectMeshReplayDueMs, now);
+}
+
+bool RecoveryController::ClaimIfDue(
+    std::atomic<std::int64_t>& dueMs, std::int64_t now)
+{
+    auto due = dueMs.load();
+    while (due > 0 && now >= due) {
+        if (dueMs.compare_exchange_weak(due, 0)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 RecoverySnapshot RecoveryController::Read() const
 {
     return {

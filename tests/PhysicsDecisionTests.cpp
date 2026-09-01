@@ -250,6 +250,46 @@ int main()
     Expect(actorContext.recovery.externalOwnerRepairDueMs.load() == 20100 &&
         actorContext.recovery.externalOwnerRepairUntilMs.load() == 30100,
         "external owner repair scheduling keeps bounded delays");
+    Expect(!recovery.ClaimExternalOwnerRepair(20099) &&
+        actorContext.recovery.externalOwnerRepairDueMs.load() == 20100,
+        "recovery timers remain queued before their due time");
+    Expect(recovery.ClaimExternalOwnerRepair(20100) &&
+        actorContext.recovery.externalOwnerRepairDueMs.load() == 0 &&
+        !recovery.ClaimExternalOwnerRepair(20100),
+        "a due recovery timer can be claimed exactly once");
+
+    actorContext.recovery.softConfirmationDueMs.store(21000);
+    Expect(!recovery.ClaimSoftConfirmation(22000, true) &&
+        actorContext.recovery.softConfirmationDueMs.load() == 21000,
+        "soft confirmation remains queued while CBPC owns the actor");
+    Expect(recovery.ClaimSoftConfirmation(22000, false) &&
+        actorContext.recovery.softConfirmationDueMs.load() == 0,
+        "soft confirmation is claimed after SMP becomes the owner");
+
+    actorContext.recovery.cbpcConfirmationDueMs.store(23000);
+    Expect(!recovery.ClaimCbpcConfirmation(24000, false) &&
+        actorContext.recovery.cbpcConfirmationDueMs.load() == 23000,
+        "CBPC confirmation remains queued while SMP owns the actor");
+    Expect(recovery.ClaimCbpcConfirmation(24000, true) &&
+        actorContext.recovery.cbpcConfirmationDueMs.load() == 0,
+        "CBPC confirmation is claimed after CBPC becomes the owner");
+
+    actorContext.position.settleDueMs.store(25000);
+    Expect(!position.ClaimSettle(26000, false, true) &&
+        !position.ClaimSettle(26000, true, false) &&
+        actorContext.position.settleDueMs.load() == 25000,
+        "position settle remains queued until ownership and intent agree");
+    Expect(position.ClaimSettle(26000, true, true) &&
+        actorContext.position.settleDueMs.load() == 0,
+        "position settle is claimed once ownership and intent agree");
+
+    actorContext.position.confirmationDueMs.store(27000);
+    Expect(!position.ClaimConfirmation(26999, true, true) &&
+        actorContext.position.confirmationDueMs.load() == 27000,
+        "position confirmation remains queued before its due time");
+    Expect(position.ClaimConfirmation(27000, true, true) &&
+        actorContext.position.confirmationDueMs.load() == 0,
+        "position confirmation is claimed exactly once");
 
     SPS::Controllers::PhysicsOwnershipController ownership(actorContext.physics);
     const auto firstOwnerRequest = ownership.Begin(
