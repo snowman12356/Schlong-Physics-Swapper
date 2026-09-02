@@ -63,6 +63,21 @@ void AddSummary(std::string& summary, const fs::path& path, int count)
 
 }
 
+int CountPlayerBones()
+{
+    int found = 0;
+    if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+        if (auto* root = player->Get3D()) {
+            for (auto bone : kBones) {
+                if (root->GetObjectByName(RE::BSFixedString(bone))) {
+                    ++found;
+                }
+            }
+        }
+    }
+    return found;
+}
+
 Snapshot Scan(std::int64_t nowMs)
 {
     using namespace SPS::Runtime;
@@ -93,15 +108,7 @@ Snapshot Scan(std::int64_t nowMs)
         ModuleLoaded(L"AutoPhysicsReset.dll") || ModuleLoaded(L"AutoPhysicsResetNG.dll");
     result.crashLoggerLoaded = ModuleLoaded(L"CrashLogger.dll");
 
-    if (auto* player = RE::PlayerCharacter::GetSingleton()) {
-        if (auto* root = player->Get3D()) {
-            for (auto bone : kBones) {
-                if (root->GetObjectByName(RE::BSFixedString(bone))) {
-                    ++result.playerBonesFound;
-                }
-            }
-        }
-    }
+    result.playerBonesFound = CountPlayerBones();
 
     const std::array<std::string, 6> boneKeys{
         "npc genitals01 [gen01]", "npc genitals02 [gen02]", "npc genitals03 [gen03]",

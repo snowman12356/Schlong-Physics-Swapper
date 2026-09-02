@@ -300,6 +300,8 @@ actual result, and short reproduction steps. See [SUPPORT.md](docs/SUPPORT.md).
   consuming its update value directly and pausing SPS work in the Journal/MCM.
 - Corrected that native OSL API boundary to pass the player Actor pointer its
   runtime implementation requires, preventing a startup arousal-query crash.
+- Refreshes the live six-bone compatibility result after the player mesh
+  settles, so loading a save no longer requires a manual physics repair.
 - Moved the SexLab active-player query behind the same safe bridge pattern.
 - Versioned the completed modular rework and compatibility fixes as 2.0.0.
 

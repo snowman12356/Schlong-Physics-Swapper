@@ -69,20 +69,26 @@ uses OSL's native arousal export and update value, and pauses SPS background
 work while the Journal/MCM is open. A crash found in the first 2.0.0 test build
 was traced to OSL's documentation describing `GetArousalExt` as FormID-based
 even though its runtime ABI requires `RE::Actor*`; SPS now passes the actual
-player pointer and rejects null actors. The corrected development DLL SHA-256
-is `9B04B0DA1C3F94239F78CF574A660E555EAEAD2584442949039C962791C20896` and the
-corrected package SHA-256 is
-`E41A482EF3385542FFE56F417E0869B9FB02616D83FD636D8A1E2485A6184050`.
+player pointer and rejects null actors. The live six-bone result is now
+refreshed cheaply after player mesh events settle, fixing the stale initial
+post-load check without repeating the full filesystem compatibility scan. The
+latest development DLL SHA-256 is
+`74CBABCBA94B558B4C979E19DFC2F969ABAEF92ADF26257AAB06811E7823DD56` and the
+latest package SHA-256 is
+`AF629F8E9E00A68E2AF1883FC9B2D4E0A9258B309B76720D9F4D5E05F1C50DBF`.
 
 On 2026-09-02 the validated 2.0.0 files were installed only in the dedicated
 MO2 test mod at `D:\Modding\mods\Schlong Physics Swapper`; they have not been
 released. The clean test install uses OSL Aroused 2.9.3 support, omits the
 optional OStim and legacy OSL bridges, and preserves the user's existing SPS
 INI and MO2 metadata. The corrected OSL ABI build replaced the initial test
-DLL on 2026-09-02, and all 18 deployed files match the validated package stage.
+DLL on 2026-09-02. The newer automatic post-load bone-detection build was then
+installed after Skyrim closed; all 18 deployed files match the validated
+package, while the existing INI and MO2 metadata remain unchanged.
 
-The next gate is an explicit 2.0.0 test-mod install followed by the documented
-in-game player regression pass. It must first confirm that the corrected OSL
+The next gate is the documented in-game player regression pass. It must first
+confirm that a compatible six-bone schlong is recognised automatically after
+loading without using Repair current physics, and that the corrected OSL
 2.9.3 query runs without the `OSLAroused.dll` access violation, then confirm
 that OSL Aroused's MCM opens normally, TNG no longer logs
 `Debug.SendAnimationEvent` argument errors, and SOS AE bend changes no longer

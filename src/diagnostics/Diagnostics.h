@@ -39,6 +39,7 @@ struct Snapshot {
     std::int64_t checkedAtMs{ 0 };
 };
 
+int CountPlayerBones();
 Snapshot Scan(std::int64_t nowMs);
 
 }

@@ -86,6 +86,7 @@ SPS::Controllers::RecoveryController recoveryController{ playerContext };
 SPS::Controllers::SceneController sceneController;
 std::atomic<bool> polling{ false };
 std::atomic<std::int64_t> diagnosticsRefreshDueMs{ 0 };
+std::atomic<std::int64_t> playerBonesRefreshDueMs{ 0 };
 std::atomic<std::int64_t> manualPhysicsTestUntilMs{ 0 };
 std::atomic<int> activeManualPhysicsTest{ -1 };  // -1 none, 0 SMP, 1 CBPC
 std::atomic<int> pendingQuickAction{ -1 };       // -1 none, 0 SMP test, 1 CBPC test, 2 repair
@@ -110,6 +111,7 @@ void QuerySexLab();
 void QuerySexLabRole();
 void QueryOStimRole();
 void RefreshDiagnostics();
+void RefreshPlayerBoneDiagnostics();
 void Save();
 bool PapyrusReadyForDispatch();
 bool SexLabHasPriority(const Settings& copy);
@@ -1634,6 +1636,12 @@ void Tick() {
         RefreshDiagnostics();
     }
 
+    auto playerBonesDue = playerBonesRefreshDueMs.load();
+    if (playerBonesDue > 0 && now >= playerBonesDue &&
+        playerBonesRefreshDueMs.compare_exchange_strong(playerBonesDue, 0)) {
+        RefreshPlayerBoneDiagnostics();
+    }
+
     if (recoveryController.ClaimExternalOwnerRepair(now)) {
         if (ConfirmCurrentPhysicsOwner("an external physics reset")) {
             playerContext.recovery.externalOwnerRepairUntilMs.store(0);
@@ -1883,6 +1891,18 @@ void RefreshDiagnostics() {
         Record("SPS-003: Faster HDT-SMP is too old for SPS. Update to FSMP 4.0.1 or newer.", true);
     else if (missingFsmpBridge && !fsmpCompatibilityWarningShown.exchange(true))
         Record("SPS-021: The SPS FSMP bridge is missing. Reinstall SPS and let it replace the previous version.", true);
+}
+
+void RefreshPlayerBoneDiagnostics() {
+    const int found = SPS::Diagnostics::CountPlayerBones();
+    int previous = 0;
+    {
+        std::scoped_lock lock(diagnosticsLock);
+        previous = diagnostics.playerBonesFound;
+        diagnostics.playerBonesFound = found;
+    }
+    if (previous != found)
+        Record(fmt::format("Compatible schlong check updated: {}/6 live physics bones found", found));
 }
 
 void StatusLine(const char* label, const char* status, int level) {
@@ -2887,9 +2907,12 @@ public:
         const auto now = NowMs();
         bool enabled = false;
         { std::scoped_lock lock(settingsLock); enabled = settings.equipmentChangeRecovery; }
-        if (enabled && event && event->reference == RE::PlayerCharacter::GetSingleton() &&
-            now >= playerContext.recovery.ignoreNodeEventsUntilMs.load())
-            playerContext.recovery.nodeRefreshDueMs.store(now + 750);
+        if (event && event->reference == RE::PlayerCharacter::GetSingleton() &&
+            now >= playerContext.recovery.ignoreNodeEventsUntilMs.load()) {
+            playerBonesRefreshDueMs.store(now + 1500);
+            if (enabled)
+                playerContext.recovery.nodeRefreshDueMs.store(now + 750);
+        }
         return RE::BSEventNotifyControl::kContinue;
     }
 };
@@ -2907,6 +2930,7 @@ public:
 
         bool enabled = false;
         { std::scoped_lock lock(settingsLock); enabled = settings.equipmentChangeRecovery; }
+        playerBonesRefreshDueMs.store(NowMs() + 1500);
         if (enabled) {
             // Some armour managers replace the genital mesh without emitting
             // an SKSE NiNode update. Debounce paired equip/unequip events and
@@ -2947,6 +2971,7 @@ void ResetTransientTimers() {
     ownershipController.ResetPending();
     recoveryController.ResetTransient();
     diagnosticsRefreshDueMs.store(0);
+    playerBonesRefreshDueMs.store(0);
     manualPhysicsTestUntilMs.store(0);
     activeManualPhysicsTest.store(-1);
     pendingQuickAction.store(-1);
