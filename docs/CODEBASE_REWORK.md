@@ -90,6 +90,9 @@ current development tree now has these boundaries:
   ordered handoff stack completes, and `PhysicsOwnershipController` keeps the
   queued/completed/failed transaction, timeout and stale-callback generation.
   A queued call is no longer published as the selected owner.
+  The 2.0.0 boundary hardening also resolves position, SexLab and legacy OSL
+  player references inside Papyrus bridges; current OSL uses its native export.
+  SPS pauses background dispatch while the Journal/MCM is open.
 - Phase 3's player state extraction is complete enough for its regression gate.
   Arousal and scene controllers remain intact; position policy, animation state,
   bounce/failure recovery, due-timer claims and actor-scoped recovery resets now

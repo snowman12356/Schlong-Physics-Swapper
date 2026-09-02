@@ -19,6 +19,11 @@ $requiredFiles = @(
     'SKSE\Plugins\CBPCMasterConfig_ZZZ_SchlongPhysicsSwapper.txt',
     'SKSE\Plugins\CBPConfig_ZZZ_SchlongPhysicsSwapper.txt',
     'Scripts\SPS_SexLabBridge.pex',
+    'Source\Scripts\SPS_SexLabBridge.psc',
+    'Scripts\SPS_PositionBridge.pex',
+    'Source\Scripts\SPS_PositionBridge.psc',
+    'Scripts\SPS_ArousalBridge.pex',
+    'Source\Scripts\SPS_ArousalBridge.psc',
     'Scripts\SPS_FSMPBridge.pex',
     'Source\Scripts\SPS_FSMPBridge.psc',
     'Optional\OStim\Scripts\SPS_OStimBridge.pex',
@@ -53,7 +58,12 @@ function Test-PexSymbols {
 
 Test-PexSymbols 'Scripts\SPS_FSMPBridge.pex' @(
     'GetSPSBridgeVersion', 'SetPlayerOwner', 'SetPlayerOwnerV2', 'ReleasePlayerPhysics', 'ResetPlayerPhysics')
-Test-PexSymbols 'Scripts\SPS_SexLabBridge.pex' @('GetSPSBridgeVersion', 'GetPlayerRole')
+Test-PexSymbols 'Scripts\SPS_SexLabBridge.pex' @(
+    'GetSPSBridgeVersion', 'IsPlayerActive', 'GetPlayerRole')
+Test-PexSymbols 'Scripts\SPS_PositionBridge.pex' @(
+    'GetSPSBridgeVersion', 'SendPlayerAnimationEvent', 'SetPlayerSchlongBend')
+Test-PexSymbols 'Scripts\SPS_ArousalBridge.pex' @(
+    'GetSPSBridgeVersion', 'GetPlayerArousal')
 Test-PexSymbols 'Optional\OStim\Scripts\SPS_OStimBridge.pex' @('GetSPSBridgeVersion', 'GetPlayerRole')
 
 try {

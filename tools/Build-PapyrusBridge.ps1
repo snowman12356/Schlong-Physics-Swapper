@@ -19,7 +19,13 @@ foreach ($requiredPath in @($compiler, $baseSources, $flags, $sourceDirectory, $
 }
 
 $includes = "$sourceDirectory;$stubDirectory;$baseSources"
-$bridges = @('SPS_FSMPBridge', 'SPS_SexLabBridge', 'SPS_OStimBridge')
+$bridges = @(
+    'SPS_FSMPBridge',
+    'SPS_SexLabBridge',
+    'SPS_PositionBridge',
+    'SPS_ArousalBridge',
+    'SPS_OStimBridge'
+)
 foreach ($bridge in $bridges) {
     & $compiler "$bridge.psc" "-f=$flags" "-i=$includes" "-o=$outputDirectory" '-op'
     if ($LASTEXITCODE -ne 0) {

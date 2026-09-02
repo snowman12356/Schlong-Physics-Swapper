@@ -1,4 +1,4 @@
-# Schlong Physics Swapper 1.9.6
+# Schlong Physics Swapper 2.0.0
 
 Native SKSE plugin for compatible SOS six-bone schlongs. Faster HDT-SMP owns
 Gen01-Gen06 while arousal is below a configurable threshold; CBPC owns them
@@ -275,8 +275,9 @@ the problem.
 
 The log is written to the normal SKSE log directory as
 `SchlongPhysicsSwapper.log`. The plugin is compiled for Address Library based SE/AE
-runtime independence. External APIs are called dynamically through Papyrus,
-so missing optional SOS bend APIs fall back safely without a hard DLL link.
+runtime independence. Optional APIs are resolved at runtime, and player-facing
+Papyrus calls use SPS bridge scripts so native object pointers never cross the
+Papyrus boundary directly.
 Saved reports are written to
 `Data/SKSE/Plugins/SchlongPhysicsSwapper_Diagnostics.txt`.
 Debug captures are written to
@@ -288,6 +289,17 @@ computer paths.
 When reporting a problem, attach the diagnostic report or 30-second capture and
 include the schlong addon, Skyrim runtime, mod-manager name, expected result,
 actual result, and short reproduction steps. See [SUPPORT.md](docs/SUPPORT.md).
+
+## 2.0.0 changes
+
+- Fixed the SOS AE `SetSchlongBend` crash by resolving the player inside a
+  Papyrus bridge instead of passing a native Actor pointer into Papyrus.
+- Fixed TNG's repeated `Debug.SendAnimationEvent` argument-type errors through
+  the same player-safe bridge boundary.
+- Fixed SPS-triggered OSL Aroused MCM stalls by using OSL's native arousal API,
+  consuming its update value directly and pausing SPS work in the Journal/MCM.
+- Moved the SexLab active-player query behind the same safe bridge pattern.
+- Versioned the completed modular rework and compatibility fixes as 2.0.0.
 
 ## 1.9.6 changes
 

@@ -5,3 +5,7 @@ Scriptname SexLabFramework extends Quest
 sslThreadController Function GetActorController(Actor akActor)
     Return None
 EndFunction
+
+Bool Function IsActorActive(Actor akActor)
+    Return False
+EndFunction

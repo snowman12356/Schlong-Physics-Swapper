@@ -25,8 +25,10 @@ public:
     [[nodiscard]] bool Connected() const;
 
     void AcceptResult(std::uint64_t generation, RE::BSScript::Variable result);
+    void AcceptExternalReading(float reading);
 
 private:
+    void ApplyReading(float reading);
     void QueueEvaluation();
     void Record(std::string message, bool error) const;
 

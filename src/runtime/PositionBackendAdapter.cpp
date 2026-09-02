@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 
 namespace SPS::Runtime {
 
@@ -27,13 +28,16 @@ bool SendPositionEvent(
     std::int64_t allowedAfterMs,
     std::int64_t nowMs)
 {
-    if (!actor) {
+    if (!actor || actor != RE::PlayerCharacter::GetSingleton()) {
         return false;
     }
     if (tngBackend) {
+        if (!std::filesystem::exists("Data/Scripts/SPS_PositionBridge.pex")) {
+            return false;
+        }
         return DispatchStatic(
-            "Debug", "SendAnimationEvent", allowedAfterMs, nowMs,
-            actor, eventName);
+            "SPS_PositionBridge", "SendPlayerAnimationEvent",
+            allowedAfterMs, nowMs, eventName);
     }
     return actor->NotifyAnimationGraph(eventName);
 }
@@ -44,10 +48,12 @@ bool SetNativeBend(
     std::int64_t allowedAfterMs,
     std::int64_t nowMs)
 {
-    return actor && SosAeNativeLoaded() &&
+    return actor && actor == RE::PlayerCharacter::GetSingleton() &&
+        SosAeNativeLoaded() &&
+        std::filesystem::exists("Data/Scripts/SPS_PositionBridge.pex") &&
         DispatchStatic(
-            "SOSAE_SKSE", "SetSchlongBend", allowedAfterMs, nowMs,
-            actor, std::clamp(bend, 0, 20));
+            "SPS_PositionBridge", "SetPlayerSchlongBend",
+            allowedAfterMs, nowMs, std::clamp(bend, 0, 20));
 }
 
 PositionDispatchResult ApplyPosition(

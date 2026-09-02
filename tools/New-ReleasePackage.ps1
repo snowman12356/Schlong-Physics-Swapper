@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '1.9.6',
+    [string]$Version = '2.0.0',
     [string]$BuildDirectory = 'out\build',
     [string]$OutputDirectory = 'out\release',
     [switch]$CreateZip
@@ -117,6 +117,10 @@ Copy-ReleaseFile 'config\CBPCMasterConfig_ZZZ_SchlongPhysicsSwapper.txt' 'SKSE\P
 Copy-ReleaseFile 'config\CBPConfig_ZZZ_SchlongPhysicsSwapper.txt' 'SKSE\Plugins\CBPConfig_ZZZ_SchlongPhysicsSwapper.txt'
 Copy-ReleaseFile 'scripts\SPS_SexLabBridge.pex' 'Scripts\SPS_SexLabBridge.pex'
 Copy-ReleaseFile 'scripts\Source\SPS_SexLabBridge.psc' 'Source\Scripts\SPS_SexLabBridge.psc'
+Copy-ReleaseFile 'scripts\SPS_PositionBridge.pex' 'Scripts\SPS_PositionBridge.pex'
+Copy-ReleaseFile 'scripts\Source\SPS_PositionBridge.psc' 'Source\Scripts\SPS_PositionBridge.psc'
+Copy-ReleaseFile 'scripts\SPS_ArousalBridge.pex' 'Scripts\SPS_ArousalBridge.pex'
+Copy-ReleaseFile 'scripts\Source\SPS_ArousalBridge.psc' 'Source\Scripts\SPS_ArousalBridge.psc'
 Copy-ReleaseFile 'scripts\SPS_FSMPBridge.pex' 'Scripts\SPS_FSMPBridge.pex'
 Copy-ReleaseFile 'scripts\Source\SPS_FSMPBridge.psc' 'Source\Scripts\SPS_FSMPBridge.psc'
 Copy-ReleaseFile 'scripts\SPS_OStimBridge.pex' 'Optional\OStim\Scripts\SPS_OStimBridge.pex'

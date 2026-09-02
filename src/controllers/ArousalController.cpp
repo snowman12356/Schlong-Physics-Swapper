@@ -57,7 +57,7 @@ void ArousalController::Query(bool force)
 {
     const auto now = NowMs();
     auto* player = RE::PlayerCharacter::GetSingleton();
-    if (!player) {
+    if (!player || Runtime::JournalMenuOpen()) {
         return;
     }
 
@@ -102,6 +102,10 @@ void ArousalController::Query(bool force)
     if (now < retryAfterMs_.load()) {
         return;
     }
+    if (const auto reading = Runtime::ReadOslArousal(player->GetFormID())) {
+        AcceptExternalReading(*reading);
+        return;
+    }
     if (queryPending_.load()) {
         if (now - queryStartedMs_.load() < 10000) {
             return;
@@ -131,14 +135,15 @@ void ArousalController::Query(bool force)
         return;
     }
     const auto generation = generation_.fetch_add(1) + 1;
-    const auto dispatch = [&](const char* script) {
-        auto* args = RE::MakeFunctionArguments(static_cast<RE::Actor*>(player));
+    const auto dispatch = [&] {
+        auto* args = RE::MakeFunctionArguments();
         RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{
             new ArousalCallback(*this, generation)
         };
-        return vm->DispatchStaticCall(script, "GetArousal", args, callback);
+        return vm->DispatchStaticCall(
+            "SPS_ArousalBridge", "GetPlayerArousal", args, callback);
     };
-    if (!dispatch("OSLArousedNative") && !dispatch("OSLAroused_ModInterface")) {
+    if (!dispatch()) {
         queryPending_.store(false);
         const bool haveLastReading = valid_.load();
         connected_.store(false);
@@ -193,20 +198,8 @@ void ArousalController::AcceptResult(std::uint64_t generation, RE::BSScript::Var
         resultValid = true;
     }
 
-    bool changed = false;
     if (resultValid) {
-        const auto previous = value_.exchange(reading);
-        const auto wasValid = valid_.exchange(true);
-        changed = !wasValid || std::abs(previous - reading) >= 0.5F;
-        connected_.store(true);
-        retryAfterMs_.store(0);
-        nextQueryMs_.store(NowMs() + (changed ? 1000 : 5000));
-        if (clearError_) {
-            clearError_();
-        }
-        if (changed) {
-            logger::info("{} arousal: {:.1f}", Runtime::ArousalProviderName(), reading);
-        }
+        ApplyReading(reading);
     } else {
         const bool haveLastReading = valid_.load();
         retryAfterMs_.store(NowMs() + 3000);
@@ -216,7 +209,31 @@ void ArousalController::AcceptResult(std::uint64_t generation, RE::BSScript::Var
             !haveLastReading);
     }
     queryPending_.store(false);
-    if (resultValid && changed) {
+}
+
+void ArousalController::AcceptExternalReading(float reading)
+{
+    if (!std::isfinite(reading)) {
+        return;
+    }
+    generation_.fetch_add(1);
+    queryPending_.store(false);
+    ApplyReading(std::clamp(reading, 0.0F, 100.0F));
+}
+
+void ArousalController::ApplyReading(float reading)
+{
+    const auto previous = value_.exchange(reading);
+    const auto wasValid = valid_.exchange(true);
+    const bool changed = !wasValid || std::abs(previous - reading) >= 0.5F;
+    connected_.store(true);
+    retryAfterMs_.store(0);
+    nextQueryMs_.store(NowMs() + (changed ? 1000 : 5000));
+    if (clearError_) {
+        clearError_();
+    }
+    if (changed) {
+        logger::info("{} arousal: {:.1f}", Runtime::ArousalProviderName(), reading);
         QueueEvaluation();
     }
 }

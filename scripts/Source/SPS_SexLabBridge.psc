@@ -1,7 +1,17 @@
 Scriptname SPS_SexLabBridge Hidden
 
 Int Function GetSPSBridgeVersion() Global
-    Return 1
+    Return 2
+EndFunction
+
+Bool Function IsPlayerActive() Global
+    Actor player = Game.GetPlayer()
+    SexLabFramework sexLab = Game.GetFormFromFile(0xD62, "SexLab.esm") as SexLabFramework
+    If player == None || sexLab == None
+        Return False
+    EndIf
+
+    Return sexLab.IsActorActive(player)
 EndFunction
 
 ; Returns 0 when P+ cannot describe the current stage, 1 when the player is

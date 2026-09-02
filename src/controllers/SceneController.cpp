@@ -97,7 +97,8 @@ void SceneController::Configure(
 
 void SceneController::QuerySexLab()
 {
-    if (!Runtime::ModuleLoaded(L"SexLabUtil.dll")) {
+    if (!Runtime::ModuleLoaded(L"SexLabUtil.dll") ||
+        !std::filesystem::exists("Data/Scripts/SPS_SexLabBridge.pex")) {
         state_.sexLab.valid.store(false);
         state_.sexLab.connected.store(false);
         return;
@@ -124,18 +125,17 @@ void SceneController::QuerySexLab()
         return;
     }
     state_.sexLab.queryStartedMs.store(now);
-    auto* player = RE::PlayerCharacter::GetSingleton();
     auto* vm = Runtime::VM();
-    if (!player || !vm) {
+    if (!vm) {
         state_.sexLab.queryPending.store(false);
         return;
     }
     const auto generation = state_.sexLab.queryGeneration.fetch_add(1) + 1;
-    auto* args = RE::MakeFunctionArguments(static_cast<RE::Actor*>(player));
+    auto* args = RE::MakeFunctionArguments();
     RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{
         new SexLabCallback(*this, generation)
     };
-    if (!vm->DispatchStaticCall("SexLabUtil", "IsActorActive", args, callback)) {
+    if (!vm->DispatchStaticCall("SPS_SexLabBridge", "IsPlayerActive", args, callback)) {
         state_.sexLab.queryPending.store(false);
         state_.sexLab.valid.store(false);
         state_.sexLab.connected.store(false);

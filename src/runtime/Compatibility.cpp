@@ -4,6 +4,7 @@
 #include <Windows.h>
 
 #include <array>
+#include <cmath>
 #include <filesystem>
 #include <ranges>
 
@@ -64,6 +65,23 @@ bool SloArousedLoaded()
 bool OslArousedLoaded()
 {
     return ModuleLoaded(L"OSLAroused.dll");
+}
+
+std::optional<float> ReadOslArousal(std::uint32_t actorFormID)
+{
+    using GetArousalFunction = float (*)(std::uint32_t);
+
+    const auto module = ::GetModuleHandleW(L"OSLAroused.dll");
+    if (!module) {
+        return std::nullopt;
+    }
+    const auto procedure = ::GetProcAddress(module, "GetArousalExt");
+    if (!procedure) {
+        return std::nullopt;
+    }
+    const auto getArousal = reinterpret_cast<GetArousalFunction>(procedure);
+    const float reading = getArousal(actorFormID);
+    return std::isfinite(reading) ? std::optional<float>{ reading } : std::nullopt;
 }
 
 bool ClassicArousedLoaded()

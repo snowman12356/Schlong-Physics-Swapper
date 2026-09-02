@@ -46,7 +46,7 @@ namespace Mod {
 namespace fs = std::filesystem;
 
 constexpr auto kName = "Schlong Physics Swapper";
-constexpr auto kVersion = "1.9.6";
+constexpr auto kVersion = "2.0.0";
 constexpr auto kIni = "Data/SKSE/Plugins/SchlongPhysicsSwapper.ini";
 constexpr auto kLegacyIni = "Data/SKSE/Plugins/UBEPhysicsSwitch.ini";
 constexpr auto kReport = "Data/SKSE/Plugins/SchlongPhysicsSwapper_Diagnostics.txt";
@@ -2851,11 +2851,11 @@ public:
                 if (sceneController.State().sexLab.active.load()) QuerySexLabRole();
             });
         } else if (name == "OSLA_ActorArousalUpdated" && event->sender == RE::PlayerCharacter::GetSingleton()) {
-            // The callback query will evaluate the new value. Arousal updates
-            // must not invalidate an already-applied bend or they create a
-            // position replay loop while Automatic mode is erect.
+            // OSL already supplies the updated player value in numArg. Using it
+            // directly avoids a query -> update event -> query feedback loop.
+            const float reading = event->numArg;
             if (auto* tasks = SKSE::GetTaskInterface())
-                tasks->AddTask([] { QueryArousal(true); });
+                tasks->AddTask([reading] { arousalController.AcceptExternalReading(reading); });
         } else if (name == "sla_UpdateComplete") {
             // SLO Aroused NG reports a completed update globally. Querying its
             // OSL compatibility stub is cheap and avoids waiting for the next poll.

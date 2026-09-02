@@ -17,6 +17,12 @@ RE::BSScript::Internal::VirtualMachine* VM()
     return RE::BSScript::Internal::VirtualMachine::GetSingleton();
 }
 
+bool JournalMenuOpen()
+{
+    auto* ui = RE::UI::GetSingleton();
+    return ui && ui->IsMenuOpen(RE::JournalMenu::MENU_NAME);
+}
+
 bool PapyrusReady(std::int64_t allowedAfterMs, std::int64_t nowMs)
 {
     if (nowMs < allowedAfterMs) {
@@ -26,8 +32,8 @@ bool PapyrusReady(std::int64_t allowedAfterMs, std::int64_t nowMs)
     if (!main || !main->GetRuntimeData().gameActive) {
         return false;
     }
-    if (auto* ui = RE::UI::GetSingleton();
-        ui && ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME)) {
+    if (auto* ui = RE::UI::GetSingleton(); ui &&
+        (ui->IsMenuOpen(RE::LoadingMenu::MENU_NAME) || JournalMenuOpen())) {
         return false;
     }
     const auto* player = RE::PlayerCharacter::GetSingleton();

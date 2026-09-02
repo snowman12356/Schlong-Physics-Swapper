@@ -62,16 +62,27 @@ copy, migration stashes and unreachable Git objects were also permanently
 removed after verification. Intentional branches, tags, shared references,
 required dependencies and the active test mod remain.
 
-The current 1.9.6 development package has passed automated builds, core tests
-and package validation. On 2026-09-01 it was installed only in the dedicated
+The 2.0.0 development package now passes the reproducible build, all five
+Papyrus bridge compiles, core tests, FOMOD validation and expanded-ZIP
+validation. It removes the remaining unsafe native Actor-to-Papyrus calls,
+uses OSL's native arousal export and update value, and pauses SPS background
+work while the Journal/MCM is open. The development DLL SHA-256 is
+`1E5EE773C1032B7A821D46A6B9EFE86B650F2DD0EAD4DC6034D00B8FC80F2F9B` and
+the package SHA-256 is
+`872620FDD0B33AB2338C7E900B179CA5B40120351E7D2542099DD8525451D317`.
+
+The previous 1.9.6 package was installed on 2026-09-01 only in the dedicated
 MO2 test mod at `D:\Modding\mods\Schlong Physics Swapper`; it has not been
 released. The clean test install uses OSL Aroused 2.9.3 support, omits the
 optional OStim and legacy OSL bridges, and preserves the user's existing SPS
 INI. Its DLL SHA-256 is
 `65D5FFC64448381A38B7E0104EACA7EAAB1AEC0BF1D0495000DA20204881FD4E`.
 
-The next gate is the documented in-game player regression pass covering
-load/save boundaries, arousal changes, soft and erect equipment changes,
-manual repair and SexLab behaviour. Optional OStim behaviour remains a separate
-experimental test when its bridge is deliberately installed. Do not begin
-managed NPC support until the player gate has passed.
+The next gate is an explicit 2.0.0 test-mod install followed by the documented
+in-game player regression pass. It must also confirm that OSL Aroused's MCM
+opens normally, TNG no longer logs `Debug.SendAnimationEvent` argument errors,
+and SOS AE bend changes no longer crash. Load/save boundaries, arousal changes,
+soft and erect equipment changes, manual repair and SexLab behaviour still
+apply. Optional OStim remains a separate experimental test when its bridge is
+deliberately installed. Do not begin managed NPC support until the player gate
+has passed.

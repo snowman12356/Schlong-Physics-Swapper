@@ -50,8 +50,9 @@ under the per-user `SPSBuild` cache rather than in the source tree.
 .\tools\Build-PapyrusBridge.ps1 -GameRoot '<Skyrim installation>'
 ```
 
-This compiles the FSMP ownership, SexLab role and optional OStim role bridges from
-`scripts\Source` using only the tracked declarations in `scripts\BuildStubs`.
+This compiles the FSMP ownership, SexLab, position, arousal and optional OStim
+bridges from `scripts\Source` using only the tracked declarations in
+`scripts\BuildStubs`.
 The compiler writes the paired PEX files back to `scripts`, where release
 validation checks their ABI marker and required symbols and confirms that they
 are packaged with the DLL. OStim runtime support remains optional and
@@ -63,7 +64,7 @@ Update the version in `CMakeLists.txt`, `src/plugin.cpp`, `fomod/info.xml` and
 `fomod/ModuleConfig.xml`, then run:
 
 ```powershell
-.\tools\Build-Release.ps1 -Version 1.9.4
+.\tools\Build-Release.ps1 -Version 2.0.0
 ```
 
 The release command checks all version declarations and the environment,
@@ -80,13 +81,13 @@ cannot accidentally push a commit, tag or release.
 After the release commit and tag have been pushed, preview the GitHub upload:
 
 ```powershell
-.\tools\Publish-GitHubRelease.ps1 -Version 1.9.4
+.\tools\Publish-GitHubRelease.ps1 -Version 2.0.0
 ```
 
 When the preview is correct, publish it explicitly:
 
 ```powershell
-.\tools\Publish-GitHubRelease.ps1 -Version 1.9.4 -Publish
+.\tools\Publish-GitHubRelease.ps1 -Version 2.0.0 -Publish
 ```
 
 The publisher refuses to run from an untagged commit, refuses to publish a tag

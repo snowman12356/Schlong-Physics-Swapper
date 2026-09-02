@@ -8,6 +8,7 @@
 namespace SPS::Runtime {
 
 RE::BSScript::Internal::VirtualMachine* VM();
+bool JournalMenuOpen();
 bool PapyrusReady(std::int64_t allowedAfterMs, std::int64_t nowMs);
 RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> MakeDiscardCallback();
 
