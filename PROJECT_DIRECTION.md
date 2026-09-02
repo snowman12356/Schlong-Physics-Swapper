@@ -71,12 +71,11 @@ work while the Journal/MCM is open. The development DLL SHA-256 is
 the package SHA-256 is
 `872620FDD0B33AB2338C7E900B179CA5B40120351E7D2542099DD8525451D317`.
 
-The previous 1.9.6 package was installed on 2026-09-01 only in the dedicated
-MO2 test mod at `D:\Modding\mods\Schlong Physics Swapper`; it has not been
+On 2026-09-02 the validated 2.0.0 files were installed only in the dedicated
+MO2 test mod at `D:\Modding\mods\Schlong Physics Swapper`; they have not been
 released. The clean test install uses OSL Aroused 2.9.3 support, omits the
 optional OStim and legacy OSL bridges, and preserves the user's existing SPS
-INI. Its DLL SHA-256 is
-`65D5FFC64448381A38B7E0104EACA7EAAB1AEC0BF1D0495000DA20204881FD4E`.
+INI and MO2 metadata. All 18 deployed files match the validated package stage.
 
 The next gate is an explicit 2.0.0 test-mod install followed by the documented
 in-game player regression pass. It must also confirm that OSL Aroused's MCM
