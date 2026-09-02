@@ -66,22 +66,27 @@ The 2.0.0 development package now passes the reproducible build, all five
 Papyrus bridge compiles, core tests, FOMOD validation and expanded-ZIP
 validation. It removes the remaining unsafe native Actor-to-Papyrus calls,
 uses OSL's native arousal export and update value, and pauses SPS background
-work while the Journal/MCM is open. The development DLL SHA-256 is
-`1E5EE773C1032B7A821D46A6B9EFE86B650F2DD0EAD4DC6034D00B8FC80F2F9B` and
-the package SHA-256 is
-`872620FDD0B33AB2338C7E900B179CA5B40120351E7D2542099DD8525451D317`.
+work while the Journal/MCM is open. A crash found in the first 2.0.0 test build
+was traced to OSL's documentation describing `GetArousalExt` as FormID-based
+even though its runtime ABI requires `RE::Actor*`; SPS now passes the actual
+player pointer and rejects null actors. The corrected development DLL SHA-256
+is `9B04B0DA1C3F94239F78CF574A660E555EAEAD2584442949039C962791C20896` and the
+corrected package SHA-256 is
+`E41A482EF3385542FFE56F417E0869B9FB02616D83FD636D8A1E2485A6184050`.
 
 On 2026-09-02 the validated 2.0.0 files were installed only in the dedicated
 MO2 test mod at `D:\Modding\mods\Schlong Physics Swapper`; they have not been
 released. The clean test install uses OSL Aroused 2.9.3 support, omits the
 optional OStim and legacy OSL bridges, and preserves the user's existing SPS
-INI and MO2 metadata. All 18 deployed files match the validated package stage.
+INI and MO2 metadata. The corrected OSL ABI build replaced the initial test
+DLL on 2026-09-02, and all 18 deployed files match the validated package stage.
 
 The next gate is an explicit 2.0.0 test-mod install followed by the documented
-in-game player regression pass. It must also confirm that OSL Aroused's MCM
-opens normally, TNG no longer logs `Debug.SendAnimationEvent` argument errors,
-and SOS AE bend changes no longer crash. Load/save boundaries, arousal changes,
-soft and erect equipment changes, manual repair and SexLab behaviour still
-apply. Optional OStim remains a separate experimental test when its bridge is
-deliberately installed. Do not begin managed NPC support until the player gate
-has passed.
+in-game player regression pass. It must first confirm that the corrected OSL
+2.9.3 query runs without the `OSLAroused.dll` access violation, then confirm
+that OSL Aroused's MCM opens normally, TNG no longer logs
+`Debug.SendAnimationEvent` argument errors, and SOS AE bend changes no longer
+crash. Load/save boundaries, arousal changes, soft and erect equipment changes,
+manual repair and SexLab behaviour still apply. Optional OStim remains a
+separate experimental test when its bridge is deliberately installed. Do not
+begin managed NPC support until the player gate has passed.

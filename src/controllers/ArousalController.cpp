@@ -102,7 +102,7 @@ void ArousalController::Query(bool force)
     if (now < retryAfterMs_.load()) {
         return;
     }
-    if (const auto reading = Runtime::ReadOslArousal(player->GetFormID())) {
+    if (const auto reading = Runtime::ReadOslArousal(player)) {
         AcceptExternalReading(*reading);
         return;
     }

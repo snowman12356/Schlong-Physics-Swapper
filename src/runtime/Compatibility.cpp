@@ -67,12 +67,12 @@ bool OslArousedLoaded()
     return ModuleLoaded(L"OSLAroused.dll");
 }
 
-std::optional<float> ReadOslArousal(std::uint32_t actorFormID)
+std::optional<float> ReadOslArousal(RE::Actor* actor)
 {
-    using GetArousalFunction = float (*)(std::uint32_t);
+    using GetArousalFunction = float (*)(RE::Actor*);
 
     const auto module = ::GetModuleHandleW(L"OSLAroused.dll");
-    if (!module) {
+    if (!module || !actor) {
         return std::nullopt;
     }
     const auto procedure = ::GetProcAddress(module, "GetArousalExt");
@@ -80,7 +80,7 @@ std::optional<float> ReadOslArousal(std::uint32_t actorFormID)
         return std::nullopt;
     }
     const auto getArousal = reinterpret_cast<GetArousalFunction>(procedure);
-    const float reading = getArousal(actorFormID);
+    const float reading = getArousal(actor);
     return std::isfinite(reading) ? std::optional<float>{ reading } : std::nullopt;
 }
 
