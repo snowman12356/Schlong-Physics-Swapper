@@ -98,10 +98,13 @@ the existing INI and MO2 metadata remain unchanged.
 For the user's private SOFTBODY 3.37.2 setup, a separate local test override is
 enabled at `D:\Modding\mods\SOFTBODY True Soft Shaft - SPS`, above both
 `SOFTBODY Custom Physics - Joel` and the base SOFTBODY mod. It preserves the
-existing normal, soft and anal collision profiles but changes only the shaft
-gravity factor from 0 to 0.42. This private derivative is not bundled in SPS or
-approved for redistribution; public FOMOD inclusion requires the SOFTBODY
-author's permission.
+existing normal, soft and anal collision profiles. The initial gravity-only
+test still appeared rigid because SOFTBODY kept Gen01 animation-driven and
+tethered Gen02-Gen06 to its stiff lag-bone chain. The installed test override
+now uses the known-working UBE six-bone shaft/scrotum dynamics block, including
+per-bone gravity, while retaining each SOFTBODY collision tail unchanged. This
+private derivative is not bundled in SPS or approved for redistribution; public
+FOMOD inclusion requires the SOFTBODY author's permission.
 
 The next gate is the documented in-game player regression pass. It must first
 confirm that a compatible six-bone schlong is recognised automatically after
