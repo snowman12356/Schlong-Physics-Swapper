@@ -76,7 +76,10 @@ SOFTBODY 3.37.2 compatibility is automatic when
 `HDT SMP Object - Simple.esp` is loaded: after its relevant SexLab or OStim
 scene reload events settle, SPS reasserts only the physics owner it already
 selected. SPS does not replace SOFTBODY's genital XML or collision equipment,
-and no FOMOD option is required. The latest development DLL SHA-256 is
+and no FOMOD option is required for ownership recovery. Testing established
+that SOFTBODY's genital XML deliberately gives the Gen02-Gen06 shaft chain zero
+gravity while its scrotum uses normal gravity, so stock SOFTBODY can look rigid
+even when SPS has correctly selected SMP. The latest development DLL SHA-256 is
 `0F3CC764DFEFC51E4BB094B3C341751F501BC3F681FFA8D127C65171C51C4A62` and the
 latest package SHA-256 is
 `C61F82D951EE01E369BCBEC880A148C8DE992CE54BD7964C2F8C687E4D93DE86`.
@@ -92,6 +95,14 @@ package. On 2026-09-03 the automatic SOFTBODY recovery build was also installed
 after Skyrim closed; all 18 deployed files match the validated package, while
 the existing INI and MO2 metadata remain unchanged.
 
+For the user's private SOFTBODY 3.37.2 setup, a separate local test override is
+enabled at `D:\Modding\mods\SOFTBODY True Soft Shaft - SPS`, above both
+`SOFTBODY Custom Physics - Joel` and the base SOFTBODY mod. It preserves the
+existing normal, soft and anal collision profiles but changes only the shaft
+gravity factor from 0 to 0.42. This private derivative is not bundled in SPS or
+approved for redistribution; public FOMOD inclusion requires the SOFTBODY
+author's permission.
+
 The next gate is the documented in-game player regression pass. It must first
 confirm that a compatible six-bone schlong is recognised automatically after
 loading without using Repair current physics, and that the corrected OSL
@@ -104,4 +115,8 @@ separate experimental test when its bridge is deliberately installed. With
 SOFTBODY enabled, test SexLab scene start, animation/stage changes and scene end
 while SPS is set to each owner in turn; SOFTBODY's collision behaviour must
 remain active and SPS must retain the selected SMP or CBPC owner after each
-reload. Do not begin managed NPC support until the player gate has passed.
+reload. After a full Skyrim restart, the local true-soft override must also be
+tested in Always soft mode: run Repair current physics once, confirm the shaft
+now responds to gravity, then repeat normal, vaginal and anal scene transitions
+and confirm the scrotum and collision behaviour remain stable. Do not begin
+managed NPC support until the player gate has passed.
