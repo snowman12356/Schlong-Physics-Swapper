@@ -27,6 +27,7 @@ const wchar_t* SosAeNativeModuleName();
 bool SosAeNativeLoaded();
 bool TngLoaded();
 bool LegacySosLoaded();
+bool SoftbodyLoaded();
 bool PositionBackendAvailable();
 std::string PositionBackendName();
 

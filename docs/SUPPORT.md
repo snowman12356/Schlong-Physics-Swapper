@@ -16,7 +16,8 @@ If Skyrim crashed, also attach the newest crash log. Crash Logger SSE AE VR is
 recommended for this, but it is not required for SPS to run. Do not attach an
 old crash log from a different play session.
 
-Please also say whether **Physics Editor** or **Auto Physics Reset** is installed.
+Please also say whether **Physics Editor**, **Auto Physics Reset**, or
+**SOFTBODY** is installed.
 Physics Editor may stay installed; if physics changes unexpectedly, disable its
 schlong controls so it does not change the same bones as SPS. Auto Physics Reset
 is optional, but its load, cell or scene triggers may overlap SPS's own player
@@ -29,6 +30,10 @@ is currently global, so this also disables its automatic NPC angles outside
 scenes; SexLab and OStim scene animations are unaffected. Users remaining on
 OSL 2.9.0 through 2.9.2 may select the legacy OSL FOMOD option instead; never install
 that script override with OSL 2.9.3 or newer.
+
+SOFTBODY is detected automatically. SPS waits for its SexLab/OStim genital XML
+reloads to finish and then restores the selected physics owner; there is no SPS
+FOMOD option for it. The diagnostic report records whether SOFTBODY was found.
 
 The reports contain mod state, versions, settings and relevant filenames. They
 do not contain your Windows username, save name, or full computer paths. Please

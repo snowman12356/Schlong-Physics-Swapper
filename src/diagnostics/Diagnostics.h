@@ -25,6 +25,7 @@ struct Snapshot {
     bool sosPhysicsManagerLoaded{ false };
     bool physicsEditorLoaded{ false };
     bool autoPhysicsResetLoaded{ false };
+    bool softbodyLoaded{ false };
     bool crashLoggerLoaded{ false };
     int playerBonesFound{ 0 };
     int xmlFiles{ 0 };

@@ -106,6 +106,7 @@ Snapshot Scan(std::int64_t nowMs)
     result.physicsEditorLoaded = ModuleLoaded(L"PhysicsEditor.dll");
     result.autoPhysicsResetLoaded = ModuleLoaded(L"AutoSMPReset.dll") ||
         ModuleLoaded(L"AutoPhysicsReset.dll") || ModuleLoaded(L"AutoPhysicsResetNG.dll");
+    result.softbodyLoaded = SoftbodyLoaded();
     result.crashLoggerLoaded = ModuleLoaded(L"CrashLogger.dll");
 
     result.playerBonesFound = CountPlayerBones();

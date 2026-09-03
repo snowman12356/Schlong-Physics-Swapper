@@ -71,11 +71,15 @@ was traced to OSL's documentation describing `GetArousalExt` as FormID-based
 even though its runtime ABI requires `RE::Actor*`; SPS now passes the actual
 player pointer and rejects null actors. The live six-bone result is now
 refreshed cheaply after player mesh events settle, fixing the stale initial
-post-load check without repeating the full filesystem compatibility scan. The
-latest development DLL SHA-256 is
-`74CBABCBA94B558B4C979E19DFC2F969ABAEF92ADF26257AAB06811E7823DD56` and the
+post-load check without repeating the full filesystem compatibility scan.
+SOFTBODY 3.37.2 compatibility is automatic when
+`HDT SMP Object - Simple.esp` is loaded: after its relevant SexLab or OStim
+scene reload events settle, SPS reasserts only the physics owner it already
+selected. SPS does not replace SOFTBODY's genital XML or collision equipment,
+and no FOMOD option is required. The latest development DLL SHA-256 is
+`0F3CC764DFEFC51E4BB094B3C341751F501BC3F681FFA8D127C65171C51C4A62` and the
 latest package SHA-256 is
-`AF629F8E9E00A68E2AF1883FC9B2D4E0A9258B309B76720D9F4D5E05F1C50DBF`.
+`C61F82D951EE01E369BCBEC880A148C8DE992CE54BD7964C2F8C687E4D93DE86`.
 
 On 2026-09-02 the validated 2.0.0 files were installed only in the dedicated
 MO2 test mod at `D:\Modding\mods\Schlong Physics Swapper`; they have not been
@@ -84,7 +88,9 @@ optional OStim and legacy OSL bridges, and preserves the user's existing SPS
 INI and MO2 metadata. The corrected OSL ABI build replaced the initial test
 DLL on 2026-09-02. The newer automatic post-load bone-detection build was then
 installed after Skyrim closed; all 18 deployed files match the validated
-package, while the existing INI and MO2 metadata remain unchanged.
+package. On 2026-09-03 the automatic SOFTBODY recovery build was also installed
+after Skyrim closed; all 18 deployed files match the validated package, while
+the existing INI and MO2 metadata remain unchanged.
 
 The next gate is the documented in-game player regression pass. It must first
 confirm that a compatible six-bone schlong is recognised automatically after
@@ -94,5 +100,8 @@ that OSL Aroused's MCM opens normally, TNG no longer logs
 `Debug.SendAnimationEvent` argument errors, and SOS AE bend changes no longer
 crash. Load/save boundaries, arousal changes, soft and erect equipment changes,
 manual repair and SexLab behaviour still apply. Optional OStim remains a
-separate experimental test when its bridge is deliberately installed. Do not
-begin managed NPC support until the player gate has passed.
+separate experimental test when its bridge is deliberately installed. With
+SOFTBODY enabled, test SexLab scene start, animation/stage changes and scene end
+while SPS is set to each owner in turn; SOFTBODY's collision behaviour must
+remain active and SPS must retain the selected SMP or CBPC owner after each
+reload. Do not begin managed NPC support until the player gate has passed.

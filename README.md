@@ -105,6 +105,11 @@ fallback for older builds. During a PPA scene, PPA owns genital position and
 SPS changes only the SMP/CBPC physics owner. SPS restores the selected erect
 position after the scene instead of sending competing bend events.
 
+SOFTBODY is detected automatically and does not need a FOMOD option. When its
+scene scripts dynamically reload a player's genital SMP XML, SPS waits for the
+reload to settle and reapplies the physics owner it had already selected. SPS
+does not replace SOFTBODY's XML choices or collision equipment.
+
 ## Mod-author compatibility API
 
 SPS now exposes an optional native V1 API for other SKSE plugins. A mod can
@@ -302,6 +307,8 @@ actual result, and short reproduction steps. See [SUPPORT.md](docs/SUPPORT.md).
   runtime implementation requires, preventing a startup arousal-query crash.
 - Refreshes the live six-bone compatibility result after the player mesh
   settles, so loading a save no longer requires a manual physics repair.
+- Added automatic SOFTBODY scene-reload recovery without adding an installer
+  option or replacing SOFTBODY collision files.
 - Moved the SexLab active-player query behind the same safe bridge pattern.
 - Versioned the completed modular rework and compatibility fixes as 2.0.0.
 

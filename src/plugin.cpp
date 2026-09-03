@@ -63,6 +63,7 @@ using SPS::Runtime::PluginLoaded;
 using SPS::Runtime::PositionBackendAvailable;
 using SPS::Runtime::PositionBackendName;
 using SPS::Runtime::SloArousedLoaded;
+using SPS::Runtime::SoftbodyLoaded;
 using SPS::Runtime::SosAeNativeLoaded;
 using SPS::Runtime::SosAeNativeModuleName;
 using SPS::Runtime::TngLoaded;
@@ -2734,6 +2735,7 @@ void __stdcall RenderDebug() {
         StatusLine("OStim Standalone", d.ostimPluginLoaded ? (d.ostimRoleBridgePresent ? "Ready - experimental" : "Bridge missing - rerun the FOMOD") : "Not installed", d.ostimPluginLoaded ? (d.ostimRoleBridgePresent ? 2 : 0) : 1);
         if (sceneController.State().ostim.active.load())
             StatusLine("Current OStim role", sceneController.State().ostim.roleValid.load() ? OStimRoleName(sceneController.State().ostim.role.load()) : "Checking...", sceneController.State().ostim.roleValid.load() ? 2 : 1);
+        StatusLine("SOFTBODY", d.softbodyLoaded ? "Ready - automatic scene reload recovery" : "Not installed", d.softbodyLoaded ? 2 : 1);
     }
 
     if (ImGuiMCP::CollapsingHeader("Physics file details")) {
@@ -2819,6 +2821,15 @@ public:
     RE::BSEventNotifyControl ProcessEvent(const SKSE::ModCallbackEvent* event, RE::BSTEventSource<SKSE::ModCallbackEvent>*) override {
         if (!event) return RE::BSEventNotifyControl::kContinue;
         const std::string_view name = event->eventName.c_str();
+        const bool softbodyReloadEvent =
+            name == "HookAnimationStart" || name == "HookAnimationChange" ||
+            name == "HookStageStart" || name == "OStim_Start" ||
+            name == "OStim_SceneChanged" || name == "ostim_start" ||
+            name == "ostim_scenechanged" || name == "ostim_thread_start" ||
+            name == "ostim_thread_scenechanged";
+        if (softbodyReloadEvent && SoftbodyLoaded())
+            ScheduleExternalOwnerRepair(3000, "a SOFTBODY scene physics reload");
+
         if (name == "ostim_start") {
             sceneController.State().ostim.active.store(true);
             sceneController.State().ostim.connected.store(true);
@@ -2860,6 +2871,7 @@ public:
             Record("OStim player scene ended");
             if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { Evaluate(); });
         } else if (name == "HookAnimationStart" || name == "HookAnimationStarting" ||
+            name == "HookAnimationChange" ||
             name == "HookStageStart" || name == "HookStageEnd" ||
             name == "HookActorsRelocated" || name == "HookActorChangeEnd" ||
             name == "HookAnimationEnding" || name == "HookAnimationEnd" ||

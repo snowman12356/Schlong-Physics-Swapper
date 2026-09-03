@@ -17,7 +17,7 @@ std::string FormatSupportReport(const SupportReportInput& input)
         "Schlong Physics Swapper {} diagnostics\n"
         "SkyrimRuntime={} SKSE={}\n"
         "DLLs: MenuFramework={} OSL={} SLO={} FSMP={} CBPC={} SexLab={} OStim={} SOS={}\n"
-        "Compatibility: TNG={} PositionBackend={} ClassicSexLabAroused={} SexLabRoleBridge={} OStimRoleBridge={} PPA={} PhysicsEditor={} SOSPhysicsManager={} AutoPhysicsReset={} CrashLogger={}\n"
+        "Compatibility: TNG={} PositionBackend={} ClassicSexLabAroused={} SexLabRoleBridge={} OStimRoleBridge={} SOFTBODY={} PPA={} PhysicsEditor={} SOSPhysicsManager={} AutoPhysicsReset={} CrashLogger={}\n"
         "Engine={} StateKnown={} HandoffPending={} PendingTarget={} Arousal={:.1f} Provider={} ProviderConnected={} SexLabActive={} SexLabConnected={} SexLabRole={} SexLabRoleValid={} OStimActive={} OStimConnected={} OStimRole={} OStimRoleValid={}\n"
         "CompatibilityAPI=V{} ActiveRequests={} ActiveRequester={} Accepted={} Released={} ResetNotices={} OwnerRepairs={} LastOwnerRepairMs={}\n"
         "MenuFramework={} ArousalProvider={} FSMP={} FSMPActorAPI={} FSMPBridge={} CBPC={} SexLabPPlus={} PositionBackendReady={} SupportedAddon={}\n"
@@ -31,7 +31,7 @@ std::string FormatSupportReport(const SupportReportInput& input)
         input.components.fsmp, input.components.cbpc, input.components.sexLab,
         input.components.ostim, input.components.sos,
         d.tngPluginLoaded, input.positionBackend, d.classicArousedPluginLoaded,
-        d.sexLabRoleBridgePresent, d.ostimRoleBridgePresent, input.ppaLoaded,
+        d.sexLabRoleBridgePresent, d.ostimRoleBridgePresent, d.softbodyLoaded, input.ppaLoaded,
         d.physicsEditorLoaded, d.sosPhysicsManagerLoaded, d.autoPhysicsResetLoaded,
         d.crashLoggerLoaded,
         ownership.known ? (ownership.usingCBPC ? "CBPC" : "SMP") : "unknown",

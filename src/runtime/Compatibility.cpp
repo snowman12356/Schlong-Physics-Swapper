@@ -133,6 +133,11 @@ bool LegacySosLoaded()
             std::filesystem::exists("Data/Scripts/SOS_SKSE.pex"));
 }
 
+bool SoftbodyLoaded()
+{
+    return PluginLoaded({ "HDT SMP Object - Simple.esp" });
+}
+
 bool PositionBackendAvailable()
 {
     return SosAeNativeLoaded() || TngLoaded() || LegacySosLoaded();
