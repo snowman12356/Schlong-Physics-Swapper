@@ -103,8 +103,12 @@ test still appeared rigid because SOFTBODY kept Gen01 animation-driven and
 tethered Gen02-Gen06 to its stiff lag-bone chain. The installed test override
 now uses the known-working UBE six-bone shaft/scrotum dynamics block, including
 per-bone gravity, while retaining each SOFTBODY collision tail unchanged. This
-private derivative is not bundled in SPS or approved for redistribution; public
-FOMOD inclusion requires the SOFTBODY author's permission.
+was subsequently tuned for the user's unusually large shaft mesh with higher
+base-to-tip mass and inertia, moderately stronger gravity response, and firmer
+damped joints; the mesh-following SOFTBODY collision definitions remain
+unchanged. This private derivative is not bundled in SPS or approved for
+redistribution; public FOMOD inclusion requires the SOFTBODY author's
+permission.
 
 The next gate is the documented in-game player regression pass. It must first
 confirm that a compatible six-bone schlong is recognised automatically after
@@ -120,6 +124,7 @@ while SPS is set to each owner in turn; SOFTBODY's collision behaviour must
 remain active and SPS must retain the selected SMP or CBPC owner after each
 reload. After a full Skyrim restart, the local true-soft override must also be
 tested in Always soft mode: run Repair current physics once, confirm the shaft
-now responds to gravity, then repeat normal, vaginal and anal scene transitions
+now responds to gravity with stable large-mesh motion rather than folding or
+oscillating excessively, then repeat normal, vaginal and anal scene transitions
 and confirm the scrotum and collision behaviour remain stable. Do not begin
 managed NPC support until the player gate has passed.
