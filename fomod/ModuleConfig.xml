@@ -20,6 +20,35 @@
     <file source="THIRD_PARTY.md" destination="THIRD_PARTY.md" priority="0" />
   </requiredInstallFiles>
   <installSteps order="Explicit">
+    <installStep name="Physics XML compatibility">
+      <optionalFileGroups order="Explicit">
+        <group name="Choose the genital SMP physics" type="SelectExactlyOne">
+          <plugins order="Explicit">
+            <plugin name="I already have my own compatible physics">
+              <description>Installs no genital XML. Choose this when your schlong addon already supplies working six-bone SMP physics.</description>
+              <files />
+              <typeDescriptor><type name="Recommended" /></typeDescriptor>
+            </plugin>
+            <plugin name="Use the SPS author's personal physics">
+              <description>Installs the SPS author's generally tuned MaleGenitals.xml with six-bone shaft/scrotum dynamics and collision support for compatible SOS, TNG and UBE meshes. Do not choose this for SOFTBODY.</description>
+              <files>
+                <file source="Optional\Personal Physics\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml" destination="SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml" priority="10" />
+              </files>
+              <typeDescriptor><type name="Optional" /></typeDescriptor>
+            </plugin>
+            <plugin name="Use the SPS SOFTBODY physics">
+              <description>Installs combined normal, soft and anal profiles with SPS six-bone shaft dynamics and GT SOFTBODY 3.37.2 collision definitions. Use with SOFTBODY and a compatible SOS, TNG or UBE six-bone mesh, and make SPS win conflicts for the three MaleGenitals XML files.</description>
+              <files>
+                <file source="Optional\SOFTBODY SPS\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml" destination="SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml" priority="10" />
+                <file source="Optional\SOFTBODY SPS\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsSoft.xml" destination="SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsSoft.xml" priority="10" />
+                <file source="Optional\SOFTBODY SPS\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsToAnus.xml" destination="SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsToAnus.xml" priority="10" />
+              </files>
+              <typeDescriptor><type name="Optional" /></typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
     <installStep name="Arousal mod">
       <optionalFileGroups order="Explicit">
         <group name="Which arousal mod do you use?" type="SelectExactlyOne">

@@ -33,8 +33,14 @@ XML and CBPC config. The native controller toggles Gen01 through Gen06. Parent
 collision-only bodies should not be added unless both physics engines drive
 them.
 
-Do not ship a generic XML over the user's UBE addon. Mass, constraints, bone
-names and collision groups must match that exact mesh.
+Do not install a generic XML over the user's addon by default. Mass,
+constraints, bone names and collision groups must match the exact mesh. The
+FOMOD therefore defaults to keeping the user's own physics. Its personal SPS
+profile is an explicit opt-in for compatible SOS, TNG and UBE six-bone meshes.
+The separate SOFTBODY 3.37.2 option combines those dynamics with SOFTBODY's
+normal, soft and anal collision profiles. Its merged `MaleGenitals` shape must
+remain unique and retain both SOFTBODY's weight thresholds and SPS's collision
+exclusions.
 
 ## Test procedure
 

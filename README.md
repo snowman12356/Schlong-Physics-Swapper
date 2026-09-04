@@ -105,10 +105,16 @@ fallback for older builds. During a PPA scene, PPA owns genital position and
 SPS changes only the SMP/CBPC physics owner. SPS restores the selected erect
 position after the scene instead of sending competing bend events.
 
-SOFTBODY is detected automatically and does not need a FOMOD option. When its
-scene scripts dynamically reload a player's genital SMP XML, SPS waits for the
-reload to settle and reapplies the physics owner it had already selected. SPS
-does not replace SOFTBODY's XML choices or collision equipment.
+SOFTBODY is detected automatically. When its scene scripts dynamically reload a
+player's genital SMP XML, SPS waits for the reload to settle and reapplies the
+physics owner it had already selected. By default SPS does not replace
+SOFTBODY's XML choices or collision equipment. The FOMOD offers three physics
+choices: keep an existing compatible XML, install the SPS author's personal
+six-bone physics, or install the combined **SPS SOFTBODY physics**. Both SPS
+profiles support compatible SOS, TNG and UBE six-bone meshes. The SOFTBODY
+choice merges the SPS shaft physics and collision exclusions with SOFTBODY's
+normal, soft and anal collision profiles. When selected, make SPS win conflicts
+for all three `MaleGenitals` XML files.
 
 ## Mod-author compatibility API
 
@@ -163,6 +169,10 @@ old settings even when both files are initially present.
 The Nexus archive includes a simple FOMOD. You manually choose OSL Aroused,
 SLO Aroused NG, SexLab Aroused Redux, or no arousal mod for manual-only use,
 so the installer does not have to guess.
+The physics page separately lets you keep your own compatible genital XML, use
+the SPS author's personal six-bone physics, or use the combined SPS SOFTBODY
+physics. The supplied profiles work with compatible SOS, TNG and UBE six-bone
+meshes; only choose the SOFTBODY profile when GT SOFTBODY 3.37.2 is installed.
 The current OSL, SLO NG and Redux choices install no extra SPS compatibility
 file; leave each arousal mod's SOS position option disabled. OSL 2.9.0 through
 2.9.2 has a separate legacy option that installs the old player-only override. If
@@ -249,9 +259,10 @@ Physics Editor and Auto Physics Reset notices are shown on the in-game
 4. Start Skyrim through SKSE and open the Schlong Physics Swapper section in
    SKSE Menu Framework.
 
-The public archive contains the SKSE DLL, INI template, dedicated CBPC files and
-an optional OSL 2.9.0-to-2.9.2 compatibility script. It does not contain an
-ESP, body meshes, SMP XML, or any other OSL files.
+The public archive contains the SKSE DLL, INI template, dedicated CBPC files,
+an optional OSL 2.9.0-to-2.9.2 compatibility script, the SPS author's optional
+six-bone SMP XML, and an opt-in combined SOFTBODY 3.37.2 SMP XML set. It does
+not contain an ESP, body meshes or any other OSL files.
 
 ## Troubleshooting page
 
@@ -307,8 +318,11 @@ actual result, and short reproduction steps. See [SUPPORT.md](docs/SUPPORT.md).
   runtime implementation requires, preventing a startup arousal-query crash.
 - Refreshes the live six-bone compatibility result after the player mesh
   settles, so loading a save no longer requires a manual physics repair.
-- Added automatic SOFTBODY scene-reload recovery without adding an installer
-  option or replacing SOFTBODY collision files.
+- Added automatic SOFTBODY scene-reload recovery without an installer
+  requirement or changing SOFTBODY collision files by default.
+- Added optional personal SPS physics and combined SOFTBODY 3.37.2 + SPS
+  six-bone XML choices for compatible SOS, TNG and UBE meshes, preserving
+  SOFTBODY's three collision profiles while avoiding competing genital XMLs.
 - Moved the SexLab active-player query behind the same safe bridge pattern.
 - Versioned the completed modular rework and compatibility fixes as 2.0.0.
 

@@ -32,8 +32,16 @@ OSL 2.9.0 through 2.9.2 may select the legacy OSL FOMOD option instead; never in
 that script override with OSL 2.9.3 or newer.
 
 SOFTBODY is detected automatically. SPS waits for its SexLab/OStim genital XML
-reloads to finish and then restores the selected physics owner; there is no SPS
-FOMOD option for it. The diagnostic report records whether SOFTBODY was found.
+reloads to finish and then restores the selected physics owner. Most users
+should keep **I already have my own compatible physics**. Alternatively choose
+**Use the SPS author's personal physics** for the supplied general six-bone
+profile, or **Use the SPS SOFTBODY physics** when GT SOFTBODY 3.37.2 is also
+installed. Both supplied choices support compatible SOS, TNG and UBE six-bone
+meshes. For the SOFTBODY choice, make SPS win MO2 conflicts for
+`MaleGenitals.xml`, `MaleGenitalsSoft.xml` and `MaleGenitalsToAnus.xml`; another
+winning copy can make the soft shaft rigid or prevent the erect angle from
+appearing. The diagnostic report records whether SOFTBODY was found but cannot
+identify which MO2 mod supplied the winning loose file.
 
 The reports contain mod state, versions, settings and relevant filenames. They
 do not contain your Windows username, save name, or full computer paths. Please

@@ -1,0 +1,353 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<system xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="description.xsd">
+
+    <!-- KEYFRAMED -->
+<bone-default>
+    <mass>0</mass>
+    <inertia x="0" y="0" z="0"/>
+        <centerOfMassTransform>
+            <basis x="0" y="0" z="0" w="1"/>
+            <origin x="0" y="0" z="0"/>
+        </centerOfMassTransform>
+    <linearDamping>0</linearDamping>
+    <angularDamping>0</angularDamping>
+    <friction>0</friction>
+    <rollingFriction>0</rollingFriction>
+    <restitution>0</restitution>
+    <margin-multiplier>0</margin-multiplier>
+</bone-default>
+
+<bone name="NPC GenitalsBase [GenBase]"/>
+
+
+    <!-- BODY -->
+
+
+<bone name="NPC Genitals01 [Gen01]">
+        <mass>0.65</mass>
+        <inertia x="1" y="1" z="1"/>
+        <centerOfMassTransform>
+            <basis x="0" y="0" z="0" w="1"/>
+            <origin x="0" y="0" z="0"/>
+        </centerOfMassTransform>
+        <gravity-factor>0.42</gravity-factor>
+        <linearDamping>0.78</linearDamping>
+        <angularDamping>0.82</angularDamping>
+        <friction>0.99</friction>
+        <rollingFriction>0.99</rollingFriction>
+        <restitution>0</restitution>
+        <margin-multiplier>0</margin-multiplier>
+</bone>
+
+<bone name="NPC Genitals02 [Gen02]">
+        <mass>0.46</mass>
+        <inertia x="1" y="1" z="1"/>
+        <centerOfMassTransform>
+            <basis x="0" y="0" z="0" w="1"/>
+            <origin x="0" y="0" z="0"/>
+        </centerOfMassTransform>
+        <gravity-factor>0.39</gravity-factor>
+        <linearDamping>0.76</linearDamping>
+        <angularDamping>0.80</angularDamping>
+        <friction>0.99</friction>
+        <rollingFriction>0.99</rollingFriction>
+        <restitution>0</restitution>
+        <margin-multiplier>0</margin-multiplier>
+</bone>
+
+<bone name="NPC Genitals03 [Gen03]">
+        <mass>0.34</mass>
+        <inertia x="1" y="1" z="1"/>
+        <centerOfMassTransform>
+            <basis x="0" y="0" z="0" w="1"/>
+            <origin x="0" y="0" z="0"/>
+        </centerOfMassTransform>
+        <gravity-factor>0.36</gravity-factor>
+        <linearDamping>0.75</linearDamping>
+        <angularDamping>0.79</angularDamping>
+        <friction>0.99</friction>
+        <rollingFriction>0.99</rollingFriction>
+        <restitution>0</restitution>
+        <margin-multiplier>0</margin-multiplier>
+</bone>
+
+<bone name="NPC Genitals04 [Gen04]">
+        <mass>0.26</mass>
+        <inertia x="1" y="1" z="1"/>
+        <centerOfMassTransform>
+            <basis x="0" y="0" z="0" w="1"/>
+            <origin x="0" y="0" z="0"/>
+        </centerOfMassTransform>
+        <gravity-factor>0.34</gravity-factor>
+        <linearDamping>0.74</linearDamping>
+        <angularDamping>0.78</angularDamping>
+        <friction>0.99</friction>
+        <rollingFriction>0.99</rollingFriction>
+        <restitution>0</restitution>
+        <margin-multiplier>0</margin-multiplier>
+</bone>
+
+<bone name="NPC Genitals05 [Gen05]">
+        <mass>0.20</mass>
+        <inertia x="1" y="1" z="1"/>
+        <centerOfMassTransform>
+            <basis x="0" y="0" z="0" w="1"/>
+            <origin x="0" y="0" z="0"/>
+        </centerOfMassTransform>
+        <gravity-factor>0.32</gravity-factor>
+        <linearDamping>0.73</linearDamping>
+        <angularDamping>0.77</angularDamping>
+        <friction>0.99</friction>
+        <rollingFriction>0.99</rollingFriction>
+        <restitution>0</restitution>
+        <margin-multiplier>0</margin-multiplier>
+</bone>
+
+<bone name="NPC Genitals06 [Gen06]">
+        <mass>0.15</mass>
+        <inertia x="1" y="1" z="1"/>
+        <centerOfMassTransform>
+            <basis x="0" y="0" z="0" w="1"/>
+            <origin x="0" y="0" z="0"/>
+        </centerOfMassTransform>
+        <gravity-factor>0.30</gravity-factor>
+        <linearDamping>0.72</linearDamping>
+        <angularDamping>0.76</angularDamping>
+        <friction>0.99</friction>
+        <rollingFriction>0.99</rollingFriction>
+        <restitution>0</restitution>
+        <margin-multiplier>0</margin-multiplier>
+</bone>
+    <bone name="NPC GenitalsScrotum [GenScrot]">
+        <mass>0.55</mass>
+        <inertia x="1" y="1" z="1"/>
+        <centerOfMassTransform>
+            <basis x="0" y="0" z="0" w="1"/>
+            <origin x="0" y="0" z="0"/>
+        </centerOfMassTransform>
+        <gravity-factor>0.55</gravity-factor>
+        <linearDamping>0.68</linearDamping>
+        <angularDamping>0.72</angularDamping>
+        <friction>0.99</friction>
+        <rollingFriction>0.99</rollingFriction>
+        <restitution>0</restitution>
+        <margin-multiplier>0</margin-multiplier>
+    </bone>
+
+    <bone name="NPC L GenitalsScrotum [LGenScrot]">
+        <mass>0.28</mass>
+        <inertia x="2" y="2" z="2"/>
+        <centerOfMassTransform>
+            <basis x="0" y="0" z="0" w="1"/>
+            <origin x="0" y="0" z="0"/>
+        </centerOfMassTransform>
+        <gravity-factor>0.58</gravity-factor>
+        <linearDamping>0.66</linearDamping>
+        <angularDamping>0.70</angularDamping>
+        <friction>0.8</friction>
+        <rollingFriction>0.33</rollingFriction>
+        <restitution>0</restitution>
+        <margin-multiplier>0</margin-multiplier>
+    </bone>
+
+    <bone name="NPC R GenitalsScrotum [RGenScrot]">
+        <mass>0.28</mass>
+        <inertia x="2" y="2" z="2"/>
+        <centerOfMassTransform>
+            <basis x="0" y="0" z="0" w="1"/>
+            <origin x="0" y="0" z="0"/>
+        </centerOfMassTransform>
+        <gravity-factor>0.58</gravity-factor>
+        <linearDamping>0.66</linearDamping>
+        <angularDamping>0.70</angularDamping>
+        <friction>0.8</friction>
+        <rollingFriction>0.33</rollingFriction>
+        <restitution>0</restitution>
+        <margin-multiplier>0</margin-multiplier>
+    </bone>
+
+
+
+
+    <!-- KEYFRAMED (SKELETON) -->
+<bone-default>
+    <mass>0</mass>
+    <inertia x="0" y="0" z="0"/>
+        <centerOfMassTransform>
+            <basis x="0" y="0" z="0" w="1"/>
+            <origin x="0" y="0" z="0"/>
+        </centerOfMassTransform>
+    <linearDamping>0</linearDamping>
+    <angularDamping>0</angularDamping>
+    <friction>0</friction>
+    <rollingFriction>0</rollingFriction>
+    <restitution>0</restitution>
+    <margin-multiplier>0</margin-multiplier>
+</bone-default>
+
+
+
+
+    <!-- CONSTRAINTS -->
+    <constraint-group>
+        <generic-constraint bodyA="NPC GenitalsScrotum [GenScrot]" bodyB="NPC GenitalsBase [GenBase]">
+            <frameInB>
+                <basis x="0" y="0" z="0" w="1"/>
+                <origin x="0" y="0" z="0"/>
+            </frameInB>
+            <useLinearReferenceFrameA>false</useLinearReferenceFrameA>
+        <linearLowerLimit x="-0.06" y="-0.10" z="-0.06"/>
+        <linearUpperLimit x="0.06" y="0.02" z="0.06"/>
+            <angularLowerLimit x="-0.12" y="-0.12" z="-0.12"/>
+            <angularUpperLimit x="0.12" y="0.12" z="0.12"/>
+            <linearStiffness x="1200" y="1200" z="1200"/>
+            <angularStiffness x="400" y="400" z="400"/>
+            <linearDamping x="14" y="14" z="14"/>
+            <angularDamping x="15" y="15" z="15"/>
+            <linearEquilibrium x="0" y="0" z="0"/>
+            <angularEquilibrium x="0" y="0" z="0"/>
+            <linearBounce x="0" y="0" z="0"/>
+            <angularBounce x="0" y="0" z="0"/>
+        </generic-constraint>
+        <generic-constraint bodyA="NPC L GenitalsScrotum [LGenScrot]" bodyB="NPC GenitalsScrotum [GenScrot]">
+            <frameInB>
+                <basis x="0" y="0" z="0" w="1"/>
+                <origin x="0" y="0" z="0"/>
+            </frameInB>
+            <useLinearReferenceFrameA>false</useLinearReferenceFrameA>
+            <linearLowerLimit x="-0.10" y="-0.16" z="-0.10"/>
+            <linearUpperLimit x="0.10" y="0.03" z="0.10"/>
+        <angularLowerLimit x="-0.16" y="-0.12" z="-0.12"/>
+        <angularUpperLimit x="0.16" y="0.12" z="0.12"/>
+            <linearStiffness x="900" y="900" z="900"/>
+            <angularStiffness x="180" y="180" z="180"/>
+            <linearDamping x="14" y="14" z="14"/>
+            <angularDamping x="15" y="15" z="15"/>
+            <linearEquilibrium x="0" y="0" z="0"/>
+            <angularEquilibrium x="0.03" y="0" z="-0.025"/>
+            <linearBounce x="0" y="0" z="0"/>
+            <angularBounce x="0" y="0" z="0"/>
+        </generic-constraint>
+        <generic-constraint bodyA="NPC R GenitalsScrotum [RGenScrot]" bodyB="NPC GenitalsScrotum [GenScrot]">
+            <frameInB>
+                <basis x="0" y="0" z="0" w="1"/>
+                <origin x="0" y="0" z="0"/>
+            </frameInB>
+            <useLinearReferenceFrameA>false</useLinearReferenceFrameA>
+            <linearLowerLimit x="-0.10" y="-0.16" z="-0.10"/>
+            <linearUpperLimit x="0.10" y="0.03" z="0.10"/>
+        <angularLowerLimit x="-0.16" y="-0.12" z="-0.12"/>
+        <angularUpperLimit x="0.16" y="0.12" z="0.12"/>
+            <linearStiffness x="900" y="900" z="900"/>
+            <angularStiffness x="180" y="180" z="180"/>
+            <linearDamping x="14" y="14" z="14"/>
+            <angularDamping x="15" y="15" z="15"/>
+            <linearEquilibrium x="0" y="0" z="0"/>
+            <angularEquilibrium x="-0.03" y="0" z="0.025"/>
+            <linearBounce x="0" y="0" z="0"/>
+            <angularBounce x="0" y="0" z="0"/>
+        </generic-constraint>
+    </constraint-group>
+
+<generic-constraint-default>
+    <frameInB>
+        <basis x="0" y="0" z="0" w="1"/>
+        <origin x="0" y="0" z="0"/>
+    </frameInB>
+    <useLinearReferenceFrameA>false</useLinearReferenceFrameA>
+        <linearLowerLimit x="0" y="0" z="0"/>
+        <linearUpperLimit x="0" y="0" z="0"/>
+        <angularLowerLimit x="-0.09" y="-0.06" z="-0.06"/>
+        <angularUpperLimit x="0.04" y="0.06" z="0.06"/>
+        <linearStiffness x="0" y="0" z="0"/>
+        <angularStiffness x="140" y="180" z="180"/>
+        <linearDamping x="100" y="100" z="100"/>
+        <angularDamping x="68" y="72" z="72"/>
+        <linearEquilibrium x="0" y="0" z="0"/>
+        <angularEquilibrium x="-0.018" y="0" z="0"/>
+        <linearBounce x="0" y="0" z="0"/>
+        <angularBounce x="0" y="0" z="0"/>
+</generic-constraint-default>
+
+    <generic-constraint bodyA="NPC Genitals01 [Gen01]" bodyB ="NPC GenitalsBase [GenBase]">
+        <frameInB>
+            <basis x="0" y="0" z="0" w="1"/>
+            <origin x="0" y="0" z="0"/>
+        </frameInB>
+        <useLinearReferenceFrameA>false</useLinearReferenceFrameA>
+        <linearLowerLimit x="0" y="0" z="0"/>
+        <linearUpperLimit x="0" y="0" z="0"/>
+        <angularLowerLimit x="-0.92" y="-0.10" z="-0.11"/>
+        <angularUpperLimit x="-0.36" y="0.10" z="0.11"/>
+        <linearStiffness x="0" y="0" z="0"/>
+        <angularStiffness x="95" y="190" z="190"/>
+        <linearDamping x="100" y="100" z="100"/>
+        <angularDamping x="72" y="76" z="76"/>
+        <linearEquilibrium x="0" y="0" z="0"/>
+        <angularEquilibrium x="-0.68" y="0" z="0"/>
+        <linearBounce x="0" y="0" z="0"/>
+        <angularBounce x="0" y="0" z="0"/>
+    </generic-constraint>
+    <generic-constraint bodyA="NPC Genitals02 [Gen02]" bodyB ="NPC Genitals01 [Gen01]"></generic-constraint>
+    <generic-constraint bodyA="NPC Genitals03 [Gen03]" bodyB ="NPC Genitals02 [Gen02]"></generic-constraint>
+    <generic-constraint bodyA="NPC Genitals04 [Gen04]" bodyB ="NPC Genitals03 [Gen03]"></generic-constraint>
+    <generic-constraint bodyA="NPC Genitals05 [Gen05]" bodyB ="NPC Genitals04 [Gen04]"></generic-constraint>
+    <generic-constraint bodyA="NPC Genitals06 [Gen06]" bodyB ="NPC Genitals05 [Gen05]"></generic-constraint>
+
+
+
+
+    <!-- COLLISIONS -->
+<per-triangle-shape name="MaleGenitalsCollision">
+<margin>4</margin>
+<penetration>0</penetration>
+<shared>public</shared>
+<tag>penis</tag>
+</per-triangle-shape>
+
+<per-triangle-shape name="peniscollision">
+<margin>4</margin>
+<priority>2</priority>
+<penetration>1</penetration>
+<shared>public</shared>
+  <tag>VirtualPenis</tag>
+ </per-triangle-shape>
+
+<per-triangle-shape name="VirtualCrotch">
+<margin>1</margin>
+<penetration>0</penetration>
+<tag>ground</tag>
+<no-collide-with-tag>scrotum</no-collide-with-tag>
+</per-triangle-shape>
+
+<per-triangle-shape name="VirtualGround">
+<margin>1</margin>
+<penetration>0</penetration>
+<tag>ground</tag>
+<no-collide-with-tag>scrotum</no-collide-with-tag>
+</per-triangle-shape>
+
+<per-triangle-shape name="scotumcollision">
+<margin>0.10</margin>
+<penetration>0</penetration>
+<tag>scrotum</tag>
+<no-collide-with-tag>ground</no-collide-with-tag>
+<shared>private</shared>
+</per-triangle-shape>
+
+    <!-- TNG_Himbo_SMP_XMLs compatibility: required MaleGenitals collision shape -->
+    <per-triangle-shape name="MaleGenitals">
+        <margin>0.1</margin>
+        <penetration>0.5</penetration>
+        <tag>Genitals</tag>
+        <no-collide-with-tag>Genitals</no-collide-with-tag>
+        <no-collide-with-tag>MaleHands</no-collide-with-tag>
+        <no-collide-with-tag>MaleBody</no-collide-with-tag>
+        <no-collide-with-tag>Malehands</no-collide-with-tag>
+        <no-collide-with-tag>penis</no-collide-with-tag>
+        <no-collide-with-tag>VirtualFeet</no-collide-with-tag>
+        <no-collide-with-tag>VirtualLegs</no-collide-with-tag>
+        <no-collide-with-tag>VirtualPenis</no-collide-with-tag>
+    </per-triangle-shape>
+
+</system>

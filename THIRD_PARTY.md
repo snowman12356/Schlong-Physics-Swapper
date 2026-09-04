@@ -32,3 +32,16 @@ OSL Aroused is released under the Unlicense. A verbatim copy is included at
 `compat/OSL Aroused/LICENSE.OSLAroused-Unlicense.txt`. The derivative source and
 binary may therefore be copied, modified, compiled, and distributed under those
 terms. This repository does not bundle any other OSL Aroused files.
+
+## Optional GT SOFTBODY + SPS compatibility XML
+
+The opt-in `MaleGenitals.xml`, `MaleGenitalsSoft.xml` and
+`MaleGenitalsToAnus.xml` files combine SPS-authored six-bone genital dynamics
+and collision exclusions compatible with SOS, TNG and UBE meshes with collision
+profiles derived from GT SOFTBODY 3.37.2 by Goutou:
+<https://www.nexusmods.com/skyrimspecialedition/mods/152103>.
+
+The SOFTBODY Nexus permissions allow modified releases and asset reuse with
+credit to the original creator. The author notes prohibit commercial use and
+inclusion in directly or indirectly paid compilations. This optional SPS
+component is distributed free of charge and must remain non-commercial.

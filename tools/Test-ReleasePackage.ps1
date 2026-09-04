@@ -29,6 +29,12 @@ $requiredFiles = @(
     'Optional\OStim\Scripts\SPS_OStimBridge.pex',
     'Optional\OSL Legacy\Scripts\OSLAroused_Main.pex',
     'Optional\OSL Legacy\Source\OSL Aroused Compatibility\OSLAroused_Main.psc',
+    'Optional\SOFTBODY SPS\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml',
+    'Optional\SOFTBODY SPS\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsSoft.xml',
+    'Optional\SOFTBODY SPS\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsToAnus.xml',
+    'Optional\SOFTBODY SPS\README.md',
+    'Optional\Personal Physics\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml',
+    'Optional\Personal Physics\README.md',
     'Licenses\OSL-Aroused-Unlicense.txt',
     'Mod Author API\README.md',
     'Mod Author API\SPSAPI.h'
@@ -126,10 +132,39 @@ foreach ($xmlFile in $smpXmlFiles) {
     }
 }
 
+$softbodySpsRoot = Join-Path $resolvedPackage 'Optional\SOFTBODY SPS\SKSE\Plugins\hdtSkinnedMeshConfigs'
+foreach ($fileName in @('MaleGenitals.xml', 'MaleGenitalsSoft.xml', 'MaleGenitalsToAnus.xml')) {
+    [xml]$combined = Get-Content -LiteralPath (Join-Path $softbodySpsRoot $fileName) -Raw
+    $maleShapes = @($combined.system.'per-triangle-shape' | Where-Object { $_.name -eq 'MaleGenitals' })
+    if ($maleShapes.Count -ne 1) {
+        throw "$fileName must contain exactly one combined MaleGenitals collision shape."
+    }
+    $maleShape = $maleShapes[0]
+    foreach ($tag in @('Genitals', 'MaleHands', 'MaleBody', 'Malehands', 'penis', 'VirtualFeet', 'VirtualLegs', 'VirtualPenis')) {
+        if ($tag -notin @($maleShape.'no-collide-with-tag')) {
+            throw "$fileName is missing the SPS collision exclusion: $tag"
+        }
+    }
+    if (@($maleShape.'weight-threshold').Count -eq 0) {
+        throw "$fileName is missing SOFTBODY's MaleGenitals weight thresholds."
+    }
+    if ((Get-Content -LiteralPath (Join-Path $softbodySpsRoot $fileName) -Raw).Contains('GenitalsLag')) {
+        throw "$fileName still contains SOFTBODY's rigid genital lag chain."
+    }
+}
+
+$personalPhysicsPath = Join-Path $resolvedPackage 'Optional\Personal Physics\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml'
+[xml]$personalPhysics = Get-Content -LiteralPath $personalPhysicsPath -Raw
+$personalMaleShapes = @($personalPhysics.system.'per-triangle-shape' | Where-Object { $_.name -eq 'MaleGenitals' })
+if ($personalMaleShapes.Count -ne 1) {
+    throw 'The personal SPS physics must contain exactly one MaleGenitals collision shape.'
+}
+foreach ($tag in @('Genitals', 'MaleHands', 'MaleBody', 'Malehands', 'penis', 'VirtualFeet', 'VirtualLegs', 'VirtualPenis')) {
+    if ($tag -notin @($personalMaleShapes[0].'no-collide-with-tag')) {
+        throw "The personal SPS physics is missing the collision exclusion: $tag"
+    }
+}
+
 Write-Output "Release package passed validation: $resolvedPackage"
 Write-Output "FOMOD source entries checked: $($sourceNodes.Count)"
-if ($smpXmlFiles.Count -eq 0) {
-    Write-Output 'No SMP XML is bundled, as expected; the compatible schlong addon supplies it.'
-} else {
-    Write-Output "Bundled SMP XML files checked: $($smpXmlFiles.Count)"
-}
+Write-Output "Bundled SMP XML files checked: $($smpXmlFiles.Count)"

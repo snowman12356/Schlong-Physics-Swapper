@@ -104,3 +104,7 @@ compat/OSL Aroused/Scripts/*
 !compat/OSL Aroused/Scripts/Source/
 compat/OSL Aroused/Scripts/Source/*
 !compat/OSL Aroused/Scripts/Source/OSLAroused_Main.psc
+!compat/SOFTBODY SPS/
+!compat/SOFTBODY SPS/**
+!compat/Personal Physics/
+!compat/Personal Physics/**

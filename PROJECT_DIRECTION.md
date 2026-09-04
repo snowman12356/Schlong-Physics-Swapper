@@ -75,14 +75,20 @@ post-load check without repeating the full filesystem compatibility scan.
 SOFTBODY 3.37.2 compatibility is automatic when
 `HDT SMP Object - Simple.esp` is loaded: after its relevant SexLab or OStim
 scene reload events settle, SPS reasserts only the physics owner it already
-selected. SPS does not replace SOFTBODY's genital XML or collision equipment,
-and no FOMOD option is required for ownership recovery. Testing established
-that SOFTBODY's genital XML deliberately gives the Gen02-Gen06 shaft chain zero
-gravity while its scrotum uses normal gravity, so stock SOFTBODY can look rigid
-even when SPS has correctly selected SMP. The latest development DLL SHA-256 is
+selected. No FOMOD option is required for ownership recovery and SPS leaves the
+addon's XML untouched by default. The FOMOD now offers three explicit physics
+choices: keep the user's own compatible XML, install the author's personal SPS
+six-bone profile, or install combined SPS + SOFTBODY physics. Both supplied SPS
+profiles support compatible SOS, TNG and UBE six-bone meshes. The SOFTBODY
+choice combines the SPS dynamics/collision exclusions with SOFTBODY 3.37.2's
+normal, soft and anal collision profiles, so users do not need competing
+genital XMLs. Testing established that
+SOFTBODY's stock genital XML gives the Gen02-Gen06 shaft chain zero gravity
+while its scrotum uses normal gravity, so it can look rigid even when SPS has
+correctly selected SMP. The latest development DLL SHA-256 is
 `0F3CC764DFEFC51E4BB094B3C341751F501BC3F681FFA8D127C65171C51C4A62` and the
 latest package SHA-256 is
-`C61F82D951EE01E369BCBEC880A148C8DE992CE54BD7964C2F8C687E4D93DE86`.
+`8D1F604DEC76E9127648FDB14895812B5C9150E06389F0B88A1CC5BAC9079839`.
 
 On 2026-09-02 the validated 2.0.0 files were installed only in the dedicated
 MO2 test mod at `D:\Modding\mods\Schlong Physics Swapper`; they have not been
@@ -93,7 +99,12 @@ DLL on 2026-09-02. The newer automatic post-load bone-detection build was then
 installed after Skyrim closed; all 18 deployed files match the validated
 package. On 2026-09-03 the automatic SOFTBODY recovery build was also installed
 after Skyrim closed; all 18 deployed files match the validated package, while
-the existing INI and MO2 metadata remain unchanged.
+the existing INI and MO2 metadata remain unchanged. On 2026-09-04 the package
+was extended with the three physics choices and revalidated with 25 FOMOD source
+entries and four bundled XMLs. Its 18 core files plus the selected three-file
+SPS SOFTBODY profile were installed for testing after Skyrim closed. The
+existing INI and MO2 metadata were again preserved, and the private large-mesh
+override received the same merged SPS compatibility collision shape.
 
 For the user's private SOFTBODY 3.37.2 setup, a separate local test override is
 enabled at `D:\Modding\mods\SOFTBODY True Soft Shaft - SPS`, above both
@@ -106,9 +117,12 @@ per-bone gravity, while retaining each SOFTBODY collision tail unchanged. This
 was subsequently tuned for the user's unusually large shaft mesh with higher
 base-to-tip mass and inertia, moderately stronger gravity response, and firmer
 damped joints; the mesh-following SOFTBODY collision definitions remain
-unchanged. This private derivative is not bundled in SPS or approved for
-redistribution; public FOMOD inclusion requires the SOFTBODY author's
-permission.
+unchanged. The user's `MaleGenitals` compatibility exclusions are also merged
+into the private large-mesh profiles. This separate large-mesh tuning remains a
+local override, while the generally tuned combined profiles are packaged as the
+public opt-in FOMOD component. Goutou is credited under SOFTBODY's published
+modification and asset-use permissions; the component must remain free and out
+of paid compilations.
 
 The next gate is the documented in-game player regression pass. It must first
 confirm that a compatible six-bone schlong is recognised automatically after
@@ -126,5 +140,9 @@ reload. After a full Skyrim restart, the local true-soft override must also be
 tested in Always soft mode: run Repair current physics once, confirm the shaft
 now responds to gravity with stable large-mesh motion rather than folding or
 oscillating excessively, then repeat normal, vaginal and anal scene transitions
-and confirm the scrotum and collision behaviour remain stable. Do not begin
-managed NPC support until the player gate has passed.
+and confirm the scrotum and collision behaviour remain stable. Separately test
+the packaged personal profile with compatible SOS, TNG and UBE six-bone builds.
+Test the packaged generic combined option with SOFTBODY and a compatible
+six-bone build, confirming that its single merged `MaleGenitals` shape supports
+collisions in all three SOFTBODY profiles. Do not begin managed NPC support
+until the player gate has passed.

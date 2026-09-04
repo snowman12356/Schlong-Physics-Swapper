@@ -122,4 +122,14 @@ install(FILES scripts/SPS_FSMPBridge.pex DESTINATION "Scripts")
 install(FILES scripts/Source/SPS_FSMPBridge.psc DESTINATION "Source/Scripts")
 install(FILES scripts/SPS_OStimBridge.pex DESTINATION "Optional/OStim/Scripts")
 install(FILES scripts/Source/SPS_OStimBridge.psc DESTINATION "Optional/OStim/Source/Scripts")
+install(FILES
+    "compat/SOFTBODY SPS/SKSE/Plugins/hdtSkinnedMeshConfigs/MaleGenitals.xml"
+    "compat/SOFTBODY SPS/SKSE/Plugins/hdtSkinnedMeshConfigs/MaleGenitalsSoft.xml"
+    "compat/SOFTBODY SPS/SKSE/Plugins/hdtSkinnedMeshConfigs/MaleGenitalsToAnus.xml"
+    DESTINATION "Optional/SOFTBODY SPS/SKSE/Plugins/hdtSkinnedMeshConfigs"
+)
+install(FILES "compat/SOFTBODY SPS/README.md" DESTINATION "Optional/SOFTBODY SPS")
+install(FILES "compat/Personal Physics/SKSE/Plugins/hdtSkinnedMeshConfigs/MaleGenitals.xml"
+    DESTINATION "Optional/Personal Physics/SKSE/Plugins/hdtSkinnedMeshConfigs")
+install(FILES "compat/Personal Physics/README.md" DESTINATION "Optional/Personal Physics")
 install(DIRECTORY fomod DESTINATION ".")
