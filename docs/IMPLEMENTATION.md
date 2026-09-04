@@ -44,6 +44,25 @@ exclusions.
 
 ## Test procedure
 
+When SexLab provides a valid role result, that result is authoritative for the
+physics decision. This includes its temporary `Not identified` result, which
+uses the configured unknown-role behaviour instead of accepting a contradictory
+PPA record. PPA continues to own live penetration alignment, but its role record
+is a physics fallback only when the SexLab role query is unavailable or invalid.
+This prevents a paired PPA interaction record from changing a receiving player
+to CBPC before SexLab finishes identifying the stage.
+
+All equipment recovery, player-only SMP resets and delayed bend replays wait for
+the current ownership transaction to finish. After a PPA/Accurate Penetration or
+SOFTBODY scene ends while the player is still using SMP, one delayed
+player-only reset clears scene-stretched transforms before SPS reconfirms the
+soft owner. A real CBPC-to-SMP handoff uses the same refresh path.
+
+A failed or timed-out Papyrus ownership transaction marks the cached owner as
+unknown. SPS then retries the current policy decision with a new ordered
+transaction; it never guesses that the pre-transaction owner still controls the
+live bones.
+
 1. Disable CBPC handling of the chain temporarily and verify visible SMP motion
    below the threshold.
 2. Re-enable CBPC. Set manual mode to `Force CBPC` and verify that movement is

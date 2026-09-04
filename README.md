@@ -116,6 +116,11 @@ choice merges the SPS shaft physics and collision exclusions with SOFTBODY's
 normal, soft and anal collision profiles. When selected, make SPS win conflicts
 for all three `MaleGenitals` XML files.
 
+When PPA/Accurate Penetration or SOFTBODY may have changed a soft shaft during
+a scene, SPS performs one delayed player-only SMP pose refresh after scene
+cleanup. Equipment recovery, ownership handoffs, and bend replay are serialized
+so they cannot race each other on replacement genital nodes.
+
 ## Mod-author compatibility API
 
 SPS now exposes an optional native V1 API for other SKSE plugins. A mod can
@@ -323,6 +328,23 @@ actual result, and short reproduction steps. See [SUPPORT.md](docs/SUPPORT.md).
 - Added optional personal SPS physics and combined SOFTBODY 3.37.2 + SPS
   six-bone XML choices for compatible SOS, TNG and UBE meshes, preserving
   SOFTBODY's three collision profiles while avoiding competing genital XMLs.
+- Fixed PPA's receiver records overriding a valid SexLab receiving role, which
+  could make a flaccid player switch to CBPC and restore the wrong state after
+  a scene.
+- A valid temporary SexLab `Not identified` role now keeps its configured
+  fallback instead of letting PPA create a short incorrect CBPC transition.
+- Added a delayed post-scene SMP pose refresh for a player who remains soft,
+  preventing scene transforms from leaving the floppy shaft stretched until a
+  manual SMP reset.
+- Prevented equipment recovery and position replay from running through an
+  unfinished FSMP/CBPC ownership handoff.
+- A failed or timed-out ownership transaction now invalidates the cached owner
+  so the next evaluation must reassert it instead of trusting stale state.
+- Disabling SPS now waits out any in-flight handoff, returns the player to SMP,
+  and clears recovery work that would otherwise be stale if SPS were enabled
+  again.
+- Delayed P+ role queries briefly while a new native scene thread registers,
+  avoiding transient `Thread instance not found` Papyrus stacks.
 - Moved the SexLab active-player query behind the same safe bridge pattern.
 - Versioned the completed modular rework and compatibility fixes as 2.0.0.
 

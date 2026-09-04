@@ -56,18 +56,12 @@ bool SexLabSceneWantsCBPC(const Settings& settings, const SexLabDecisionState& s
         return state.currentCBPC;
     }
 
-    if (state.recentPPARoleValid && state.recentPPARole == SceneRole::penetrating) {
-        return true;
-    }
     if (state.roleValid) {
         if (state.role == SceneRole::receiving) {
             return BottomWantsCBPC(settings, state);
         }
         if (state.role == SceneRole::penetrating) {
             return true;
-        }
-        if (state.recentPPARoleValid && state.recentPPARole == SceneRole::receiving) {
-            return BottomWantsCBPC(settings, state);
         }
         if (settings.sexLabUnknownRole == 1) {
             return false;
@@ -77,8 +71,13 @@ bool SexLabSceneWantsCBPC(const Settings& settings, const SexLabDecisionState& s
         }
         return state.currentCBPC;
     }
-    if (state.recentPPARoleValid && state.recentPPARole == SceneRole::receiving) {
-        return BottomWantsCBPC(settings, state);
+    if (state.recentPPARoleValid) {
+        if (state.recentPPARole == SceneRole::penetrating) {
+            return true;
+        }
+        if (state.recentPPARole == SceneRole::receiving) {
+            return BottomWantsCBPC(settings, state);
+        }
     }
     if (settings.sexLabUnknownRole == 1) {
         return false;

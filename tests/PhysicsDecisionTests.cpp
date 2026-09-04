@@ -97,11 +97,27 @@ int main()
     Expect(SPS::Core::SexLabSceneWantsCBPC(settings, sexLab), "SexLab receiving role preserves entry owner");
 
     sexLab.role = SPS::Core::SceneRole::receiving;
+    sexLab.entryCBPC = false;
     sexLab.recentPPARoleValid = true;
     sexLab.recentPPARole = SPS::Core::SceneRole::penetrating;
-    Expect(SPS::Core::SexLabSceneWantsCBPC(settings, sexLab), "recent PPA penetrating role wins transient disagreement");
+    Expect(!SPS::Core::SexLabSceneWantsCBPC(settings, sexLab), "valid SexLab receiving role wins conflicting PPA role");
+
+    sexLab.role = SPS::Core::SceneRole::penetrating;
+    sexLab.recentPPARole = SPS::Core::SceneRole::receiving;
+    Expect(SPS::Core::SexLabSceneWantsCBPC(settings, sexLab), "valid SexLab penetrating role wins conflicting PPA role");
+
+    sexLab.role = SPS::Core::SceneRole::unknown;
+    sexLab.recentPPARole = SPS::Core::SceneRole::penetrating;
+    sexLab.currentCBPC = false;
+    Expect(!SPS::Core::SexLabSceneWantsCBPC(settings, sexLab), "valid unknown SexLab role preserves the configured fallback despite PPA");
 
     sexLab.roleValid = false;
+    Expect(SPS::Core::SexLabSceneWantsCBPC(settings, sexLab), "PPA penetrating role is used when the SexLab role query is unavailable");
+
+    settings.sexLabBottomBehavior = 2;
+    sexLab.recentPPARole = SPS::Core::SceneRole::receiving;
+    Expect(!SPS::Core::SexLabSceneWantsCBPC(settings, sexLab), "PPA receiving role is used when the SexLab role query is unavailable");
+
     sexLab.recentPPARoleValid = false;
     settings.sexLabUnknownRole = 1;
     Expect(!SPS::Core::SexLabSceneWantsCBPC(settings, sexLab), "unknown SexLab role can force SMP");
@@ -323,8 +339,9 @@ int main()
         "pending ownership handoff remains active before its timeout");
     const auto ownerExpired = ownership.Expire(33000, 1000);
     Expect(ownerExpired.matched && !ownerExpired.success && ownerExpired.softTransition &&
-        !actorContext.physics.pending.load() && actorContext.physics.failures.load() == 1,
-        "timed-out ownership handoff fails without changing the confirmed owner");
+        !actorContext.physics.pending.load() && !actorContext.physics.known.load() &&
+        actorContext.physics.usingCBPC.load() && actorContext.physics.failures.load() == 1,
+        "timed-out ownership handoff invalidates confirmation without guessing a new owner");
     Expect(!ownership.Complete(expiringOwnerRequest.generation, true, 33100).matched,
         "callback arriving after ownership timeout is ignored");
 

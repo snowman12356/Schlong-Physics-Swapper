@@ -298,6 +298,10 @@ void SceneController::AcceptSexLabResult(std::uint64_t generation, RE::BSScript:
             const auto owner = owner_ ? owner_() : OwnerSnapshot{};
             state_.sexLab.entryCBPC.store(owner.usingCBPC);
             state_.sexLab.entryStateValid.store(owner.known);
+            // P+ can report the actor active just before its native collision
+            // thread has registered. Querying the role in that narrow window
+            // produces a noisy "Thread instance not found" Papyrus stack.
+            state_.sexLab.roleRetryAfterMs.store(now + 500);
             state_.sexLab.lastTopMs.store(0);
             state_.sexLab.bottomCandidateSinceMs.store(0);
             Record(std::string("SexLab scene detected; receiving state locked as ") +

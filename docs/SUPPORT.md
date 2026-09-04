@@ -70,7 +70,8 @@ check any file yourself before uploading it.
 - `SPS-016`: SOS Physics Manager is enabled and can fight SPS for control.
 - `SPS-017`: The optional delayed player SMP reset could not run.
 - `SPS-018`: The optional custom soft-angle SMP refresh could not run.
-- `SPS-019`: The player-only SMP refresh after a soft handoff could not run.
+- `SPS-019`: The player-only SMP pose refresh after a soft handoff or scene
+  could not run.
 - `SPS-020`: A startup or queued quick-fix action timed out while the game was
   still loading.
 

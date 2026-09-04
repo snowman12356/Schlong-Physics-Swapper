@@ -83,13 +83,26 @@ profiles support compatible SOS, TNG and UBE six-bone meshes. The SOFTBODY
 choice combines the SPS dynamics/collision exclusions with SOFTBODY 3.37.2's
 normal, soft and anal collision profiles, so users do not need competing
 genital XMLs. The three installer choices use concise first-person wording so
-the decision reads naturally to users. Testing established that
+the decision reads naturally to users. A live log captured PPA reporting the
+player as penetrating while SexLab authoritatively reported receiving; the
+decision now keeps every valid SexLab result, including its temporary unknown
+result, and uses PPA only when the SexLab role query is unavailable or invalid.
+This prevents a flaccid receiving player from being forced briefly to CBPC or
+held in that wrong state after the scene. Physics maintenance is serialized behind
+the active ownership transaction so equipment recovery and bend replay cannot
+race the FSMP/CBPC handoff. A soft player also receives one delayed player-only
+SMP pose rebuild after scene cleanup when PPA/Accurate Penetration or SOFTBODY
+may have left the chain stretched; brief P+ role-query delays avoid querying its
+native thread while it is still registering. Disabling SPS now waits for an
+in-flight transaction, restores plain SMP ownership, and discards stale recovery
+timers before a later re-enable. Failed or timed-out transactions invalidate the
+cached owner so a fresh ordered handoff is required. Testing established that
 SOFTBODY's stock genital XML gives the Gen02-Gen06 shaft chain zero gravity
 while its scrotum uses normal gravity, so it can look rigid even when SPS has
 correctly selected SMP. The latest development DLL SHA-256 is
-`0F3CC764DFEFC51E4BB094B3C341751F501BC3F681FFA8D127C65171C51C4A62` and the
+`A41A180C4CF10CE9299450F97CFC3F321575F1102DEF0A20BEE38D4C8E8BCCC6` and the
 latest package SHA-256 is
-`1F84348E141C86DB4CAB21391505E3E37C16589C9ED206B8FE18197136C04965`.
+`CA1CDDFC69591FDBF96DAAD0F11CF7BBA9906347AE9AF8F35858FE9121063001`.
 
 On 2026-09-02 the validated 2.0.0 files were installed only in the dedicated
 MO2 test mod at `D:\Modding\mods\Schlong Physics Swapper`; they have not been
@@ -106,6 +119,10 @@ entries and four bundled XMLs. Its 18 core files plus the selected three-file
 SPS SOFTBODY profile were installed for testing after Skyrim closed. The
 existing INI and MO2 metadata were again preserved, and the private large-mesh
 override received the same merged SPS compatibility collision shape.
+Later on 2026-09-04 the validated scene-role and serialized recovery build was
+installed after Skyrim closed. All 18 core files and the selected three-file
+SPS SOFTBODY profile match the package; the existing INI and MO2 metadata remain
+unchanged.
 
 For the user's private SOFTBODY 3.37.2 setup, a separate local test override is
 enabled at `D:\Modding\mods\SOFTBODY True Soft Shaft - SPS`, above both

@@ -121,6 +121,7 @@ bool AnySceneHasPriority(const Settings& copy);
 void ApplyRequestedBend(bool force, bool animate, bool automatic);
 void ApplyRequestedSoftBend(bool force, bool animate);
 void ScheduleSoftAngleRefresh(int delayMs = 350);
+void ScheduleSoftPoseResetAfterScene(std::int64_t sceneEndedMs);
 void RunSoftAngleRefresh();
 void CancelErectionAnimation();
 void StartGradualRelaxation(const Settings& copy);
@@ -450,6 +451,7 @@ void ConfigureControllers() {
             if (previous && !active && playerContext.physics.known.load() &&
                 !playerContext.physics.usingCBPC.load()) {
                 playerContext.recovery.softConfirmationDueMs.store(now + 250);
+                ScheduleSoftPoseResetAfterScene(now);
             }
             if (previous != active && playerContext.physics.known.load() &&
                 playerContext.physics.usingCBPC.load()) {
@@ -1077,6 +1079,10 @@ bool ConfirmCBPCState() {
 }
 
 void RunLoadSMPReset() {
+    if (ownershipController.Read().pending || PPAOwnsPosition()) {
+        playerContext.recovery.loadSmpResetDueMs.store(NowMs() + 1000);
+        return;
+    }
     if (!PapyrusReadyForDispatch()) {
         playerContext.recovery.loadSmpResetDueMs.store(NowMs() + 1000);
         return;
@@ -1133,8 +1139,35 @@ void ScheduleSoftAngleRefresh(int delayMs) {
     playerContext.recovery.softAngleRefreshDueMs.store(NowMs() + std::clamp(delayMs, 0, 2000));
 }
 
+void ScheduleSoftPoseResetAfterScene(std::int64_t sceneEndedMs) {
+    if (!playerContext.physics.known.load() || playerContext.physics.usingCBPC.load() ||
+        !FsmpActorApiAvailable()) return;
+
+    // PPA/Accurate Penetration and SOFTBODY can legitimately move or rebuild
+    // the genital chain during a scene. If the player remains soft throughout,
+    // there is no CBPC -> SMP handoff to trigger the normal pose rebuild. Queue
+    // the same player-only FSMP reset after scene cleanup has settled so stale
+    // stretched transforms cannot become the new floppy resting pose.
+    const bool scenePhysicsCanMoveSoftPose =
+        ::GetModuleHandleW(SPS::PPA::kPluginDLL) != nullptr || SoftbodyLoaded();
+    if (!scenePhysicsCanMoveSoftPose) return;
+
+    Settings copy;
+    { std::scoped_lock lock(settingsLock); copy = settings; }
+    if (!copy.enabled) return;
+    if (playerContext.recovery.softHandoffResetRestoreDueMs.load() > 0) return;
+    const auto due = sceneEndedMs + std::max(copy.sceneEndDelayMs + 500, 2000);
+    playerContext.recovery.softHandoffResetDueMs.store(due);
+    playerContext.recovery.softHandoffResetUntilMs.store(due + 10000);
+    Record("Post-scene soft SMP pose refresh queued");
+}
+
 void RunSoftAngleRefresh() {
-    if (!playerContext.physics.known.load() || playerContext.physics.usingCBPC.load() || PPAOwnsPosition()) return;
+    if (!playerContext.physics.known.load() || playerContext.physics.usingCBPC.load()) return;
+    if (ownershipController.Read().pending || PPAOwnsPosition()) {
+        playerContext.recovery.softAngleRefreshDueMs.store(NowMs() + 1000);
+        return;
+    }
     if (!PapyrusReadyForDispatch()) {
         playerContext.recovery.softAngleRefreshDueMs.store(NowMs() + 1000);
         return;
@@ -1157,7 +1190,11 @@ void RunSoftAngleRefresh() {
 }
 
 bool RefreshSMPAfterPlayerMeshChange() {
-    if (!playerContext.physics.known.load() || playerContext.physics.usingCBPC.load() || PPAOwnsPosition()) return false;
+    if (!playerContext.physics.known.load() || playerContext.physics.usingCBPC.load()) return false;
+    if (ownershipController.Read().pending || PPAOwnsPosition()) {
+        playerContext.recovery.nodeRefreshDueMs.store(NowMs() + 750);
+        return false;
+    }
     if (!PapyrusReadyForDispatch()) {
         playerContext.recovery.nodeRefreshDueMs.store(NowMs() + 1000);
         return false;
@@ -1176,22 +1213,52 @@ bool RefreshSMPAfterPlayerMeshChange() {
 }
 
 void RunSoftHandoffSMPReset() {
-    if (!playerContext.physics.known.load() || playerContext.physics.usingCBPC.load() || PPAOwnsPosition()) {
+    if (!playerContext.physics.known.load() || playerContext.physics.usingCBPC.load()) {
         playerContext.recovery.softHandoffResetDueMs.store(0);
         playerContext.recovery.softHandoffResetUntilMs.store(0);
         playerContext.recovery.softHandoffResetRestoreDueMs.store(0);
         return;
     }
-    if (!PapyrusReadyForDispatch()) {
-        const auto now = NowMs();
-        if (now < playerContext.recovery.softHandoffResetUntilMs.load())
+    const auto now = NowMs();
+    auto retry = [now](std::string_view reason) {
+        auto until = playerContext.recovery.softHandoffResetUntilMs.load();
+        if (until == 0) {
+            until = now + 10000;
+            playerContext.recovery.softHandoffResetUntilMs.store(until);
+        }
+        if (now < until) {
             playerContext.recovery.softHandoffResetDueMs.store(now + 1000);
-        else
-            Record("SPS-019: Soft-handoff refresh stopped because Papyrus did not become ready", true);
+            logger::debug("Soft SMP pose refresh is waiting for {}", reason);
+        } else {
+            playerContext.recovery.softHandoffResetUntilMs.store(0);
+            Record("SPS-019: Soft SMP pose refresh stopped before it could run", true);
+        }
+    };
+    if (PPAOwnsPosition()) {
+        // Active penetration alignment is expected to last longer than the
+        // normal retry window. Keep the refresh waiting until scene cleanup.
+        playerContext.recovery.softHandoffResetUntilMs.store(now + 10000);
+        playerContext.recovery.softHandoffResetDueMs.store(now + 1000);
+        return;
+    }
+    if (ownershipController.Read().pending) {
+        retry("the current ownership handoff");
+        return;
+    }
+    if (!PapyrusReadyForDispatch()) {
+        retry("Papyrus");
         return;
     }
     auto* player = RE::PlayerCharacter::GetSingleton();
-    if (!player || ::GetModuleHandleW(L"hdtsmp64.dll") == nullptr) return;
+    if (!player) {
+        retry("the player");
+        return;
+    }
+    if (::GetModuleHandleW(L"hdtsmp64.dll") == nullptr) {
+        playerContext.recovery.softHandoffResetUntilMs.store(0);
+        Record("SPS-019: Soft SMP pose refresh could not find Faster HDT-SMP", true);
+        return;
+    }
 
     // TogglePhysics can report success while FSMP keeps the previous simulated
     // shape. Rebuilding just the player after a real CBPC -> SMP handoff is the
@@ -1200,17 +1267,11 @@ void RunSoftHandoffSMPReset() {
     // clears velocity. Freezing the six bones immediately before that reset can
     // make FSMP rebuild from the frozen transitional shape, leaving the soft
     // mesh visibly stretched even though the ownership calls all succeeded.
-    const auto now = NowMs();
     playerContext.recovery.ignoreNodeEventsUntilMs.store(now + 3000);
     auto* actor = static_cast<RE::Actor*>(player);
     const bool dispatched = ResetSMPPhysics(actor, true);
     if (!dispatched) {
-        if (now < playerContext.recovery.softHandoffResetUntilMs.load()) {
-            playerContext.recovery.softHandoffResetDueMs.store(now + 1000);
-            logger::warn("Faster HDT-SMP did not accept the soft-handoff refresh; bounded retry queued");
-        } else {
-            Record("SPS-019: Faster HDT-SMP did not accept the soft-handoff refresh", true);
-        }
+        retry("Faster HDT-SMP");
         return;
     }
 
@@ -1218,7 +1279,7 @@ void RunSoftHandoffSMPReset() {
     playerContext.recovery.softConfirmationDueMs.store(0);
     playerContext.recovery.softHandoffResetRestoreDueMs.store(now + 750);
     ClearResolvedRefreshError();
-    Record("Soft physics handoff rebuilt the player's SMP pose");
+    Record("Soft physics rebuilt the player's SMP pose");
 }
 
 void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& completion) {
@@ -1283,12 +1344,15 @@ void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& comp
         (completion.previousCBPC ? SPS::API::PhysicsState::CBPC : SPS::API::PhysicsState::SMP) :
         SPS::API::PhysicsState::Unknown;
 
+    playerContext.recovery.nodeCbpcReacquireDueMs.store(0);
+    playerContext.recovery.nodeCbpcReacquireUntilMs.store(0);
     if (cbpc) {
         playerContext.recovery.softHandoffResetDueMs.store(0);
         playerContext.recovery.softHandoffResetUntilMs.store(0);
         playerContext.recovery.softHandoffResetRestoreDueMs.store(0);
         playerContext.recovery.softAngleRefreshDueMs.store(0);
         playerContext.recovery.softAngleRefreshRestoreDueMs.store(0);
+        playerContext.recovery.nodeSmpResetRestoreDueMs.store(0);
     }
     playerContext.recovery.ignoreNodeEventsUntilMs.store(now + 4000);
     ResetPositionRecovery();
@@ -1440,8 +1504,13 @@ bool NormalSettingsWantCBPC(const Settings& copy) {
 }
 
 bool SexLabSceneWantsCBPC(const Settings& copy) {
-    const bool recentPPAUpdate = sceneController.State().ppa.sceneRoleValid.load() &&
-        NowMs() - sceneController.State().ppa.lastUpdateMs.load() < 3000;
+    const auto now = NowMs();
+    const bool sexLabRoleQuerySettled =
+        !sceneController.State().sexLab.roleQueryPending.load() &&
+        now >= sceneController.State().sexLab.roleRetryAfterMs.load();
+    const bool recentPPAUpdate = sexLabRoleQuerySettled &&
+        sceneController.State().ppa.sceneRoleValid.load() &&
+        now - sceneController.State().ppa.lastUpdateMs.load() < 3000;
     const SPS::Core::SexLabDecisionState state{
         {
             sceneController.State().sexLab.active.load(),
@@ -1562,7 +1631,18 @@ void Tick() {
 
     ProcessPendingQuickAction();
     HandleOwnershipCompletion(ownershipController.Expire(now, 5000));
-    if (!copy.enabled) return;
+    if (!copy.enabled) {
+        const auto ownership = ownershipController.Read();
+        if (!ownership.pending && (!ownership.known || ownership.usingCBPC) &&
+            FsmpActorApiAvailable() && PapyrusReadyForDispatch()) {
+            SetOwner(false, true);
+        } else if (!ownership.pending && ownership.known && !ownership.usingCBPC) {
+            // No recovery from the enabled session may wake up later if SPS is
+            // re-enabled. The confirmed disabled state is plain SMP ownership.
+            recoveryController.ResetTransient();
+        }
+        return;
+    }
 
     if (copy.mode == 0)
         QueryArousal();
@@ -1658,7 +1738,8 @@ void Tick() {
         RunLoadSMPReset();
     }
 
-    if (recoveryController.ClaimLoadSmpResetRestore(now)) {
+    if (!ownershipController.Read().pending &&
+        recoveryController.ClaimLoadSmpResetRestore(now)) {
         // A full FSMP rebuild can restore the XML's default dynamic state.
         // Reapply the current arousal/scene decision and position exactly once.
         playerContext.position.appliedBend.store(-1);
@@ -1675,7 +1756,8 @@ void Tick() {
         RunSoftHandoffSMPReset();
     }
 
-    if (recoveryController.ClaimSoftHandoffResetRestore(
+    if (!ownershipController.Read().pending &&
+        recoveryController.ClaimSoftHandoffResetRestore(
             now, playerContext.physics.usingCBPC.load())) {
         playerContext.position.appliedBend.store(-1);
         ConfirmCurrentPhysicsOwner("the completed soft handoff refresh");
@@ -1688,7 +1770,8 @@ void Tick() {
         RunSoftAngleRefresh();
     }
 
-    if (recoveryController.ClaimSoftAngleRefreshRestore(
+    if (!ownershipController.Read().pending &&
+        recoveryController.ClaimSoftAngleRefreshRestore(
             now, playerContext.physics.usingCBPC.load())) {
         playerContext.position.appliedBend.store(-1);
         ApplyRequestedSoftBend(true, true);
@@ -1696,7 +1779,8 @@ void Tick() {
         Record("Soft angle restored after the SMP refresh");
     }
 
-    if (recoveryController.ClaimNodeSmpResetRestore(
+    if (!ownershipController.Read().pending &&
+        recoveryController.ClaimNodeSmpResetRestore(
             now, playerContext.physics.usingCBPC.load())) {
         playerContext.position.appliedBend.store(-1);
         ConfirmCurrentPhysicsOwner("the completed player mesh refresh");
@@ -1774,7 +1858,7 @@ void Tick() {
     }
 
     bool settledNow = false;
-    if (positionController.ClaimSettle(
+    if (!ownershipController.Read().pending && positionController.ClaimSettle(
             now, playerContext.physics.usingCBPC.load(), targetStillWantsCBPC)) {
         const bool timedGradual = copy.gradualErection &&
             (!copy.arousalBasedErection || RandomErectionActive());
@@ -1788,7 +1872,7 @@ void Tick() {
     // CBPC starts through Papyrus and may finish after the first bend request.
     // Confirm the final value once, after it has settled, without replaying an
     // animation or creating the old continuous repair loop.
-    if (positionController.ClaimConfirmation(
+    if (!ownershipController.Read().pending && positionController.ClaimConfirmation(
             now, playerContext.physics.usingCBPC.load(), targetStillWantsCBPC)) {
         ApplyRequestedBend(true, true, true);
     }
@@ -1798,7 +1882,8 @@ void Tick() {
     // The old maintenance pass interpreted that gap as a lost erect angle and
     // started raising 0 back to 17/20 at zero arousal. Only maintain the erect
     // angle while the current control source still actually wants CBPC.
-    if (!settledNow && playerContext.physics.usingCBPC.load() && targetStillWantsCBPC &&
+    if (!settledNow && !ownershipController.Read().pending &&
+        playerContext.physics.usingCBPC.load() && targetStillWantsCBPC &&
         copy.positionControl && !playerContext.position.relaxing.load()) {
         const int desired = DesiredBend(copy);
         const auto retryDue = playerContext.position.retryDueMs.load();
@@ -1808,59 +1893,72 @@ void Tick() {
     }
 
     if (recoveryController.ClaimNodeRefresh(now)) {
-        // A real later rebuild may discard the bend, but it does not justify a
-        // state decision. Re-confirm the existing owner once, then restore only
-        // the position data that the rebuilt skeleton may have discarded.
-        if (playerContext.physics.known.load() && !playerContext.physics.usingCBPC.load() && RefreshSMPAfterPlayerMeshChange()) {
-            // The player-only reset restores the owner and angle after FSMP
-            // finishes rebuilding the newly equipped schlong mesh.
-        } else if (playerContext.physics.known.load() && playerContext.physics.usingCBPC.load()) {
-            // CBPC can remain attached to the old genital nodes when armour or
-            // the equipped schlong replaces the player mesh. Stop the stale
-            // bindings first, then reacquire the newly-created bones on a later
-            // tick. A direct equipment listener also reaches this path when a
-            // mod does not emit an SKSE NiNode update event.
-            CancelErectionAnimation();
-            ResetPositionRecovery();
-            playerContext.position.appliedBend.store(-1);
-            playerContext.position.settleDueMs.store(0);
-            playerContext.position.confirmationDueMs.store(0);
-            playerContext.recovery.cbpcConfirmationDueMs.store(0);
-            if (!PapyrusReadyForDispatch()) {
-                playerContext.recovery.nodeCbpcReacquireDueMs.store(now + 1000);
-                playerContext.recovery.nodeCbpcReacquireUntilMs.store(now + 10000);
-            } else if (auto* player = RE::PlayerCharacter::GetSingleton()) {
-                auto* actor = static_cast<RE::Actor*>(player);
-                const bool released = ReleasePlayerPhysics(actor);
-                playerContext.recovery.nodeCbpcReacquireDueMs.store(now + (released ? 350 : 1000));
-                playerContext.recovery.nodeCbpcReacquireUntilMs.store(now + 10000);
-                if (released)
-                    Record("Player mesh changed; reconnecting erect physics to its new bones");
-                else
-                    logger::warn("Could not release the old erect-physics bindings; bounded retry queued");
+        if (ownershipController.Read().pending) {
+            // Never release or reset bones under an ownership transaction that
+            // has already been dispatched. Wait for its callback (or timeout)
+            // so equipment recovery cannot invert the requested final owner.
+            playerContext.recovery.nodeRefreshDueMs.store(now + 500);
+        } else {
+            // A real later rebuild may discard the bend, but it does not justify a
+            // state decision. Re-confirm the existing owner once, then restore only
+            // the position data that the rebuilt skeleton may have discarded.
+            if (playerContext.physics.known.load() && !playerContext.physics.usingCBPC.load() && RefreshSMPAfterPlayerMeshChange()) {
+                // The player-only reset restores the owner and angle after FSMP
+                // finishes rebuilding the newly equipped schlong mesh.
+            } else if (playerContext.physics.known.load() && playerContext.physics.usingCBPC.load()) {
+                // CBPC can remain attached to the old genital nodes when armour or
+                // the equipped schlong replaces the player mesh. Stop the stale
+                // bindings first, then reacquire the newly-created bones on a later
+                // tick. A direct equipment listener also reaches this path when a
+                // mod does not emit an SKSE NiNode update event.
+                CancelErectionAnimation();
+                ResetPositionRecovery();
+                playerContext.position.appliedBend.store(-1);
+                playerContext.position.settleDueMs.store(0);
+                playerContext.position.confirmationDueMs.store(0);
+                playerContext.recovery.cbpcConfirmationDueMs.store(0);
+                if (!PapyrusReadyForDispatch()) {
+                    playerContext.recovery.nodeCbpcReacquireDueMs.store(now + 1000);
+                    playerContext.recovery.nodeCbpcReacquireUntilMs.store(now + 10000);
+                } else if (auto* player = RE::PlayerCharacter::GetSingleton()) {
+                    auto* actor = static_cast<RE::Actor*>(player);
+                    const bool released = ReleasePlayerPhysics(actor);
+                    playerContext.recovery.nodeCbpcReacquireDueMs.store(now + (released ? 350 : 1000));
+                    playerContext.recovery.nodeCbpcReacquireUntilMs.store(now + 10000);
+                    if (released)
+                        Record("Player mesh changed; reconnecting erect physics to its new bones");
+                    else
+                        logger::warn("Could not release the old erect-physics bindings; bounded retry queued");
+                }
+            } else if (playerContext.physics.known.load() && !playerContext.physics.usingCBPC.load() && playerContext.recovery.nodeSmpResetRestoreDueMs.load() == 0) {
+                playerContext.recovery.softConfirmationDueMs.store(now + 750);
             }
-        } else if (playerContext.physics.known.load() && !playerContext.physics.usingCBPC.load() && playerContext.recovery.nodeSmpResetRestoreDueMs.load() == 0) {
-            playerContext.recovery.softConfirmationDueMs.store(now + 750);
+            playerContext.recovery.nodeRefreshFollowupDueMs.store(now + 1500);
         }
-        playerContext.recovery.nodeRefreshFollowupDueMs.store(now + 1500);
     }
 
     if (recoveryController.ClaimNodeRefreshFollowup(now)) {
         // Some armour managers rebuild the genital node twice. This quiet
         // second confirmation catches the late rebuild without another reset.
-        ConfirmCurrentPhysicsOwner("the completed equipment change");
-        playerContext.position.appliedBend.store(-1);
-        if (playerContext.physics.known.load() && playerContext.physics.usingCBPC.load() && copy.positionControl)
-            ApplyRequestedBend(true, true, true);
-        else if (playerContext.physics.known.load() && !playerContext.physics.usingCBPC.load())
-            ApplyRequestedSoftBend(true, false);
+        if (ownershipController.Read().pending ||
+            !ConfirmCurrentPhysicsOwner("the completed equipment change")) {
+            playerContext.recovery.nodeRefreshFollowupDueMs.store(now + 1000);
+        } else {
+            playerContext.position.appliedBend.store(-1);
+            if (playerContext.physics.usingCBPC.load() && copy.positionControl)
+                playerContext.recovery.erectMeshReplayDueMs.store(now + 1000);
+            else if (!playerContext.physics.usingCBPC.load())
+                playerContext.recovery.softConfirmationDueMs.store(now + 500);
+        }
     }
 
     if (recoveryController.ClaimErectMeshReplay(now)) {
         // Armour and schlong changes can replace the live skeleton after both
         // the CBPC handoff and the first bend request have already succeeded.
         // Replay the saved angle once after the replacement mesh is stable.
-        if (playerContext.physics.known.load() && playerContext.physics.usingCBPC.load() && copy.positionControl) {
+        if (ownershipController.Read().pending) {
+            playerContext.recovery.erectMeshReplayDueMs.store(now + 500);
+        } else if (playerContext.physics.known.load() && playerContext.physics.usingCBPC.load() && copy.positionControl) {
             CancelErectionAnimation();
             playerContext.position.appliedBend.store(-1);
             ApplyRequestedBend(true, true, true);
@@ -1991,7 +2089,12 @@ void SaveSettingsAndApply(const Settings& copy, const Settings& previous) {
     }
     if (previous.enabled && !copy.enabled) {
         ClearAPIRequests();
-        playerContext.recovery.externalOwnerRepairDueMs.store(0);
+        CancelErectionAnimation();
+        recoveryController.ResetTransient();
+        activeManualPhysicsTest.store(-1);
+        manualPhysicsTestUntilMs.store(0);
+        pendingQuickAction.store(-1);
+        pendingQuickActionUntilMs.store(0);
     }
     spdlog::set_level(copy.verboseLogging ? spdlog::level::debug : spdlog::level::info);
     Save();
@@ -2565,7 +2668,11 @@ void TestPhysicsState(bool cbpc) {
     // captured before SetOwner made the advertised ten-second test much shorter.
     const auto testStartedMs = NowMs();
     manualPhysicsTestUntilMs.store(testStartedMs + 10000);
-    if (!cbpc) playerContext.recovery.softConfirmationDueMs.store(testStartedMs + 250);
+    if (!cbpc) {
+        playerContext.recovery.softConfirmationDueMs.store(testStartedMs + 250);
+        playerContext.recovery.softHandoffResetDueMs.store(testStartedMs + 250);
+        playerContext.recovery.softHandoffResetUntilMs.store(testStartedMs + 10250);
+    }
     Record(fmt::format("{} physics test active for 10 seconds",
         cbpc ? "Erect" : "Soft"));
     CaptureState(cbpc ? "manual erect test" : "manual soft test");
@@ -2603,7 +2710,12 @@ void RepairPhysics() {
     }
     pendingQuickAction.store(-1);
     pendingQuickActionUntilMs.store(0);
-    playerContext.recovery.postSwitchVerificationDueMs.store(NowMs() + 1000);
+    const auto repairedAt = NowMs();
+    playerContext.recovery.postSwitchVerificationDueMs.store(repairedAt + 1000);
+    if (!playerContext.physics.usingCBPC.load()) {
+        playerContext.recovery.softHandoffResetDueMs.store(repairedAt + 250);
+        playerContext.recovery.softHandoffResetUntilMs.store(repairedAt + 10250);
+    }
     Record("Repair applied; final handoff check queued");
     RefreshDiagnostics();
     CaptureState("manual repair");
@@ -2866,8 +2978,10 @@ public:
             sceneController.State().ostim.roleValid.store(false);
             sceneController.State().ostim.roleQueryPending.store(false);
             ResetPPASceneTracking(2000);
-            if (playerContext.physics.known.load() && !playerContext.physics.usingCBPC.load())
+            if (playerContext.physics.known.load() && !playerContext.physics.usingCBPC.load()) {
                 playerContext.recovery.softConfirmationDueMs.store(NowMs() + 250);
+                ScheduleSoftPoseResetAfterScene(NowMs());
+            }
             Record("OStim player scene ended");
             if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { Evaluate(); });
         } else if (name == "HookAnimationStart" || name == "HookAnimationStarting" ||
@@ -2878,6 +2992,7 @@ public:
             name == "AnimationStart" || name == "AnimationEnd") {
             sceneController.State().sexLab.roleGeneration.fetch_add(1);
             sceneController.State().sexLab.roleQueryPending.store(false);
+            sceneController.State().sexLab.roleRetryAfterMs.store(NowMs() + 350);
             if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] {
                 QuerySexLab();
                 if (sceneController.State().sexLab.active.load()) QuerySexLabRole();
@@ -2904,8 +3019,10 @@ public:
             sceneController.State().sexLab.lastTopMs.store(0);
             sceneController.State().sexLab.bottomCandidateSinceMs.store(0);
             ResetPPASceneTracking(2000);
-            if (playerContext.physics.known.load() && !playerContext.physics.usingCBPC.load())
+            if (playerContext.physics.known.load() && !playerContext.physics.usingCBPC.load()) {
                 playerContext.recovery.softConfirmationDueMs.store(NowMs() + 250);
+                ScheduleSoftPoseResetAfterScene(NowMs());
+            }
         } else if (name == "SexLabEnabled" || name == "SexLabGameLoaded") {
             if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { QuerySexLab(); RefreshDiagnostics(); });
         }

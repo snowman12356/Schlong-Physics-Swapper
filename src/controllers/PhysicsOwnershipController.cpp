@@ -96,6 +96,11 @@ OwnershipCompletion PhysicsOwnershipController::Finish(
 
     if (!success) {
         ++state_.failures;
+        // A failed callback normally means no work ran, but a timeout can race
+        // a late Papyrus completion. The previous owner is no longer safe to
+        // treat as confirmed; force the next policy evaluation to reassert the
+        // requested state with a fresh ordered transaction.
+        state_.known.store(false);
         state_.retryAfterMs.store(now + 1000);
         return result;
     }
