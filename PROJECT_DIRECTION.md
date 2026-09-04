@@ -82,13 +82,14 @@ six-bone profile, or install combined SPS + SOFTBODY physics. Both supplied SPS
 profiles support compatible SOS, TNG and UBE six-bone meshes. The SOFTBODY
 choice combines the SPS dynamics/collision exclusions with SOFTBODY 3.37.2's
 normal, soft and anal collision profiles, so users do not need competing
-genital XMLs. Testing established that
+genital XMLs. The three installer choices use concise first-person wording so
+the decision reads naturally to users. Testing established that
 SOFTBODY's stock genital XML gives the Gen02-Gen06 shaft chain zero gravity
 while its scrotum uses normal gravity, so it can look rigid even when SPS has
 correctly selected SMP. The latest development DLL SHA-256 is
 `0F3CC764DFEFC51E4BB094B3C341751F501BC3F681FFA8D127C65171C51C4A62` and the
 latest package SHA-256 is
-`8D1F604DEC76E9127648FDB14895812B5C9150E06389F0B88A1CC5BAC9079839`.
+`1F84348E141C86DB4CAB21391505E3E37C16589C9ED206B8FE18197136C04965`.
 
 On 2026-09-02 the validated 2.0.0 files were installed only in the dedicated
 MO2 test mod at `D:\Modding\mods\Schlong Physics Swapper`; they have not been

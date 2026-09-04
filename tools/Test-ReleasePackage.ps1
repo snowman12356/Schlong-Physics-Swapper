@@ -108,6 +108,17 @@ foreach ($node in $sourceNodes) {
     }
 }
 
+$physicsChoices = @($module.SelectNodes('//installStep[@name="Physics XML compatibility"]//plugin') |
+    ForEach-Object { [string]$_.name })
+$expectedPhysicsChoices = @(
+    'I have my own compatible physics',
+    'Use my personal physics',
+    'Use my SOFTBODY physics'
+)
+if (($physicsChoices -join '|') -ne ($expectedPhysicsChoices -join '|')) {
+    throw 'The FOMOD physics choices or their order do not match the supported first-person wording.'
+}
+
 $cbpcMap = (Get-Content -LiteralPath (Join-Path $resolvedPackage 'SKSE\Plugins\CBPCMasterConfig_ZZZ_SchlongPhysicsSwapper.txt') -Raw).ToLowerInvariant()
 $cbpcValues = (Get-Content -LiteralPath (Join-Path $resolvedPackage 'SKSE\Plugins\CBPConfig_ZZZ_SchlongPhysicsSwapper.txt') -Raw).ToLowerInvariant()
 foreach ($index in 1..6) {

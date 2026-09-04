@@ -169,10 +169,10 @@ old settings even when both files are initially present.
 The Nexus archive includes a simple FOMOD. You manually choose OSL Aroused,
 SLO Aroused NG, SexLab Aroused Redux, or no arousal mod for manual-only use,
 so the installer does not have to guess.
-The physics page separately lets you keep your own compatible genital XML, use
-the SPS author's personal six-bone physics, or use the combined SPS SOFTBODY
-physics. The supplied profiles work with compatible SOS, TNG and UBE six-bone
-meshes; only choose the SOFTBODY profile when GT SOFTBODY 3.37.2 is installed.
+The physics page offers **I have my own compatible physics**, **Use my personal
+physics**, and **Use my SOFTBODY physics**. The supplied profiles work with
+compatible SOS, TNG and UBE six-bone meshes; only choose the SOFTBODY profile
+when GT SOFTBODY 3.37.2 is installed.
 The current OSL, SLO NG and Redux choices install no extra SPS compatibility
 file; leave each arousal mod's SOS position option disabled. OSL 2.9.0 through
 2.9.2 has a separate legacy option that installs the old player-only override. If
