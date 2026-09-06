@@ -18,6 +18,7 @@ std::string FormatSupportReport(const SupportReportInput& input)
         "SkyrimRuntime={} SKSE={}\n"
         "DLLs: MenuFramework={} OSL={} SLO={} FSMP={} CBPC={} SexLab={} OStim={} SOS={}\n"
         "Compatibility: TNG={} PositionBackend={} ClassicSexLabAroused={} SexLabRoleBridge={} OStimRoleBridge={} SOFTBODY={} PPA={} PhysicsEditor={} SOSPhysicsManager={} AutoPhysicsReset={} CrashLogger={}\n"
+        "OwnershipEvidence=completed-commands LiveMotionVerified=false (engine read-back unavailable)\n"
         "Engine={} StateKnown={} HandoffPending={} PendingTarget={} Arousal={:.1f} Provider={} ProviderConnected={} SexLabActive={} SexLabConnected={} SexLabRole={} SexLabRoleValid={} OStimActive={} OStimConnected={} OStimRole={} OStimRoleValid={}\n"
         "CompatibilityAPI=V{} ActiveRequests={} ActiveRequester={} Accepted={} Released={} ResetNotices={} OwnerRepairs={} LastOwnerRepairMs={}\n"
         "MenuFramework={} ArousalProvider={} FSMP={} FSMPActorAPI={} FSMPBridge={} CBPC={} SexLabPPlus={} PositionBackendReady={} SupportedAddon={}\n"

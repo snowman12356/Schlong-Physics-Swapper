@@ -15,23 +15,17 @@ enum class OwnershipDispatchResult {
 using OwnershipCompletion = std::function<void(bool)>;
 
 bool OrderedFsmpBridgeAvailable();
-bool ResetPlayerPhysics(
-    RE::Actor* actor,
-    bool full,
-    bool fsmpActorApiAvailable,
-    std::int64_t allowedAfterMs,
-    std::int64_t nowMs);
+bool RegisterPhysicsBridge(RE::BSScript::IVirtualMachine* vm);
+void CancelPhysicsOperation();
+void ResetPhysicsOperations();
 OwnershipDispatchResult SetPlayerPhysicsOwner(
     RE::Actor* actor,
     bool useCBPC,
+    int preparation,
+    int softBend,
     bool fsmpActorApiAvailable,
     std::int64_t allowedAfterMs,
     std::int64_t nowMs,
     OwnershipCompletion completion);
-bool ReleasePlayerPhysics(
-    RE::Actor* actor,
-    bool fsmpActorApiAvailable,
-    std::int64_t allowedAfterMs,
-    std::int64_t nowMs);
 
 }

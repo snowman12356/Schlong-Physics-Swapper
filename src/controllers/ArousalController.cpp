@@ -1,4 +1,5 @@
 #include "ArousalController.h"
+#include "PhysicsDecision.h"
 
 #include "runtime/Compatibility.h"
 #include "runtime/PapyrusGateway.h"
@@ -18,8 +19,7 @@ namespace {
 
 std::int64_t NowMs()
 {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
+    return Runtime::NowMs();
 }
 
 class ArousalCallback final : public RE::BSScript::IStackCallbackFunctor {
@@ -29,7 +29,13 @@ public:
 
     void operator()(RE::BSScript::Variable result) override
     {
-        owner_.AcceptResult(generation_, result);
+        const float value = result.IsFloat() ? result.GetFloat() :
+            (result.IsInt() ? static_cast<float>(result.GetSInt()) : -1.0F);
+        if (auto* tasks = SKSE::GetTaskInterface()) {
+            tasks->AddTask([owner = &owner_, generation = generation_, value] {
+                owner->AcceptResult(generation, value);
+            });
+        }
     }
 
     void SetObject(const RE::BSTSmartPointer<RE::BSScript::Object>&) override {}
@@ -183,23 +189,13 @@ bool ArousalController::Connected() const
     return connected_.load();
 }
 
-void ArousalController::AcceptResult(std::uint64_t generation, RE::BSScript::Variable result)
+void ArousalController::AcceptResult(std::uint64_t generation, float result)
 {
     if (generation != generation_.load()) {
         return;
     }
-    bool resultValid = false;
-    float reading = 0.0F;
-    if (result.IsFloat()) {
-        reading = std::clamp(result.GetFloat(), 0.0F, 100.0F);
-        resultValid = true;
-    } else if (result.IsInt()) {
-        reading = static_cast<float>(std::clamp(result.GetSInt(), 0, 100));
-        resultValid = true;
-    }
-
-    if (resultValid) {
-        ApplyReading(reading);
+    if (const auto reading = Core::ValidArousalReading(result)) {
+        ApplyReading(*reading);
     } else {
         const bool haveLastReading = valid_.load();
         retryAfterMs_.store(NowMs() + 3000);
@@ -213,12 +209,11 @@ void ArousalController::AcceptResult(std::uint64_t generation, RE::BSScript::Var
 
 void ArousalController::AcceptExternalReading(float reading)
 {
-    if (!std::isfinite(reading)) {
-        return;
-    }
+    const auto validReading = Core::ValidArousalReading(reading);
+    if (!validReading) return;
     generation_.fetch_add(1);
     queryPending_.store(false);
-    ApplyReading(std::clamp(reading, 0.0F, 100.0F));
+    ApplyReading(*validReading);
 }
 
 void ArousalController::ApplyReading(float reading)

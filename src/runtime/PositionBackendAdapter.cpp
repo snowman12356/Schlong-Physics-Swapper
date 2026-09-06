@@ -28,7 +28,8 @@ bool SendPositionEvent(
     std::int64_t allowedAfterMs,
     std::int64_t nowMs)
 {
-    if (!actor || actor != RE::PlayerCharacter::GetSingleton()) {
+    if (!actor || actor != RE::PlayerCharacter::GetSingleton() ||
+        !PapyrusReady(allowedAfterMs, nowMs)) {
         return false;
     }
     if (tngBackend) {

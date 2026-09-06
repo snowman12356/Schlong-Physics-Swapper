@@ -16,22 +16,19 @@ void RecoveryController::ResetTransient()
 
     auto& recovery = context_.recovery;
     recovery.loadSmpResetDueMs.store(0);
-    recovery.loadSmpResetRestoreDueMs.store(0);
     recovery.softHandoffResetDueMs.store(0);
     recovery.softHandoffResetUntilMs.store(0);
-    recovery.softHandoffResetRestoreDueMs.store(0);
     recovery.softAngleRefreshDueMs.store(0);
-    recovery.softAngleRefreshRestoreDueMs.store(0);
     recovery.softConfirmationDueMs.store(0);
     recovery.softConfirmationUntilMs.store(0);
     recovery.cbpcConfirmationDueMs.store(0);
     recovery.cbpcConfirmationUntilMs.store(0);
     recovery.nodeRefreshDueMs.store(0);
     recovery.nodeRefreshFollowupDueMs.store(0);
+    recovery.nodeRefreshFollowupUntilMs.store(0);
     recovery.nodeCbpcReacquireDueMs.store(0);
     recovery.nodeCbpcReacquireUntilMs.store(0);
     recovery.erectMeshReplayDueMs.store(0);
-    recovery.nodeSmpResetRestoreDueMs.store(0);
     recovery.startupReconcileDueMs.store(0);
     recovery.startupReconcileUntilMs.store(0);
     recovery.postSwitchVerificationDueMs.store(0);
@@ -49,6 +46,23 @@ void RecoveryController::ScheduleExternalOwnerRepair(
     context_.recovery.externalOwnerRepairUntilMs.store(due + 10000);
 }
 
+void RecoveryController::ScheduleNodeRefreshFollowup(std::int64_t now)
+{
+    context_.recovery.nodeRefreshFollowupDueMs.store(now + 1500);
+    context_.recovery.nodeRefreshFollowupUntilMs.store(now + 12000);
+}
+
+bool RecoveryController::RetryNodeRefreshFollowup(std::int64_t now)
+{
+    if (now < context_.recovery.nodeRefreshFollowupUntilMs.load()) {
+        context_.recovery.nodeRefreshFollowupDueMs.store(now + 1000);
+        return true;
+    }
+    context_.recovery.nodeRefreshFollowupDueMs.store(0);
+    context_.recovery.nodeRefreshFollowupUntilMs.store(0);
+    return false;
+}
+
 bool RecoveryController::ClaimPostSwitchVerification(std::int64_t now)
 {
     return ClaimIfDue(context_.recovery.postSwitchVerificationDueMs, now);
@@ -64,39 +78,16 @@ bool RecoveryController::ClaimLoadSmpReset(std::int64_t now)
     return ClaimIfDue(context_.recovery.loadSmpResetDueMs, now);
 }
 
-bool RecoveryController::ClaimLoadSmpResetRestore(std::int64_t now)
-{
-    return ClaimIfDue(context_.recovery.loadSmpResetRestoreDueMs, now);
-}
-
 bool RecoveryController::ClaimSoftHandoffReset(
     std::int64_t now, bool usingCBPC)
 {
     return !usingCBPC && ClaimIfDue(context_.recovery.softHandoffResetDueMs, now);
 }
 
-bool RecoveryController::ClaimSoftHandoffResetRestore(
-    std::int64_t now, bool usingCBPC)
-{
-    return !usingCBPC && ClaimIfDue(context_.recovery.softHandoffResetRestoreDueMs, now);
-}
-
 bool RecoveryController::ClaimSoftAngleRefresh(
     std::int64_t now, bool usingCBPC)
 {
     return !usingCBPC && ClaimIfDue(context_.recovery.softAngleRefreshDueMs, now);
-}
-
-bool RecoveryController::ClaimSoftAngleRefreshRestore(
-    std::int64_t now, bool usingCBPC)
-{
-    return !usingCBPC && ClaimIfDue(context_.recovery.softAngleRefreshRestoreDueMs, now);
-}
-
-bool RecoveryController::ClaimNodeSmpResetRestore(
-    std::int64_t now, bool usingCBPC)
-{
-    return !usingCBPC && ClaimIfDue(context_.recovery.nodeSmpResetRestoreDueMs, now);
 }
 
 bool RecoveryController::ClaimNodeCbpcReacquire(

@@ -1,7 +1,93 @@
 Scriptname SPS_FSMPBridge Hidden
 
 Int Function GetSPSBridgeVersion() Global
-    Return 2
+    Return 3
+EndFunction
+
+Bool Function EnterOperation(String token) Global Native
+Bool Function OperationCurrent(String token) Global Native
+Bool Function QueueResetBarrier(String token) Global Native
+Bool Function ResetBarrierPassed(String token) Global Native
+
+; One lease covers preparation, settling and the final owner. Expired tokens
+; cannot start work or be overtaken while their stack is still running.
+; preparation: 0 ordinary handoff, 1 full player reset, 2 equipment reconnect.
+Bool Function SetPlayerOwnerV3(String token, Bool useCBPC, Int preparation, Int softBend) Global
+    If !EnterOperation(token)
+        Return false
+    EndIf
+    Actor targetActor = Game.GetPlayer()
+    If targetActor == None || !targetActor.Is3DLoaded() || !OperationCurrent(token)
+        Return false
+    EndIf
+    String[] bones = GetPhysicsBones()
+    Int index = 0
+    If preparation == 1
+        If softBend >= 0
+            Debug.SendAnimationEvent(targetActor, "SOSFlaccid")
+            If !OperationCurrent(token)
+                Return false
+            EndIf
+            SOSAE_SKSE.SetSchlongBend(targetActor, softBend)
+            If !OperationCurrent(token)
+                Return false
+            EndIf
+        EndIf
+        DynamicHDT.ResetPhysics(targetActor, true)
+        If !QueueResetBarrier(token)
+            Return false
+        EndIf
+        While !ResetBarrierPassed(token)
+            If !OperationCurrent(token)
+                Return false
+            EndIf
+            Utility.Wait(0.1)
+        EndWhile
+        Utility.Wait(0.75)
+    ElseIf preparation == 2
+        While index < bones.Length
+            If !OperationCurrent(token)
+                Return false
+            EndIf
+            CBPCPluginScript.StopPhysics(targetActor, bones[index])
+            index += 1
+        EndWhile
+        If !OperationCurrent(token)
+            Return false
+        EndIf
+        DynamicHDT.TogglePhysics(targetActor, bones, false)
+        Utility.Wait(0.35)
+    EndIf
+    If !OperationCurrent(token) || !targetActor.Is3DLoaded()
+        Return false
+    EndIf
+    index = 0
+    If useCBPC
+        DynamicHDT.TogglePhysics(targetActor, bones, false)
+        Utility.Wait(0.25)
+        While index < bones.Length
+            If !OperationCurrent(token)
+                Return false
+            EndIf
+            CBPCPluginScript.StartPhysics(targetActor, bones[index])
+            index += 1
+        EndWhile
+    Else
+        While index < bones.Length
+            If !OperationCurrent(token)
+                Return false
+            EndIf
+            CBPCPluginScript.StopPhysics(targetActor, bones[index])
+            index += 1
+        EndWhile
+        Utility.Wait(0.25)
+        If !OperationCurrent(token)
+            Return false
+        EndIf
+        DynamicHDT.TogglePhysics(targetActor, bones, true)
+    EndIf
+    ; Execution acknowledgment is not read-back of live engine ownership.
+    Return OperationCurrent(token)
 EndFunction
 
 String[] Function GetPhysicsBones() Global

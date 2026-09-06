@@ -24,7 +24,7 @@ public:
     [[nodiscard]] bool Valid() const;
     [[nodiscard]] bool Connected() const;
 
-    void AcceptResult(std::uint64_t generation, RE::BSScript::Variable result);
+    void AcceptResult(std::uint64_t generation, float result);
     void AcceptExternalReading(float reading);
 
 private:

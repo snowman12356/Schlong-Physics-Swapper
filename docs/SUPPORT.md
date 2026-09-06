@@ -47,12 +47,20 @@ The reports contain mod state, versions, settings and relevant filenames. They
 do not contain your Windows username, save name, or full computer paths. Please
 check any file yourself before uploading it.
 
+The green setup check confirms required files and bones, not live movement.
+Use **Test soft** and **Test erect** to check motion. A successful command in the
+log is not proof that the active mesh has attached to the expected engine.
+Tests and recovery timeouts pause while the game is paused. After updating,
+restart Skyrim and test from a save outside a scene; keep the supplied DLL and
+bridge scripts together.
+
 ## Error codes
 
 - `SPS-001`: SKSE Menu Framework is missing.
 - `SPS-002`: The selected arousal provider (OSL Aroused, SLO Aroused NG, or
   classic SexLab Aroused Redux) is missing, timed out, or returned invalid data.
-- `SPS-003`: Faster HDT-SMP is missing.
+- `SPS-003`: Faster HDT-SMP is missing, or the SPS physics bridge cannot be
+  loaded or does not match the DLL. Reinstall the DLL and scripts together.
 - `SPS-004`: CBPC is missing.
 - `SPS-005`: One or more of the six player schlong bones are missing.
 - `SPS-006`: No compatible six-bone SMP XML was found.
@@ -72,8 +80,9 @@ check any file yourself before uploading it.
 - `SPS-018`: The optional custom soft-angle SMP refresh could not run.
 - `SPS-019`: The player-only SMP pose refresh after a soft handoff or scene
   could not run.
-- `SPS-020`: A startup or queued quick-fix action timed out while the game was
-  still loading.
+- `SPS-020`: A startup or queued quick-fix action timed out waiting for script
+  execution or a physics handoff. The log and diagnostic report include the
+  current Papyrus wait reason; a workload warning alone does not block SPS.
 
 ## Suggested pinned Nexus post
 

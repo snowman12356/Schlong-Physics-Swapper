@@ -12,3 +12,7 @@ EndFunction
 Bool Function HasInteractionType(Int aiType, Actor akPosition = None, Actor akPartner = None)
     Return False
 EndFunction
+
+Int Function GetThreadID()
+    Return -1
+EndFunction

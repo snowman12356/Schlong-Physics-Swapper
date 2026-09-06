@@ -4,6 +4,10 @@
 #include "controllers/PositionController.h"
 #include "controllers/PhysicsOwnershipController.h"
 #include "controllers/RecoveryController.h"
+#include "controllers/ExecutionClock.h"
+#include "controllers/PapyrusOperationGate.h"
+#include "controllers/SceneState.h"
+#include <limits>
 #include "diagnostics/ActivityLog.h"
 
 #include <chrono>
@@ -344,6 +348,106 @@ int main()
         "timed-out ownership handoff invalidates confirmation without guessing a new owner");
     Expect(!ownership.Complete(expiringOwnerRequest.generation, true, 33100).matched,
         "callback arriving after ownership timeout is ignored");
+
+    // The old relaxation branch required known=true after failure had set it false.
+    Expect(SPS::Core::SoftHandoffNeedsRetry(false, false, true),
+        "timed-out relaxation can reacquire unknown ownership");
+    Expect(SPS::Core::SoftHandoffNeedsRetry(false, false, false),
+        "unknown ownership retries even if its stale cache says SMP");
+    Expect(!SPS::Core::SoftHandoffNeedsRetry(true, true, true) &&
+        !SPS::Core::SoftHandoffNeedsRetry(false, true, false),
+        "running relaxation and completed soft ownership do not restart the handoff");
+    Expect(SPS::Core::MaintenanceWantsCBPC(false, 1, true),
+        "erect test retains its pose at zero normal arousal");
+    Expect(!SPS::Core::MaintenanceWantsCBPC(true, 0, true) &&
+        SPS::Core::MaintenanceWantsCBPC(true, 0, false),
+        "soft test overrides high arousal only during its visible test window");
+
+    SPS::Controllers::ExecutionClock executionClock;
+    const auto menuRequest = ownership.Begin(true,
+        SPS::Controllers::OwnershipPurpose::switchOwner, false, executionClock.Now(40000));
+    executionClock.SetPaused(40200, true);
+    Expect(executionClock.Now(100000) == 40200 &&
+        !ownership.Expire(executionClock.Now(100000), 5000).matched,
+        "one minute in a paused menu does not expire a live Papyrus handoff");
+    executionClock.SetPaused(100000, false);
+    Expect(executionClock.Now(100300) == 40500 &&
+        ownership.Complete(menuRequest.generation, true, executionClock.Now(100300)).success,
+        "handoff resumes with its original active-time budget");
+
+    SPS::Controllers::PapyrusOperationGate gate;
+    Expect(gate.Prepare("old") && gate.Enter("old"), "old Papyrus stack acquires its lease");
+    gate.Cancel();
+    Expect(!gate.Current("old") && !gate.Prepare("new"),
+        "timeout cancels old instructions without letting replacement overtake running stack");
+    gate.Complete("old");
+    Expect(gate.Prepare("new") && !gate.Enter("old") && gate.Enter("new"),
+        "delayed old entry cannot execute after replacement starts");
+    gate.Complete("old");
+    Expect(gate.Current("new"), "late old callback cannot release replacement lease");
+    Expect(!gate.BarrierPassed("new"), "reset restoration waits for the FSMP game task");
+    gate.PassBarrier("old");
+    Expect(!gate.BarrierPassed("new"), "stale reset barrier cannot acknowledge current rebuild");
+    gate.PassBarrier("new");
+    Expect(gate.BarrierPassed("new"), "current FSMP task barrier permits restoration");
+    gate.ResetSession();
+    Expect(!gate.Current("new") && !gate.Enter("new") && gate.Prepare("other-save"),
+        "saved stacks cannot acquire a new session's operation");
+    gate.Cancel();
+    Expect(gate.Prepare("not-started") , "queued-only cancellation releases its slot");
+    gate.Cancel();
+    Expect(!gate.Enter("not-started"), "timed-out queued stack has no side effects when it finally starts");
+
+    const auto resetting = ownership.Begin(false,
+        SPS::Controllers::OwnershipPurpose::resetMesh, false, 50000);
+    Expect(ownership.Begin(true, SPS::Controllers::OwnershipPurpose::switchOwner,
+        false, 50100).status == SPS::Controllers::OwnershipBeginStatus::blocked,
+        "opposite handoff waits for reset plus owner restoration to complete");
+    Expect(ownership.Complete(resetting.generation, true, 51000).success,
+        "reset transaction completes through the same ownership controller");
+    recovery.ScheduleNodeRefreshFollowup(60000);
+    Expect(recovery.RetryNodeRefreshFollowup(71999) &&
+        !recovery.RetryNodeRefreshFollowup(72000) &&
+        actorContext.recovery.nodeRefreshFollowupDueMs.load() == 0,
+        "equipment follow-up cannot extend its deadline on every retry");
+    Expect(!recovery.RetryNodeRefreshFollowup(73000), "expired follow-up stays stopped");
+    recovery.ScheduleNodeRefreshFollowup(74000);
+    Expect(recovery.RetryNodeRefreshFollowup(75000), "a new equipment episode can retry again");
+
+    SPS::Controllers::SceneState scenes;
+    scenes.sexLab.active.store(true);
+    scenes.sexLab.threadID.store(4);
+    scenes.sexLab.endedMs.store(20);
+    scenes.sexLab.entryStateValid.store(true);
+    scenes.ostim.active.store(true);
+    const auto previousSceneGeneration = scenes.sexLab.queryGeneration.load();
+    scenes.ResetSession();
+    Expect(!scenes.sexLab.active.load() && scenes.sexLab.threadID.load() == -1 &&
+        scenes.sexLab.endedMs.load() == 0 && !scenes.sexLab.entryStateValid.load() &&
+        !scenes.ostim.active.load() && scenes.sexLab.queryGeneration.load() != previousSceneGeneration,
+        "load reset removes old scene identity and invalidates its callbacks");
+    Expect(SPS::Core::IsSexLabThreadEvent("StageStart") &&
+        SPS::Core::IsSexLabPhysicsReloadEvent("StageStart") &&
+        SPS::Core::IsSexLabPhysicsReloadEvent("AnimationEnd") &&
+        !SPS::Core::IsSexLabThreadEvent("HookStageStart") &&
+        !SPS::Core::IsSexLabThreadEvent("unrelated"),
+        "native event routing uses SexLab's actual event names");
+    Expect(SPS::Core::MatchesPlayerSceneThread("0", 0) &&
+        SPS::Core::MatchesPlayerSceneThread("4", 4) &&
+        !SPS::Core::MatchesPlayerSceneThread("5", 4) &&
+        !SPS::Core::MatchesPlayerSceneThread("4", -1),
+        "only a known matching player thread admits stage recovery");
+    Expect(!SPS::Core::MatchesPlayerSceneThread("4junk", 4) &&
+        !SPS::Core::MatchesPlayerSceneThread("", 0) &&
+        !SPS::Core::MatchesPlayerSceneThread("-1", -1) &&
+        !SPS::Core::MatchesPlayerSceneThread("999999999999999999", 4),
+        "malformed or overflowing thread IDs cannot trigger player recovery");
+    Expect(!SPS::Core::ValidArousalReading(-1.0F) &&
+        !SPS::Core::ValidArousalReading(std::numeric_limits<float>::quiet_NaN()) &&
+        !SPS::Core::ValidArousalReading(std::numeric_limits<float>::infinity()) &&
+        SPS::Core::ValidArousalReading(0.0F).value_or(-1.0F) == 0.0F &&
+        SPS::Core::ValidArousalReading(105.0F).value_or(-1.0F) == 100.0F,
+        "missing/invalid arousal is distinct from genuine zero arousal");
 
     SPS::APIControl::ExternalControlRegistry registry;
     SPS::API::PhysicsRequest apiRequest;

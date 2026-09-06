@@ -18,8 +18,7 @@ namespace {
 
 std::int64_t NowMs()
 {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
+    return Runtime::NowMs();
 }
 
 const char* RoleName(int role)
@@ -40,7 +39,12 @@ public:
         owner_(owner), generation_(generation) {}
     void operator()(RE::BSScript::Variable result) override
     {
-        owner_.AcceptSexLabResult(generation_, result);
+        const int value = result.IsInt() ? result.GetSInt() : -2;
+        if (auto* tasks = SKSE::GetTaskInterface()) {
+            tasks->AddTask([owner = &owner_, generation = generation_, value] {
+                owner->AcceptSexLabResult(generation, value);
+            });
+        }
     }
     void SetObject(const RE::BSTSmartPointer<RE::BSScript::Object>&) override {}
 
@@ -55,7 +59,12 @@ public:
         owner_(owner), generation_(generation) {}
     void operator()(RE::BSScript::Variable result) override
     {
-        owner_.AcceptSexLabRoleResult(generation_, result);
+        const int value = result.IsInt() ? result.GetSInt() : -1;
+        if (auto* tasks = SKSE::GetTaskInterface()) {
+            tasks->AddTask([owner = &owner_, generation = generation_, value] {
+                owner->AcceptSexLabRoleResult(generation, value);
+            });
+        }
     }
     void SetObject(const RE::BSTSmartPointer<RE::BSScript::Object>&) override {}
 
@@ -70,7 +79,12 @@ public:
         owner_(owner), generation_(generation) {}
     void operator()(RE::BSScript::Variable result) override
     {
-        owner_.AcceptOStimRoleResult(generation_, result);
+        const int value = result.IsInt() ? result.GetSInt() : -1;
+        if (auto* tasks = SKSE::GetTaskInterface()) {
+            tasks->AddTask([owner = &owner_, generation = generation_, value] {
+                owner->AcceptOStimRoleResult(generation, value);
+            });
+        }
     }
     void SetObject(const RE::BSTSmartPointer<RE::BSScript::Object>&) override {}
 
@@ -135,7 +149,7 @@ void SceneController::QuerySexLab()
     RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{
         new SexLabCallback(*this, generation)
     };
-    if (!vm->DispatchStaticCall("SPS_SexLabBridge", "IsPlayerActive", args, callback)) {
+    if (!vm->DispatchStaticCall("SPS_SexLabBridge", "GetPlayerThreadID", args, callback)) {
         state_.sexLab.queryPending.store(false);
         state_.sexLab.valid.store(false);
         state_.sexLab.connected.store(false);
@@ -238,6 +252,12 @@ void SceneController::QueryOStimRole()
     }
 }
 
+void SceneController::ResetSession()
+{
+    state_.ResetSession();
+    ResetPPA(2000);
+}
+
 void SceneController::InvalidateQueries()
 {
     state_.sexLab.queryGeneration.fetch_add(1);
@@ -272,13 +292,14 @@ const SceneState& SceneController::State() const
     return state_;
 }
 
-void SceneController::AcceptSexLabResult(std::uint64_t generation, RE::BSScript::Variable result)
+void SceneController::AcceptSexLabResult(std::uint64_t generation, int result)
 {
     if (generation != state_.sexLab.queryGeneration.load()) {
         return;
     }
-    if (result.IsBool()) {
-        const bool active = result.GetBool();
+    if (result >= -1) {
+        const bool active = result >= 0;
+        state_.sexLab.threadID.store(result);
         const bool previous = state_.sexLab.active.exchange(active);
         state_.sexLab.valid.store(true);
         state_.sexLab.connected.store(true);
@@ -304,8 +325,11 @@ void SceneController::AcceptSexLabResult(std::uint64_t generation, RE::BSScript:
             state_.sexLab.roleRetryAfterMs.store(now + 500);
             state_.sexLab.lastTopMs.store(0);
             state_.sexLab.bottomCandidateSinceMs.store(0);
-            Record(std::string("SexLab scene detected; receiving state locked as ") +
-                (owner.usingCBPC ? "hard (CBPC)" : "flaccid (SMP)"));
+            if (owner.known)
+                Record(std::string("SexLab scene detected; receiving state locked as ") +
+                    (owner.usingCBPC ? "hard (CBPC)" : "flaccid (SMP)"));
+            else
+                Record("SexLab scene detected without a known entry owner; configured role fallback applies");
         }
         if (previous != active && sexLabTransition_) {
             sexLabTransition_(previous, active, now);
@@ -318,15 +342,15 @@ void SceneController::AcceptSexLabResult(std::uint64_t generation, RE::BSScript:
     QueueEvaluation(state_.sexLab.active.load());
 }
 
-void SceneController::AcceptSexLabRoleResult(std::uint64_t generation, RE::BSScript::Variable result)
+void SceneController::AcceptSexLabRoleResult(std::uint64_t generation, int result)
 {
     if (generation != state_.sexLab.roleGeneration.load()) {
         return;
     }
     bool valid = false;
     int role = 0;
-    if (result.IsInt()) {
-        role = std::clamp(result.GetSInt(), 0, 2);
+    if (result >= 0 && result <= 2) {
+        role = result;
         valid = true;
     }
     const auto now = NowMs();
@@ -360,15 +384,15 @@ void SceneController::AcceptSexLabRoleResult(std::uint64_t generation, RE::BSScr
     QueueEvaluation();
 }
 
-void SceneController::AcceptOStimRoleResult(std::uint64_t generation, RE::BSScript::Variable result)
+void SceneController::AcceptOStimRoleResult(std::uint64_t generation, int result)
 {
     if (generation != state_.ostim.roleGeneration.load()) {
         return;
     }
     bool valid = false;
     int role = 0;
-    if (result.IsInt()) {
-        role = std::clamp(result.GetSInt(), 0, 2);
+    if (result >= 0 && result <= 2) {
+        role = result;
         valid = true;
     }
     const int previous = state_.ostim.role.exchange(role);

@@ -1,7 +1,7 @@
 Scriptname SPS_SexLabBridge Hidden
 
 Int Function GetSPSBridgeVersion() Global
-    Return 2
+    Return 3
 EndFunction
 
 Bool Function IsPlayerActive() Global
@@ -41,4 +41,19 @@ Int Function GetPlayerRole() Global
     EndIf
 
     Return 0
+EndFunction
+
+; Native-visible SexLab events contain the thread ID. Resolve the player's
+; thread without calling its collision/interaction API during registration.
+Int Function GetPlayerThreadID() Global
+    Actor player = Game.GetPlayer()
+    SexLabFramework sexLab = Game.GetFormFromFile(0xD62, "SexLab.esm") as SexLabFramework
+    If player == None || sexLab == None
+        Return -2
+    EndIf
+    sslThreadController thread = sexLab.GetActorController(player)
+    If thread == None || !thread.HasActor(player)
+        Return -1
+    EndIf
+    Return thread.GetThreadID()
 EndFunction

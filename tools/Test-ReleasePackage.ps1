@@ -12,6 +12,7 @@ if (-not (Test-Path -LiteralPath $resolvedPackage -PathType Container)) {
 }
 
 $requiredFiles = @(
+    'SPSBuildManifest.json',
     'fomod\info.xml',
     'fomod\ModuleConfig.xml',
     'SKSE\Plugins\SchlongPhysicsSwapper.dll',
@@ -47,30 +48,10 @@ foreach ($relativePath in $requiredFiles) {
     }
 }
 
-function Test-PexSymbols {
-    param(
-        [Parameter(Mandatory = $true)][string]$RelativePath,
-        [Parameter(Mandatory = $true)][string[]]$Symbols
-    )
-
-    $pexPath = Join-Path $resolvedPackage $RelativePath
-    $bytes = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($pexPath))
-    foreach ($symbol in $Symbols) {
-        if (-not $bytes.Contains($symbol)) {
-            throw "$RelativePath is stale or incompatible; missing Papyrus symbol: $symbol"
-        }
-    }
+. (Join-Path $PSScriptRoot 'SPS.PexContracts.ps1')
+foreach ($contract in Get-SPSBridgeContracts) {
+    Test-SPSPexContract -Path (Join-Path $resolvedPackage "$($contract.Prefix)Scripts/$($contract.Name).pex") -Contract $contract
 }
-
-Test-PexSymbols 'Scripts\SPS_FSMPBridge.pex' @(
-    'GetSPSBridgeVersion', 'SetPlayerOwner', 'SetPlayerOwnerV2', 'ReleasePlayerPhysics', 'ResetPlayerPhysics')
-Test-PexSymbols 'Scripts\SPS_SexLabBridge.pex' @(
-    'GetSPSBridgeVersion', 'IsPlayerActive', 'GetPlayerRole')
-Test-PexSymbols 'Scripts\SPS_PositionBridge.pex' @(
-    'GetSPSBridgeVersion', 'SendPlayerAnimationEvent', 'SetPlayerSchlongBend')
-Test-PexSymbols 'Scripts\SPS_ArousalBridge.pex' @(
-    'GetSPSBridgeVersion', 'GetPlayerArousal')
-Test-PexSymbols 'Optional\OStim\Scripts\SPS_OStimBridge.pex' @('GetSPSBridgeVersion', 'GetPlayerRole')
 
 try {
     [xml]$info = Get-Content -LiteralPath (Join-Path $resolvedPackage 'fomod\info.xml') -Raw
@@ -82,6 +63,8 @@ try {
 if ([string]::IsNullOrWhiteSpace($Version)) {
     $Version = [string]$info.fomod.Version
 }
+
+Test-SPSBuildReceipt -PackagePath $resolvedPackage -Version $Version
 
 $forbiddenPaths = @(
     'Scripts\OSLAroused_Main.pex',
@@ -179,3 +162,5 @@ foreach ($tag in @('Genitals', 'MaleHands', 'MaleBody', 'Malehands', 'penis', 'V
 Write-Output "Release package passed validation: $resolvedPackage"
 Write-Output "FOMOD source entries checked: $($sourceNodes.Count)"
 Write-Output "Bundled SMP XML files checked: $($smpXmlFiles.Count)"
+
+Write-Output "Compiled bridge ABIs, version values and 11 paired-build hashes checked."

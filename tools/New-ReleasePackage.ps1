@@ -9,6 +9,10 @@ param(
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $build = (Resolve-Path -LiteralPath (Join-Path $repo $BuildDirectory)).Path
+$manifest = Join-Path $build 'SPSBuildManifest.json'
+if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
+    throw 'Run Build-Release.ps1 first to compile the DLL and bridges together and record their hashes.'
+}
 $dist = Join-Path $repo $OutputDirectory
 $stageName = "Schlong-Physics-Swapper-{0}" -f $Version
 $stage = Join-Path $dist $stageName
@@ -24,6 +28,7 @@ if (Test-Path -LiteralPath $stage) {
     Remove-Item -LiteralPath $resolvedStage -Recurse -Force
 }
 New-Item -ItemType Directory -Path $stage | Out-Null
+Copy-Item -LiteralPath $manifest -Destination (Join-Path $stage 'SPSBuildManifest.json')
 
 function Copy-ReleaseFile {
     param([string]$Source, [string]$Destination)

@@ -54,8 +54,8 @@ This compiles the FSMP ownership, SexLab, position, arousal and optional OStim
 bridges from `scripts\Source` using only the tracked declarations in
 `scripts\BuildStubs`.
 The compiler writes the paired PEX files back to `scripts`, where release
-validation checks their ABI marker and required symbols and confirms that they
-are packaged with the DLL. OStim runtime support remains optional and
+validation parses their actual signatures, global/native flags and version
+return values, then verifies them against the paired DLL/script build manifest. OStim runtime support remains optional and
 experimental even though its bridge is built reproducibly with the package.
 
 ## Build and verify a release ZIP
@@ -69,8 +69,13 @@ Update the version in `CMakeLists.txt`, `src/plugin.cpp`, `fomod/info.xml` and
 
 The release command checks all version declarations and the environment,
 recompiles every Papyrus bridge, builds the DLL, creates the FOMOD ZIP, expands
-the ZIP into a temporary folder, validates the bridge ABI symbols and contents,
-and confirms the packaged DLL hash matches the build.
+the ZIP into a temporary folder, validates compiled bridge contracts and contents,
+and verifies all eleven DLL/PEX/PSC hashes against `SPSBuildManifest.json`.
+Failure-case tests reject incompatible version values, signatures/native flags,
+and mismatched DLL, compiled script or source files. `New-ReleasePackage.ps1`
+requires the receipt from `Build-Release.ps1`; changing any recorded input
+requires another complete paired build. The receipt is package metadata and
+is not installed into the game by the FOMOD.
 The ZIP uses sorted entries and fixed timestamps, so identical inputs produce
 the same archive hash on repeated runs. Local DLLs are placed in `out\build`;
 release staging and ZIP files are placed in `out\release`.

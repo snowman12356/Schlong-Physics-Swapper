@@ -6,6 +6,7 @@
 namespace SPS::Controllers {
 
 struct SexLabState {
+    std::atomic<int> threadID{ -1 };
     std::atomic<bool> active{ false };
     std::atomic<bool> valid{ false };
     std::atomic<bool> connected{ false };
@@ -55,6 +56,43 @@ struct SceneState {
     SexLabState sexLab{};
     OStimState ostim{};
     PPAState ppa{};
+
+    void ResetSession()
+    {
+        ++sexLab.queryGeneration;
+        ++sexLab.roleGeneration;
+        ++ostim.roleGeneration;
+        sexLab.threadID.store(-1);
+        sexLab.active.store(false);
+        sexLab.valid.store(false);
+        sexLab.connected.store(false);
+        sexLab.endedMs.store(0);
+        sexLab.entryStateValid.store(false);
+        sexLab.entryCBPC.store(false);
+        sexLab.role.store(0);
+        sexLab.roleValid.store(false);
+        sexLab.queryPending.store(false);
+        sexLab.roleQueryPending.store(false);
+        sexLab.queryRetryAfterMs.store(0);
+        sexLab.roleRetryAfterMs.store(0);
+        sexLab.lastTopMs.store(0);
+        sexLab.bottomCandidateSinceMs.store(0);
+        ostim.active.store(false);
+        ostim.connected.store(false);
+        ostim.endedMs.store(0);
+        ostim.entryStateValid.store(false);
+        ostim.entryCBPC.store(false);
+        ostim.role.store(0);
+        ostim.roleValid.store(false);
+        ostim.roleQueryPending.store(false);
+        ostim.roleRetryAfterMs.store(0);
+        ppa.sceneActive.store(false);
+        ppa.sceneRole.store(0);
+        ppa.sceneRoleValid.store(false);
+        ppa.lastUpdateMs.store(0);
+        ppa.lastTopMs.store(0);
+        ppa.bottomCandidateSinceMs.store(0);
+    }
 };
 
 }

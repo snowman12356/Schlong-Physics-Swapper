@@ -86,6 +86,7 @@ SPS::Controllers::PositionController positionController{ playerContext.position 
 SPS::Controllers::RecoveryController recoveryController{ playerContext };
 SPS::Controllers::SceneController sceneController;
 std::atomic<bool> polling{ false };
+std::atomic<bool> tickQueued{ false };
 std::atomic<std::int64_t> diagnosticsRefreshDueMs{ 0 };
 std::atomic<std::int64_t> playerBonesRefreshDueMs{ 0 };
 std::atomic<std::int64_t> manualPhysicsTestUntilMs{ 0 };
@@ -115,6 +116,7 @@ void RefreshDiagnostics();
 void RefreshPlayerBoneDiagnostics();
 void Save();
 bool PapyrusReadyForDispatch();
+const char* PapyrusStatusText();
 bool SexLabHasPriority(const Settings& copy);
 bool OStimHasPriority(const Settings& copy);
 bool AnySceneHasPriority(const Settings& copy);
@@ -165,8 +167,7 @@ bool PPAOwnsPosition() {
 }
 
 std::int64_t NowMs() {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
+    return SPS::Runtime::NowMs();
 }
 
 void ScheduleExternalOwnerRepair(int delayMs, std::string_view reason) {
@@ -448,8 +449,10 @@ void ConfigureControllers() {
             };
         },
         [](bool previous, bool active, std::int64_t now) {
-            if (previous && !active && playerContext.physics.known.load() &&
-                !playerContext.physics.usingCBPC.load()) {
+            if (!previous && active && SoftbodyLoaded())
+                ScheduleExternalOwnerRepair(3000, "the player's SOFTBODY scene start");
+            if (previous && !active && (!playerContext.physics.known.load() ||
+                !playerContext.physics.usingCBPC.load())) {
                 playerContext.recovery.softConfirmationDueMs.store(now + 250);
                 ScheduleSoftPoseResetAfterScene(now);
             }
@@ -486,14 +489,15 @@ bool CoreReady(const Diagnostics& d, const Settings& copy) {
 void CaptureState(std::string_view reason) {
     Settings copy;
     { std::scoped_lock lock(settingsLock); copy = settings; }
+    const auto* vm = SPS::Runtime::VM();
     const auto line = fmt::format(
-        "{} | engine={} arousal={:.1f}/{} provider={} connected={} SexLab={} SexLabRole={} OStim={} OStimRole={} SMP={} CBPC={} bend={}/{} method={} animating={} guard={} suspended={}",
+        "{} | engine={} arousal={:.1f}/{} provider={} connected={} SexLab={} SexLabRole={} OStim={} OStimRole={} SMP={} CBPC={} bend={}/{} method={} animating={} guard={} suspended={} papyrus={} vmOverstressed={}",
         reason, playerContext.physics.known.load() ? (playerContext.physics.usingCBPC.load() ? "CBPC" : "SMP") : "unknown",
         arousalController.Value(), arousalController.Valid(), ArousalProviderName(), arousalController.Connected(), sceneController.State().sexLab.active.load(),
         SexLabRoleName(sceneController.State().sexLab.role.load()), sceneController.State().ostim.active.load(), OStimRoleName(sceneController.State().ostim.role.load()),
         playerContext.physics.smpConnected.load(), playerContext.physics.cbpcConnected.load(), playerContext.position.requestedBend.load(), playerContext.position.appliedBend.load(),
         playerContext.position.lastMethod.load(), playerContext.position.animating.load(), NowMs() < playerContext.position.guardUntilMs.load(),
-        playerContext.position.automaticSuspended.load());
+        playerContext.position.automaticSuspended.load(), PapyrusStatusText(), vm && vm->overstressed);
     if (copy.verboseLogging || DebugCaptureActive()) logger::debug("{}", line);
     AppendCaptureLine("STATE", line);
 }
@@ -548,6 +552,11 @@ bool PapyrusReadyForDispatch() {
     return SPS::Runtime::PapyrusReady(papyrusDispatchAllowedAfterMs.load(), NowMs());
 }
 
+const char* PapyrusStatusText() {
+    const auto* reason = SPS::Runtime::PapyrusWaitReason(papyrusDispatchAllowedAfterMs.load(), NowMs());
+    return reason ? reason : "ready";
+}
+
 void InvalidatePapyrusQueries(int delayMs) {
     papyrusDispatchAllowedAfterMs.store(NowMs() + std::max(delayMs, 0));
     arousalController.Invalidate();
@@ -559,27 +568,6 @@ bool Call(const char* script, const char* function, Args... values) {
     return SPS::Runtime::DispatchStatic(
         script, function, papyrusDispatchAllowedAfterMs.load(), NowMs(),
         std::move(values)...);
-}
-
-bool ResetSMPPhysics(RE::Actor* actor, bool full) {
-    return SPS::Runtime::ResetPlayerPhysics(
-        actor, full, FsmpActorApiAvailable(),
-        papyrusDispatchAllowedAfterMs.load(), NowMs());
-}
-
-SPS::Runtime::OwnershipDispatchResult SetPlayerPhysicsOwner(
-    RE::Actor* actor,
-    bool useCBPC,
-    SPS::Runtime::OwnershipCompletion completion) {
-    return SPS::Runtime::SetPlayerPhysicsOwner(
-        actor, useCBPC, FsmpActorApiAvailable(),
-        papyrusDispatchAllowedAfterMs.load(), NowMs(), std::move(completion));
-}
-
-bool ReleasePlayerPhysics(RE::Actor* actor) {
-    return SPS::Runtime::ReleasePlayerPhysics(
-        actor, FsmpActorApiAvailable(),
-        papyrusDispatchAllowedAfterMs.load(), NowMs());
 }
 
 bool CallSosAeBend(RE::Actor* actor, int bend) {
@@ -878,6 +866,10 @@ void StartBendAnimation(int startBend, int targetBend, int durationMs, bool rela
     erectionAnimationThread = std::jthread([generation, startBend, targetBend, durationMs, useGraphEvents, tngBackend, relaxing](std::stop_token token) {
         while (!token.stop_requested() && playerContext.position.animating.load() &&
             generation == playerContext.position.animationGeneration.load()) {
+            if (SPS::Runtime::ExecutionPaused()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                continue;
+            }
             const auto elapsed = std::max<std::int64_t>(0, NowMs() - playerContext.position.animationStartMs.load());
             const float t = std::clamp(static_cast<float>(elapsed) / static_cast<float>(durationMs), 0.0F, 1.0F);
             const float eased = t * t * (3.0F - 2.0F * t);
@@ -886,13 +878,23 @@ void StartBendAnimation(int startBend, int targetBend, int durationMs, bool rela
             const int eventBend = AnimationEventBend(bend, tngBackend);
             const int queueKey = useGraphEvents ? eventBend : bend;
             const int previousQueueKey = playerContext.position.animationLastQueuedBend.exchange(queueKey);
-            if (queueKey != previousQueueKey || t >= 1.0F) {
+            if (queueKey != previousQueueKey) {
                 if (auto* tasks = SKSE::GetTaskInterface()) {
                     tasks->AddTask([generation, bend, eventBend, targetBend, useGraphEvents, tngBackend, relaxing] {
-                        if (!playerContext.position.animating.load() || generation != playerContext.position.animationGeneration.load() ||
-                            !playerContext.physics.known.load() || !playerContext.physics.usingCBPC.load()) return;
+                        if (!playerContext.position.animating.load() || generation != playerContext.position.animationGeneration.load()) return;
+                        if (SPS::Runtime::ExecutionPaused() || ownershipController.Read().pending) {
+                            playerContext.position.animationLastQueuedBend.store(-1);
+                            return;
+                        }
+                        if (!playerContext.physics.known.load() || !playerContext.physics.usingCBPC.load()) {
+                            CancelErectionAnimation();
+                            return;
+                        }
                         auto* player = RE::PlayerCharacter::GetSingleton();
-                        if (!player) return;
+                        if (!player) {
+                            CancelErectionAnimation();
+                            return;
+                        }
                         const bool ok = useGraphEvents
                             ? SendPositionEvent(static_cast<RE::Actor*>(player),
                                 RE::BSFixedString(fmt::format("SOSBend{}", eventBend)), tngBackend)
@@ -960,7 +962,6 @@ void StartBendAnimation(int startBend, int targetBend, int durationMs, bool rela
                     });
                 }
             }
-            if (t >= 1.0F) break;
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
     });
@@ -1014,7 +1015,7 @@ void ApplyRequestedBend(bool force = false, bool animate = false, bool automatic
         if (ok) {
             ++playerContext.position.repairs;
             if (previous != desired)
-                Record(fmt::format("Erect vertical bend applied: {}/20", desired));
+                Record(fmt::format("Erect vertical bend requested: {}/20", desired));
         } else if (!automatic) {
             Record("SPS-011: SOS bend API did not accept the position update", true);
         }
@@ -1043,7 +1044,7 @@ void ApplyRequestedSoftBend(bool force = false, bool animate = false) {
         const bool ok = ApplyBend(static_cast<RE::Actor*>(player), desired, true, animate, false);
         if (playerContext.position.lastMethod.load() < 0) return;
         if (ok && customSoftAngle && previous != desired)
-            Record(fmt::format("Soft vertical bend applied: {}/20", desired));
+            Record(fmt::format("Soft vertical bend requested: {}/20", desired));
     }
 }
 
@@ -1097,28 +1098,17 @@ void RunLoadSMPReset() {
         return;
     }
 
-    // FSMP 4 exposes an actor-scoped native reset. This avoids opening the
-    // console and does not reload every SMP actor in the current cell.
-    const bool dispatched = ResetSMPPhysics(static_cast<RE::Actor*>(player), true);
-    if (!dispatched) {
-        Record("SPS-017: Faster HDT-SMP did not accept the delayed player reset", true);
+    if (!playerContext.physics.known.load() || !QueueOwnershipHandoff(
+            playerContext.physics.usingCBPC.load(), SPS::Controllers::OwnershipPurpose::resetLoad)) {
+        playerContext.recovery.loadSmpResetDueMs.store(NowMs() + 1000);
         return;
     }
-
-    const auto now = NowMs();
-    playerContext.recovery.lastLoadSmpResetMs.store(now);
-    ++playerContext.recovery.loadSmpResets;
-    // ResetPhysics is executed by Papyrus and FSMP queues its mesh rebuild on
-    // the game thread. Give it time to finish before restoring SPS ownership.
-    playerContext.recovery.loadSmpResetRestoreDueMs.store(now + 750);
-    ClearResolvedRefreshError();
-    Record("Player SMP reset completed after loading; physics state re-check queued");
+    Record("Player SMP reset and ownership restoration queued after loading");
 }
 
 void ScheduleLoadSMPReset() {
     Settings copy;
     { std::scoped_lock lock(settingsLock); copy = settings; }
-    playerContext.recovery.loadSmpResetRestoreDueMs.store(0);
     if (!copy.enabled || !copy.resetSMPAfterLoad || !FsmpActorApiAvailable()) {
         playerContext.recovery.loadSmpResetDueMs.store(0);
         return;
@@ -1130,7 +1120,6 @@ void ScheduleLoadSMPReset() {
 void ScheduleSoftAngleRefresh(int delayMs) {
     Settings copy;
     { std::scoped_lock lock(settingsLock); copy = settings; }
-    playerContext.recovery.softAngleRefreshRestoreDueMs.store(0);
     if (!copy.enabled || !copy.positionControl || !SosAeNativeLoaded() ||
         !playerContext.physics.known.load() || playerContext.physics.usingCBPC.load() || PPAOwnsPosition()) {
         playerContext.recovery.softAngleRefreshDueMs.store(0);
@@ -1155,7 +1144,6 @@ void ScheduleSoftPoseResetAfterScene(std::int64_t sceneEndedMs) {
     Settings copy;
     { std::scoped_lock lock(settingsLock); copy = settings; }
     if (!copy.enabled) return;
-    if (playerContext.recovery.softHandoffResetRestoreDueMs.load() > 0) return;
     const auto due = sceneEndedMs + std::max(copy.sceneEndDelayMs + 500, 2000);
     playerContext.recovery.softHandoffResetDueMs.store(due);
     playerContext.recovery.softHandoffResetUntilMs.store(due + 10000);
@@ -1175,18 +1163,11 @@ void RunSoftAngleRefresh() {
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (!player || ::GetModuleHandleW(L"hdtsmp64.dll") == nullptr) return;
 
-    // FSMP keeps the old soft transform until its actor data is rebuilt. Apply
-    // the requested value first, rebuild only the player, then apply it once
-    // more after FSMP has settled.
-    ApplyRequestedSoftBend(true, true);
-    const bool dispatched = ResetSMPPhysics(static_cast<RE::Actor*>(player), true);
-    if (!dispatched) {
-        Record("SPS-018: Faster HDT-SMP did not accept the soft-angle refresh", true);
+    if (!QueueOwnershipHandoff(false, SPS::Controllers::OwnershipPurpose::resetAngle)) {
+        Record("SPS-018: Soft-angle refresh could not be queued", true);
         return;
     }
-    playerContext.recovery.softAngleRefreshRestoreDueMs.store(NowMs() + 750);
-    ClearResolvedRefreshError();
-    Record("Soft angle changed; refreshing the player's SMP pose");
+    Record("Soft angle changed; guarded player pose refresh queued");
 }
 
 bool RefreshSMPAfterPlayerMeshChange() {
@@ -1204,19 +1185,17 @@ bool RefreshSMPAfterPlayerMeshChange() {
 
     const auto now = NowMs();
     playerContext.recovery.ignoreNodeEventsUntilMs.store(now + 3000);
-    const bool dispatched = ResetSMPPhysics(static_cast<RE::Actor*>(player), true);
+    const bool dispatched = QueueOwnershipHandoff(false, SPS::Controllers::OwnershipPurpose::resetMesh);
     if (!dispatched) return false;
 
-    playerContext.recovery.nodeSmpResetRestoreDueMs.store(now + 750);
     Record("Player mesh changed; refreshing its SMP physics");
     return true;
 }
 
 void RunSoftHandoffSMPReset() {
-    if (!playerContext.physics.known.load() || playerContext.physics.usingCBPC.load()) {
+    if (playerContext.physics.known.load() && playerContext.physics.usingCBPC.load()) {
         playerContext.recovery.softHandoffResetDueMs.store(0);
         playerContext.recovery.softHandoffResetUntilMs.store(0);
-        playerContext.recovery.softHandoffResetRestoreDueMs.store(0);
         return;
     }
     const auto now = NowMs();
@@ -1241,7 +1220,7 @@ void RunSoftHandoffSMPReset() {
         playerContext.recovery.softHandoffResetDueMs.store(now + 1000);
         return;
     }
-    if (ownershipController.Read().pending) {
+    if (!playerContext.physics.known.load() || ownershipController.Read().pending) {
         retry("the current ownership handoff");
         return;
     }
@@ -1260,7 +1239,7 @@ void RunSoftHandoffSMPReset() {
         return;
     }
 
-    // TogglePhysics can report success while FSMP keeps the previous simulated
+    // TogglePhysics acknowledges previous states, not the resulting simulated
     // shape. Rebuilding just the player after a real CBPC -> SMP handoff is the
     // actor-scoped equivalent of the FSMP "SMP reset" button that repairs it.
     // ResetPhysics(..., true) already snaps the actor to the reference pose and
@@ -1268,18 +1247,14 @@ void RunSoftHandoffSMPReset() {
     // make FSMP rebuild from the frozen transitional shape, leaving the soft
     // mesh visibly stretched even though the ownership calls all succeeded.
     playerContext.recovery.ignoreNodeEventsUntilMs.store(now + 3000);
-    auto* actor = static_cast<RE::Actor*>(player);
-    const bool dispatched = ResetSMPPhysics(actor, true);
+    const bool dispatched = QueueOwnershipHandoff(false, SPS::Controllers::OwnershipPurpose::resetSoft);
     if (!dispatched) {
         retry("Faster HDT-SMP");
         return;
     }
 
-    playerContext.recovery.softHandoffResetUntilMs.store(0);
     playerContext.recovery.softConfirmationDueMs.store(0);
-    playerContext.recovery.softHandoffResetRestoreDueMs.store(now + 750);
-    ClearResolvedRefreshError();
-    Record("Soft physics rebuilt the player's SMP pose");
+    Record("Soft SMP pose rebuild and ownership restoration queued");
 }
 
 void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& completion) {
@@ -1289,6 +1264,7 @@ void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& comp
     playerContext.physics.smpConnected.store(completion.success);
     playerContext.physics.cbpcConnected.store(completion.success);
     if (!completion.success) {
+        CancelErectionAnimation();
         if (completion.softTransition)
             playerContext.position.relaxing.store(true);
         switch (completion.purpose) {
@@ -1297,21 +1273,33 @@ void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& comp
                 completion.targetCBPC ? "CBPC" : "SMP"), true);
             break;
         case SPS::Controllers::OwnershipPurpose::confirmSoft:
-            playerContext.recovery.softConfirmationDueMs.store(now + 1000);
-            if (playerContext.recovery.softConfirmationUntilMs.load() == 0)
-                playerContext.recovery.softConfirmationUntilMs.store(now + 10000);
+            if (now < playerContext.recovery.softConfirmationUntilMs.load())
+                playerContext.recovery.softConfirmationDueMs.store(now + 1000);
             logger::warn("Soft-state ownership confirmation did not complete; bounded retry queued");
             break;
         case SPS::Controllers::OwnershipPurpose::confirmCBPC:
-            playerContext.recovery.cbpcConfirmationDueMs.store(now + 1000);
-            if (playerContext.recovery.cbpcConfirmationUntilMs.load() == 0)
-                playerContext.recovery.cbpcConfirmationUntilMs.store(now + 10000);
+            if (now < playerContext.recovery.cbpcConfirmationUntilMs.load())
+                playerContext.recovery.cbpcConfirmationDueMs.store(now + 1000);
             logger::warn("Erect-state ownership confirmation did not complete; bounded retry queued");
             break;
+        case SPS::Controllers::OwnershipPurpose::resetSoft:
+            if (now < playerContext.recovery.softHandoffResetUntilMs.load())
+                playerContext.recovery.softHandoffResetDueMs.store(now + 1000);
+            Record("SPS-019: Soft pose transaction did not complete; current ownership will be recovered", true);
+            break;
+        case SPS::Controllers::OwnershipPurpose::resetLoad:
+        case SPS::Controllers::OwnershipPurpose::resetAngle:
+        case SPS::Controllers::OwnershipPurpose::resetMesh:
+            Record("SPS-010: Physics preparation did not complete; current ownership will be recovered", true);
+            break;
+        case SPS::Controllers::OwnershipPurpose::reconnectMesh:
+            if (now < playerContext.recovery.nodeCbpcReacquireUntilMs.load())
+                playerContext.recovery.nodeCbpcReacquireDueMs.store(now + 1000);
+            Record("SPS-010: Equipment reconnection did not complete; current ownership will be recovered", true);
+            break;
         case SPS::Controllers::OwnershipPurpose::restore:
-            playerContext.recovery.externalOwnerRepairDueMs.store(now + 1000);
-            if (playerContext.recovery.externalOwnerRepairUntilMs.load() == 0)
-                playerContext.recovery.externalOwnerRepairUntilMs.store(now + 10000);
+            if (now < playerContext.recovery.externalOwnerRepairUntilMs.load())
+                playerContext.recovery.externalOwnerRepairDueMs.store(now + 1000);
             logger::warn("Physics ownership restoration did not complete; bounded retry queued");
             break;
         }
@@ -1319,16 +1307,47 @@ void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& comp
     }
 
     ClearResolvedOwnerError();
+    using Purpose = SPS::Controllers::OwnershipPurpose;
+    if (completion.purpose == Purpose::resetLoad || completion.purpose == Purpose::resetSoft ||
+        completion.purpose == Purpose::resetAngle || completion.purpose == Purpose::resetMesh ||
+        completion.purpose == Purpose::reconnectMesh) {
+        ClearResolvedRefreshError();
+        playerContext.recovery.ignoreNodeEventsUntilMs.store(now + 2000);
+        playerContext.position.appliedBend.store(-1);
+        if (completion.purpose == Purpose::resetLoad) {
+            playerContext.recovery.lastLoadSmpResetMs.store(now);
+            ++playerContext.recovery.loadSmpResets;
+        }
+        if (completion.purpose == Purpose::resetSoft)
+            playerContext.recovery.softHandoffResetUntilMs.store(0);
+        if (completion.purpose == Purpose::reconnectMesh) {
+            playerContext.recovery.nodeCbpcReacquireDueMs.store(0);
+            playerContext.recovery.nodeCbpcReacquireUntilMs.store(0);
+        }
+        if (completion.targetCBPC) {
+            Settings copy;
+            { std::scoped_lock lock(settingsLock); copy = settings; }
+            if (copy.positionControl) {
+                playerContext.position.settleDueMs.store(now + copy.settleDelayMs);
+                playerContext.position.confirmationDueMs.store(now + copy.settleDelayMs + 1500);
+            }
+        } else ApplyRequestedSoftBend(true, true);
+        Record("Player physics preparation and owner handoff executed; pose update requested");
+        return;
+    }
     if (completion.purpose == SPS::Controllers::OwnershipPurpose::confirmSoft) {
+        playerContext.recovery.softConfirmationUntilMs.store(0);
         ApplyRequestedSoftBend(true, true);
-        Record("Soft state confirmed after the ordered physics handoff completed");
+        Record("Soft ownership commands executed; live motion requires in-game verification");
         return;
     }
     if (completion.purpose == SPS::Controllers::OwnershipPurpose::confirmCBPC) {
-        Record("CBPC state confirmed after the ordered physics handoff completed");
+        playerContext.recovery.cbpcConfirmationUntilMs.store(0);
+        Record("CBPC ownership commands executed; live motion requires in-game verification");
         return;
     }
     if (completion.purpose == SPS::Controllers::OwnershipPurpose::restore) {
+        playerContext.recovery.externalOwnerRepairUntilMs.store(0);
         playerContext.recovery.lastOwnerRestorationMs.store(now);
         playerContext.recovery.ignoreNodeEventsUntilMs.store(now + 2000);
         ++ownerRestorations;
@@ -1344,15 +1363,14 @@ void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& comp
         (completion.previousCBPC ? SPS::API::PhysicsState::CBPC : SPS::API::PhysicsState::SMP) :
         SPS::API::PhysicsState::Unknown;
 
-    playerContext.recovery.nodeCbpcReacquireDueMs.store(0);
-    playerContext.recovery.nodeCbpcReacquireUntilMs.store(0);
+    if (!cbpc || now >= playerContext.recovery.nodeCbpcReacquireUntilMs.load()) {
+        playerContext.recovery.nodeCbpcReacquireDueMs.store(0);
+        playerContext.recovery.nodeCbpcReacquireUntilMs.store(0);
+    }
     if (cbpc) {
         playerContext.recovery.softHandoffResetDueMs.store(0);
         playerContext.recovery.softHandoffResetUntilMs.store(0);
-        playerContext.recovery.softHandoffResetRestoreDueMs.store(0);
         playerContext.recovery.softAngleRefreshDueMs.store(0);
-        playerContext.recovery.softAngleRefreshRestoreDueMs.store(0);
-        playerContext.recovery.nodeSmpResetRestoreDueMs.store(0);
     }
     playerContext.recovery.ignoreNodeEventsUntilMs.store(now + 4000);
     ResetPositionRecovery();
@@ -1360,7 +1378,6 @@ void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& comp
     const bool realSoftHandoff = !cbpc && previousState == SPS::API::PhysicsState::CBPC;
     if (realSoftHandoff) {
         playerContext.recovery.softConfirmationDueMs.store(0);
-        playerContext.recovery.softHandoffResetRestoreDueMs.store(0);
         playerContext.recovery.softHandoffResetDueMs.store(now + 1500);
         playerContext.recovery.softHandoffResetUntilMs.store(now + 10000);
     } else {
@@ -1391,7 +1408,6 @@ void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& comp
     }
     if (cbpc && previousState == SPS::API::PhysicsState::Unknown) {
         playerContext.recovery.loadSmpResetDueMs.store(0);
-        playerContext.recovery.loadSmpResetRestoreDueMs.store(0);
     }
     Record(fmt::format("Physics switched to {} ({}) after the ordered handoff completed",
         cbpc ? "CBPC" : "SMP", cbpc ? "erect" : "soft"));
@@ -1411,14 +1427,25 @@ bool QueueOwnershipHandoff(
     auto* player = RE::PlayerCharacter::GetSingleton();
     if (!player) return false;
 
+    if (!PapyrusReadyForDispatch() || !SPS::Runtime::OrderedFsmpBridgeAvailable()) return false;
     const auto begin = ownershipController.Begin(cbpc, purpose, softTransition, NowMs());
     if (begin.status == SPS::Controllers::OwnershipBeginStatus::alreadyPending)
         return true;
     if (begin.status == SPS::Controllers::OwnershipBeginStatus::blocked)
         return false;
 
-    const auto dispatched = SetPlayerPhysicsOwner(
-        static_cast<RE::Actor*>(player), cbpc,
+    using Purpose = SPS::Controllers::OwnershipPurpose;
+    const bool reset = purpose == Purpose::resetLoad || purpose == Purpose::resetSoft ||
+        purpose == Purpose::resetAngle || purpose == Purpose::resetMesh;
+    const int preparation = reset ? 1 : (purpose == Purpose::reconnectMesh ? 2 : 0);
+    int softBend = -1;
+    if (purpose == Purpose::resetAngle && SosAeNativeLoaded()) {
+        std::scoped_lock lock(settingsLock);
+        softBend = settings.flaccidAngleControl ? settings.flaccidBend : 0;
+    }
+    const auto dispatched = SPS::Runtime::SetPlayerPhysicsOwner(
+        static_cast<RE::Actor*>(player), cbpc, preparation, softBend,
+        FsmpActorApiAvailable(), papyrusDispatchAllowedAfterMs.load(), NowMs(),
         [generation = begin.generation](bool completed) {
             if (auto* tasks = SKSE::GetTaskInterface()) {
                 tasks->AddTask([generation, completed] {
@@ -1431,8 +1458,6 @@ bool QueueOwnershipHandoff(
         return false;
     }
 
-    playerContext.physics.smpConnected.store(true);
-    playerContext.physics.cbpcConnected.store(true);
     return true;
 }
 
@@ -1603,7 +1628,8 @@ void Evaluate(bool force) {
             // ready to accept the owner switch. The animation has finished,
             // but the soft transition remains pending; retry only the handoff
             // and never restore the erect angle in this gap.
-            if (!playerContext.position.animating.load() && playerContext.physics.known.load() && playerContext.physics.usingCBPC.load())
+            if (SPS::Core::SoftHandoffNeedsRetry(playerContext.position.animating.load(),
+                    playerContext.physics.known.load(), playerContext.physics.usingCBPC.load()))
                 SetOwner(false, force);
             return;
         }
@@ -1625,12 +1651,16 @@ void Evaluate(bool force) {
 }
 
 void Tick() {
+    SPS::Runtime::UpdateExecutionClock();
+    if (SPS::Runtime::ExecutionPaused()) return;
     Settings copy;
     { std::scoped_lock lock(settingsLock); copy = settings; }
     const auto now = NowMs();
 
     ProcessPendingQuickAction();
-    HandleOwnershipCompletion(ownershipController.Expire(now, 5000));
+    const auto expired = ownershipController.Expire(now, 5000);
+    if (expired.matched) SPS::Runtime::CancelPhysicsOperation();
+    HandleOwnershipCompletion(expired);
     if (!copy.enabled) {
         const auto ownership = ownershipController.Read();
         if (!ownership.pending && (!ownership.known || ownership.usingCBPC) &&
@@ -1725,7 +1755,7 @@ void Tick() {
 
     if (recoveryController.ClaimExternalOwnerRepair(now)) {
         if (ConfirmCurrentPhysicsOwner("an external physics reset")) {
-            playerContext.recovery.externalOwnerRepairUntilMs.store(0);
+            // Keep the original retry budget until the completion callback.
         } else if (now < playerContext.recovery.externalOwnerRepairUntilMs.load()) {
             playerContext.recovery.externalOwnerRepairDueMs.store(now + 1000);
         } else {
@@ -1738,31 +1768,9 @@ void Tick() {
         RunLoadSMPReset();
     }
 
-    if (!ownershipController.Read().pending &&
-        recoveryController.ClaimLoadSmpResetRestore(now)) {
-        // A full FSMP rebuild can restore the XML's default dynamic state.
-        // Reapply the current arousal/scene decision and position exactly once.
-        playerContext.position.appliedBend.store(-1);
-        Evaluate(true);
-        if (playerContext.physics.known.load() && !playerContext.physics.usingCBPC.load())
-            playerContext.recovery.softConfirmationDueMs.store(now + 250);
-        else if (playerContext.physics.known.load() && playerContext.physics.usingCBPC.load() && copy.positionControl)
-            playerContext.recovery.erectMeshReplayDueMs.store(now + 2250);
-        Record("Physics state restored after the delayed SMP reset");
-    }
-
     if (recoveryController.ClaimSoftHandoffReset(
             now, playerContext.physics.usingCBPC.load())) {
         RunSoftHandoffSMPReset();
-    }
-
-    if (!ownershipController.Read().pending &&
-        recoveryController.ClaimSoftHandoffResetRestore(
-            now, playerContext.physics.usingCBPC.load())) {
-        playerContext.position.appliedBend.store(-1);
-        ConfirmCurrentPhysicsOwner("the completed soft handoff refresh");
-        playerContext.recovery.softConfirmationDueMs.store(now + 250);
-        Record("Soft physics restored after the handoff refresh");
     }
 
     if (recoveryController.ClaimSoftAngleRefresh(
@@ -1770,34 +1778,11 @@ void Tick() {
         RunSoftAngleRefresh();
     }
 
-    if (!ownershipController.Read().pending &&
-        recoveryController.ClaimSoftAngleRefreshRestore(
-            now, playerContext.physics.usingCBPC.load())) {
-        playerContext.position.appliedBend.store(-1);
-        ApplyRequestedSoftBend(true, true);
-        playerContext.recovery.softConfirmationDueMs.store(now + 250);
-        Record("Soft angle restored after the SMP refresh");
-    }
-
-    if (!ownershipController.Read().pending &&
-        recoveryController.ClaimNodeSmpResetRestore(
-            now, playerContext.physics.usingCBPC.load())) {
-        playerContext.position.appliedBend.store(-1);
-        ConfirmCurrentPhysicsOwner("the completed player mesh refresh");
-        playerContext.recovery.softConfirmationDueMs.store(now + 250);
-        Record("Soft physics restored after the player mesh change");
-    }
-
     if (recoveryController.ClaimNodeCbpcReacquire(
             now, playerContext.physics.usingCBPC.load())) {
-        if (ConfirmCurrentPhysicsOwner("the rebuilt player mesh")) {
-            playerContext.recovery.nodeCbpcReacquireUntilMs.store(0);
-            playerContext.position.appliedBend.store(-1);
-            if (copy.positionControl) {
-                playerContext.position.settleDueMs.store(now + copy.settleDelayMs);
-                playerContext.position.confirmationDueMs.store(now + copy.settleDelayMs + 1500);
-                playerContext.recovery.erectMeshReplayDueMs.store(now + 2500);
-            }
+        if (playerContext.physics.known.load() && QueueOwnershipHandoff(
+                true, SPS::Controllers::OwnershipPurpose::reconnectMesh)) {
+            // The callback clears the budget only after reconnection executes.
         } else if (now < playerContext.recovery.nodeCbpcReacquireUntilMs.load()) {
             playerContext.recovery.nodeCbpcReacquireDueMs.store(now + 1000);
         } else {
@@ -1814,7 +1799,7 @@ void Tick() {
             playerContext.recovery.softConfirmationUntilMs.store(until);
         }
         if (ConfirmSoftState()) {
-            playerContext.recovery.softConfirmationUntilMs.store(0);
+            // Keep the original retry budget until the completion callback.
         } else if (now < until) {
             playerContext.recovery.softConfirmationDueMs.store(now + 1000);
         } else {
@@ -1831,7 +1816,7 @@ void Tick() {
             playerContext.recovery.cbpcConfirmationUntilMs.store(until);
         }
         if (ConfirmCBPCState()) {
-            playerContext.recovery.cbpcConfirmationUntilMs.store(0);
+            // Keep the original retry budget until the completion callback.
         } else if (now < until) {
             playerContext.recovery.cbpcConfirmationDueMs.store(now + 1000);
         } else {
@@ -1848,7 +1833,9 @@ void Tick() {
     else if (SexLabHasPriority(copy))
         targetStillWantsCBPC = SexLabSceneWantsCBPC(copy);
     else
-        targetStillWantsCBPC = NormalSettingsWantCBPC(copy);
+        targetStillWantsCBPC = SPS::Core::MaintenanceWantsCBPC(
+            NormalSettingsWantCBPC(copy), activeManualPhysicsTest.load(),
+            now < manualPhysicsTestUntilMs.load());
 
     if (!targetStillWantsCBPC) {
         // No delayed erect-position callback may survive a decision to soften.
@@ -1917,23 +1904,13 @@ void Tick() {
                 playerContext.position.settleDueMs.store(0);
                 playerContext.position.confirmationDueMs.store(0);
                 playerContext.recovery.cbpcConfirmationDueMs.store(0);
-                if (!PapyrusReadyForDispatch()) {
-                    playerContext.recovery.nodeCbpcReacquireDueMs.store(now + 1000);
-                    playerContext.recovery.nodeCbpcReacquireUntilMs.store(now + 10000);
-                } else if (auto* player = RE::PlayerCharacter::GetSingleton()) {
-                    auto* actor = static_cast<RE::Actor*>(player);
-                    const bool released = ReleasePlayerPhysics(actor);
-                    playerContext.recovery.nodeCbpcReacquireDueMs.store(now + (released ? 350 : 1000));
-                    playerContext.recovery.nodeCbpcReacquireUntilMs.store(now + 10000);
-                    if (released)
-                        Record("Player mesh changed; reconnecting erect physics to its new bones");
-                    else
-                        logger::warn("Could not release the old erect-physics bindings; bounded retry queued");
-                }
-            } else if (playerContext.physics.known.load() && !playerContext.physics.usingCBPC.load() && playerContext.recovery.nodeSmpResetRestoreDueMs.load() == 0) {
+                playerContext.recovery.nodeCbpcReacquireDueMs.store(now + 250);
+                playerContext.recovery.nodeCbpcReacquireUntilMs.store(now + 10000);
+                Record("Player mesh changed; guarded erect-physics reconnect queued");
+            } else if (playerContext.physics.known.load() && !playerContext.physics.usingCBPC.load()) {
                 playerContext.recovery.softConfirmationDueMs.store(now + 750);
             }
-            playerContext.recovery.nodeRefreshFollowupDueMs.store(now + 1500);
+            recoveryController.ScheduleNodeRefreshFollowup(now);
         }
     }
 
@@ -1942,8 +1919,11 @@ void Tick() {
         // second confirmation catches the late rebuild without another reset.
         if (ownershipController.Read().pending ||
             !ConfirmCurrentPhysicsOwner("the completed equipment change")) {
-            playerContext.recovery.nodeRefreshFollowupDueMs.store(now + 1000);
+            if (!recoveryController.RetryNodeRefreshFollowup(now)) {
+                Record("SPS-010: Equipment follow-up stopped; use Repair current physics to retry", true);
+            }
         } else {
+            playerContext.recovery.nodeRefreshFollowupUntilMs.store(0);
             playerContext.position.appliedBend.store(-1);
             if (playerContext.physics.usingCBPC.load() && copy.positionControl)
                 playerContext.recovery.erectMeshReplayDueMs.store(now + 1000);
@@ -1975,7 +1955,8 @@ void StartPolling() {
             { std::scoped_lock lock(settingsLock); wait = settings.pollMs; }
             std::this_thread::sleep_for(std::chrono::milliseconds(wait));
             if (!token.stop_requested())
-                if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask(Tick);
+                if (auto* tasks = SKSE::GetTaskInterface(); tasks && !tickQueued.exchange(true))
+                    tasks->AddTask([] { tickQueued.store(false); Tick(); });
         }
     });
 }
@@ -2086,6 +2067,7 @@ void SaveSettingsAndApply(const Settings& copy, const Settings& previous) {
     if (!copy.equipmentChangeRecovery) {
         playerContext.recovery.nodeRefreshDueMs.store(0);
         playerContext.recovery.nodeRefreshFollowupDueMs.store(0);
+        playerContext.recovery.nodeRefreshFollowupUntilMs.store(0);
     }
     if (previous.enabled && !copy.enabled) {
         ClearAPIRequests();
@@ -2582,7 +2564,9 @@ std::string BuildReport() {
     report.externalResetNotices = externalResetNotices.load();
     report.ownerRestorations = ownerRestorations.load();
     report.nowMs = NowMs();
-    return SPS::Diagnostics::FormatSupportReport(report);
+    const auto* vm = SPS::Runtime::VM();
+    return SPS::Diagnostics::FormatSupportReport(report) + fmt::format(
+        "\nPapyrus: Dispatch={} VMOverstressed={}\n", PapyrusStatusText(), vm && vm->overstressed);
 }
 
 bool WriteTextFile(const fs::path& path, const std::string& text) {
@@ -2645,7 +2629,7 @@ void TestPhysicsState(bool cbpc) {
         activeManualPhysicsTest.store(-1);
         manualPhysicsTestUntilMs.store(0);
         if (newlyQueued)
-            Record(fmt::format("{} physics test queued; waiting for the player and Papyrus to finish loading",
+            Record(fmt::format("{} physics test queued; waiting for script execution or the physics handoff",
                 cbpc ? "Erect" : "Soft"));
         return;
     }
@@ -2691,7 +2675,7 @@ void RepairPhysics() {
         if (newlyQueued || pendingQuickActionUntilMs.load() == 0)
             pendingQuickActionUntilMs.store(NowMs() + 15000);
         if (newlyQueued)
-            Record("Repair queued; waiting for the player and Papyrus to finish loading");
+            Record(fmt::format("Repair queued; waiting for script execution ({})", PapyrusStatusText()));
         return;
     }
     const bool completedQueuedRepair = retryingQueuedRepair &&
@@ -2712,6 +2696,7 @@ void RepairPhysics() {
     pendingQuickActionUntilMs.store(0);
     const auto repairedAt = NowMs();
     playerContext.recovery.postSwitchVerificationDueMs.store(repairedAt + 1000);
+    playerContext.recovery.postSwitchVerificationUntilMs.store(repairedAt + 11000);
     if (!playerContext.physics.usingCBPC.load()) {
         playerContext.recovery.softHandoffResetDueMs.store(repairedAt + 250);
         playerContext.recovery.softHandoffResetUntilMs.store(repairedAt + 10250);
@@ -2728,7 +2713,9 @@ void ProcessPendingQuickAction() {
     if (now >= pendingQuickActionUntilMs.load()) {
         pendingQuickAction.store(-1);
         pendingQuickActionUntilMs.store(0);
-        Record("SPS-020: The requested quick fix could not run while the game was still loading", true);
+        const auto* reason = SPS::Runtime::PapyrusWaitReason(papyrusDispatchAllowedAfterMs.load(), now);
+        Record(fmt::format("SPS-020: Requested quick fix timed out ({})",
+            reason ? reason : "physics handoff incomplete"), true);
         return;
     }
     if (!PapyrusReadyForDispatch()) return;
@@ -2765,6 +2752,7 @@ void __stdcall RenderDebug() {
         SaveSettingsAndApply(fixed, previous);
     }
     ImGuiMCP::TextWrapped("Green is ready, yellow is optional or still checking, and red needs attention. Restoring settings cannot install a missing requirement.");
+    ImGuiMCP::TextWrapped("Setup checks find the required files and bones. Use the physics tests to check actual movement; a completed command cannot verify live motion.");
 
     const auto suggestions = SuggestedFixes(d);
     if (suggestions.size() == 1 && suggestions.front().first == "SPS-000")
@@ -2793,14 +2781,14 @@ void __stdcall RenderDebug() {
     if (queuedAction >= 0) {
         const char* queuedName = queuedAction == 0 ? "soft test" : (queuedAction == 1 ? "erect test" : "repair");
         ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F),
-            "Waiting to run the %s as soon as loading finishes...", queuedName);
+            "Waiting for the game to run the %s...", queuedName);
     } else if (activeManualPhysicsTest.load() >= 0 && NowMs() < manualPhysicsTestUntilMs.load()) {
         const auto remaining = std::max<std::int64_t>(0, manualPhysicsTestUntilMs.load() - NowMs());
         ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.35F, 1.0F, 0.45F, 1.0F),
             "%s physics test is active (%lld seconds left)",
             activeManualPhysicsTest.load() == 1 ? "Erect" : "Soft", (remaining + 999) / 1000);
     }
-    ImGuiMCP::TextWrapped("Tests temporarily force one state, then normal control resumes. Repair reapplies the state SPS currently expects. Actions wait briefly if the game is still loading.");
+    ImGuiMCP::TextWrapped("Tests temporarily force one state, then normal control resumes. Repair reapplies the state SPS currently expects. Actions wait briefly while the game or a physics handoff is busy.");
     ImGuiMCP::Separator();
 
     SectionHeading("DETECTED COMPONENTS");
@@ -2933,14 +2921,29 @@ public:
     RE::BSEventNotifyControl ProcessEvent(const SKSE::ModCallbackEvent* event, RE::BSTEventSource<SKSE::ModCallbackEvent>*) override {
         if (!event) return RE::BSEventNotifyControl::kContinue;
         const std::string_view name = event->eventName.c_str();
-        const bool softbodyReloadEvent =
-            name == "HookAnimationStart" || name == "HookAnimationChange" ||
-            name == "HookStageStart" || name == "OStim_Start" ||
-            name == "OStim_SceneChanged" || name == "ostim_start" ||
-            name == "ostim_scenechanged" || name == "ostim_thread_start" ||
-            name == "ostim_thread_scenechanged";
+        // Extended Hook* events go only to Papyrus registrations. The native
+        // SKSE event carries the unprefixed name and thread ID in strArg.
+        if (SPS::Core::IsSexLabThreadEvent(name)) {
+            const bool playerThread = SPS::Core::MatchesPlayerSceneThread(
+                event->strArg.c_str(), sceneController.State().sexLab.threadID.load());
+            if (playerThread) {
+                ++sceneController.State().sexLab.roleGeneration;
+                sceneController.State().sexLab.roleQueryPending.store(false);
+                sceneController.State().sexLab.roleRetryAfterMs.store(NowMs() + 350);
+                if (SoftbodyLoaded() && SPS::Core::IsSexLabPhysicsReloadEvent(name))
+                    ScheduleExternalOwnerRepair(3000, "the player's SOFTBODY scene reload");
+            }
+            // Unknown/new threads are checked through the player bridge; NPC
+            // events never reset the player's role or schedule physics work.
+            if (playerThread || sceneController.State().sexLab.threadID.load() < 0)
+                if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { QuerySexLab(); });
+            return RE::BSEventNotifyControl::kContinue;
+        }
+        const bool softbodyReloadEvent = name == "OStim_Start" || name == "OStim_SceneChanged" ||
+            name == "ostim_start" || name == "ostim_scenechanged" ||
+            ((name == "ostim_thread_start" || name == "ostim_thread_scenechanged") && event->numArg == 0.0F);
         if (softbodyReloadEvent && SoftbodyLoaded())
-            ScheduleExternalOwnerRepair(3000, "a SOFTBODY scene physics reload");
+            ScheduleExternalOwnerRepair(3000, "the player's SOFTBODY scene reload");
 
         if (name == "ostim_start") {
             sceneController.State().ostim.active.store(true);
@@ -2978,25 +2981,12 @@ public:
             sceneController.State().ostim.roleValid.store(false);
             sceneController.State().ostim.roleQueryPending.store(false);
             ResetPPASceneTracking(2000);
-            if (playerContext.physics.known.load() && !playerContext.physics.usingCBPC.load()) {
+            if (!playerContext.physics.known.load() || !playerContext.physics.usingCBPC.load()) {
                 playerContext.recovery.softConfirmationDueMs.store(NowMs() + 250);
                 ScheduleSoftPoseResetAfterScene(NowMs());
             }
             Record("OStim player scene ended");
             if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { Evaluate(); });
-        } else if (name == "HookAnimationStart" || name == "HookAnimationStarting" ||
-            name == "HookAnimationChange" ||
-            name == "HookStageStart" || name == "HookStageEnd" ||
-            name == "HookActorsRelocated" || name == "HookActorChangeEnd" ||
-            name == "HookAnimationEnding" || name == "HookAnimationEnd" ||
-            name == "AnimationStart" || name == "AnimationEnd") {
-            sceneController.State().sexLab.roleGeneration.fetch_add(1);
-            sceneController.State().sexLab.roleQueryPending.store(false);
-            sceneController.State().sexLab.roleRetryAfterMs.store(NowMs() + 350);
-            if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] {
-                QuerySexLab();
-                if (sceneController.State().sexLab.active.load()) QuerySexLabRole();
-            });
         } else if (name == "OSLA_ActorArousalUpdated" && event->sender == RE::PlayerCharacter::GetSingleton()) {
             // OSL already supplies the updated player value in numArg. Using it
             // directly avoids a query -> update event -> query feedback loop.
@@ -3009,6 +2999,10 @@ public:
             if (auto* tasks = SKSE::GetTaskInterface())
                 tasks->AddTask([] { QueryArousal(true); });
         } else if (name == "SexLabDisabled") {
+            sceneController.State().sexLab.threadID.store(-1);
+            ++sceneController.State().sexLab.queryGeneration;
+            sceneController.State().sexLab.queryPending.store(false);
+            sceneController.State().sexLab.endedMs.store(0);
             sceneController.State().sexLab.active.store(false);
             sceneController.State().sexLab.valid.store(false);
             sceneController.State().sexLab.entryStateValid.store(false);
@@ -3019,7 +3013,7 @@ public:
             sceneController.State().sexLab.lastTopMs.store(0);
             sceneController.State().sexLab.bottomCandidateSinceMs.store(0);
             ResetPPASceneTracking(2000);
-            if (playerContext.physics.known.load() && !playerContext.physics.usingCBPC.load()) {
+            if (!playerContext.physics.known.load() || !playerContext.physics.usingCBPC.load()) {
                 playerContext.recovery.softConfirmationDueMs.store(NowMs() + 250);
                 ScheduleSoftPoseResetAfterScene(NowMs());
             }
@@ -3074,6 +3068,7 @@ class MenuSink final : public RE::BSTEventSink<RE::MenuOpenCloseEvent> {
 public:
     RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* event,
         RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override {
+        SPS::Runtime::UpdateExecutionClock();
         if (!event || event->menuName != RE::SleepWaitMenu::MENU_NAME)
             return RE::BSEventNotifyControl::kContinue;
 
@@ -3097,6 +3092,7 @@ public:
 };
 
 void ResetTransientTimers() {
+    SPS::Runtime::ResetPhysicsOperations();
     ownershipController.ResetPending();
     recoveryController.ResetTransient();
     diagnosticsRefreshDueMs.store(0);
@@ -3116,7 +3112,9 @@ void OnMessage(SKSE::MessagingInterface::Message* message) {
     if (message->type == SKSE::MessagingInterface::kPreLoadGame) {
         // Any callback still queued belongs to the old game state. Give the VM
         // time to finish rebuilding before SPS sends another scripted request.
+        SPS::Runtime::PauseExecutionClock();
         InvalidatePapyrusQueries(3000);
+        sceneController.ResetSession();
         arousalController.ResetReading();
         sceneController.State().sexLab.valid.store(false);
         sceneController.State().sexLab.roleValid.store(false);
@@ -3154,7 +3152,9 @@ void OnMessage(SKSE::MessagingInterface::Message* message) {
         // A shorter post-load gate still lets the new VM finish binding while
         // avoiding an unnecessary multi-second delay before the first arousal
         // query and physics decision.
+        SPS::Runtime::UpdateExecutionClock();
         InvalidatePapyrusQueries(1000);
+        sceneController.ResetSession();
         ClearAPIRequests();
         ResetTransientTimers();
         StartPolling();
@@ -3232,6 +3232,10 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
         spdlog::flush_on(spdlog::level::info);
     }
     Mod::ConfigureControllers();
+    if (!SKSE::GetPapyrusInterface()->Register(SPS::Runtime::RegisterPhysicsBridge)) {
+        logger::critical("SPS physics bridge registration failed");
+        return false;
+    }
     SKSE::GetMessagingInterface()->RegisterListener(Mod::OnMessage);
     logger::info("Schlong Physics Swapper {} loaded", Mod::kVersion);
     return true;

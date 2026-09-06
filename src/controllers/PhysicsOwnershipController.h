@@ -10,7 +10,12 @@ enum class OwnershipPurpose : int {
     switchOwner = 1,
     confirmSoft = 2,
     confirmCBPC = 3,
-    restore = 4
+    restore = 4,
+    resetLoad = 5,
+    resetSoft = 6,
+    resetAngle = 7,
+    resetMesh = 8,
+    reconnectMesh = 9
 };
 
 enum class OwnershipBeginStatus {

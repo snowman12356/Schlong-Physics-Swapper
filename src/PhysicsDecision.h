@@ -1,6 +1,8 @@
 #pragma once
 
 #include "Settings.h"
+#include <optional>
+#include <string_view>
 
 namespace SPS::Core {
 
@@ -39,5 +41,11 @@ struct SexLabDecisionState : SceneDecisionState {
 bool NormalSettingsWantCBPC(const Settings& settings, const NormalDecisionState& state);
 bool SexLabSceneWantsCBPC(const Settings& settings, const SexLabDecisionState& state);
 bool OStimSceneWantsCBPC(const Settings& settings, const SceneDecisionState& state);
+bool SoftHandoffNeedsRetry(bool animating, bool ownerKnown, bool usingCBPC);
+bool MaintenanceWantsCBPC(bool normalTarget, int manualTest, bool testActive);
+std::optional<float> ValidArousalReading(float reading);
+bool IsSexLabThreadEvent(std::string_view name);
+bool IsSexLabPhysicsReloadEvent(std::string_view name);
+bool MatchesPlayerSceneThread(std::string_view argument, int playerThread);
 
 }

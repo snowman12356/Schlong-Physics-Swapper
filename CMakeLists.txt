@@ -36,6 +36,9 @@ add_library(SPSCore STATIC
     src/diagnostics/ActivityLog.cpp
     src/diagnostics/ActivityLog.h
     src/controllers/ActorContext.h
+    src/controllers/ExecutionClock.h
+    src/controllers/PapyrusOperationGate.h
+    src/controllers/SceneState.h
     src/controllers/PhysicsOwnershipController.cpp
     src/controllers/PhysicsOwnershipController.h
     src/controllers/PositionController.cpp

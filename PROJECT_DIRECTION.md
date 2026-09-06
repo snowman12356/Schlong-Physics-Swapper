@@ -99,10 +99,10 @@ timers before a later re-enable. Failed or timed-out transactions invalidate the
 cached owner so a fresh ordered handoff is required. Testing established that
 SOFTBODY's stock genital XML gives the Gen02-Gen06 shaft chain zero gravity
 while its scrotum uses normal gravity, so it can look rigid even when SPS has
-correctly selected SMP. The latest development DLL SHA-256 is
-`A41A180C4CF10CE9299450F97CFC3F321575F1102DEF0A20BEE38D4C8E8BCCC6` and the
+correctly selected SMP. The preceding workload-pressure development DLL SHA-256 was
+`A5A796A3D983BB0BA70A19463F2E5337EE6BF570900C044DA02EF7BAE5B6FB1C` and the
 latest package SHA-256 is
-`CA1CDDFC69591FDBF96DAAD0F11CF7BBA9906347AE9AF8F35858FE9121063001`.
+`AFE28F503127E753F3B46D0A3F887F035E11D885A2E3424D77DE0D1E6757478A`.
 
 On 2026-09-02 the validated 2.0.0 files were installed only in the dedicated
 MO2 test mod at `D:\Modding\mods\Schlong Physics Swapper`; they have not been
@@ -135,15 +135,60 @@ per-bone gravity, while retaining each SOFTBODY collision tail unchanged. This
 was subsequently tuned for the user's unusually large shaft mesh with higher
 base-to-tip mass and inertia, moderately stronger gravity response, and firmer
 damped joints; the mesh-following SOFTBODY collision definitions remain
-unchanged. The user's `MaleGenitals` compatibility exclusions are also merged
-into the private large-mesh profiles. This separate large-mesh tuning remains a
+unchanged. The private normal, soft and anal profiles also include the UBE
+`MaleGenitalsCollision`, `VirtualCrotch` and `VirtualGround` definitions so the
+shaft can contact the mesh's virtual ground while the scrotum remains excluded.
+The user's `MaleGenitals` compatibility exclusions are also merged into the
+private large-mesh profiles. This separate large-mesh tuning remains a
 local override, while the generally tuned combined profiles are packaged as the
 public opt-in FOMOD component. Goutou is credited under SOFTBODY's published
 modification and asset-use permissions; the component must remain free and out
 of paid compilations.
 
-The next gate is the documented in-game player regression pass. It must first
-confirm that a compatible six-bone schlong is recognised automatically after
+The next gate remains the documented in-game player regression pass, starting
+with the post-scene lockout reported on 2026-09-05. The 2026-09-06 audit repairs
+continue the existing ownership controller and preserve the selected physics
+profiles, role policy, INI keys and defaults. They remove the unknown-owner
+relaxation deadlock and the workload-pressure dispatch veto. Resets, equipment
+release/reconnection and final ownership now run as one guarded Papyrus V3
+transaction. Expired work cannot acquire a new transaction; a running cancelled
+stack must return before replacement work can start. Player resets wait for
+FSMP's queued game task before settling and restoring ownership. Recovery
+budgets stop in paused menus and remain bounded across completion failures.
+
+SexLab recovery now listens to the native unprefixed events and checks the
+player's thread ID. Loading another save clears cached scene identity and
+invalidates queued scene/arousal callbacks. Manual erect tests retain their
+position updates at low arousal, and invalid legacy arousal readings do not
+become zero. Diagnostics distinguish commands that executed from observed live
+motion. Packaging validates compiled bridge signatures, native flags and version
+return values, plus a paired-build hash manifest for the DLL, five PEX files
+and their sources. See `docs/AUDIT_REPAIRS_2026-09-06.md` for findings, risks and
+the focused regression checklist.
+
+These changes are probably safe for existing saves, subject to testing: no
+stored script variables/properties, quests, aliases, records or serialization
+layout change. Existing bridge entry points remain available. A saved stack
+from the older unguarded bridge cannot gain the new cancellation checks;
+perform the update with Skyrim closed and begin testing from a save outside an
+active scene. No save cleaning or new save is required by the implementation.
+On 2026-09-06 the final audit repair build passed native compilation, the core
+regression tests, all five Papyrus compiles without warnings/errors, compiled
+bridge ABI/version checks, the eleven paired-build hashes, 25 FOMOD references,
+four bundled XMLs, expanded-ZIP validation and package rejection tests. With
+Skyrim confirmed closed, 18 core files plus three combined SOFTBODY XMLs were
+installed and verified in the dedicated MO2 test mod. Its INI/meta.ini, all
+private SOFTBODY XMLs and `docs/USEFUL_WEB_LINKS.txt` remained unchanged. The
+previous installed files and pre-update logs are retained under
+`out/diagnostics/audit-repairs-20260906`. No release was published.
+Current DLL SHA-256:
+`4B6288444AD32DCE356A60B0CEEAFEF1FC63B5DE19A7A8F971AEE970650477D5`.
+Current ZIP SHA-256:
+`6EB5F3DDBFB32DF390D4B7872A05F5FED369783C1076815FE38D69159FC51F5F`.
+The package remains `out/release/Schlong-Physics-Swapper-2.0.0.zip`. The gate must verify receiving scenes stay soft, post-scene resting
+length returns, penetrating scenes switch to CBPC, equipment changes reconnect,
+Repair remains usable afterward and P+ adds no new thread-not-found errors.
+The wider gate must also confirm that a compatible six-bone schlong is recognised automatically after
 loading without using Repair current physics, and that the corrected OSL
 2.9.3 query runs without the `OSLAroused.dll` access violation, then confirm
 that OSL Aroused's MCM opens normally, TNG no longer logs

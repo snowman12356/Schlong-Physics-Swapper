@@ -1,8 +1,49 @@
 #include "PhysicsDecision.h"
 
 #include <algorithm>
+#include <charconv>
+#include <cmath>
 
 namespace SPS::Core {
+
+bool SoftHandoffNeedsRetry(bool animating, bool ownerKnown, bool usingCBPC)
+{
+    return !animating && (!ownerKnown || usingCBPC);
+}
+
+bool MaintenanceWantsCBPC(bool normalTarget, int manualTest, bool testActive)
+{
+    return testActive && manualTest >= 0 ? manualTest == 1 : normalTarget;
+}
+
+std::optional<float> ValidArousalReading(float reading)
+{
+    if (!std::isfinite(reading) || reading < 0.0F) return std::nullopt;
+    return std::clamp(reading, 0.0F, 100.0F);
+}
+
+bool IsSexLabThreadEvent(std::string_view name)
+{
+    return name == "AnimationStart" || name == "AnimationStarting" ||
+        name == "AnimationChange" || name == "StageStart" || name == "StageEnd" ||
+        name == "ActorsRelocated" || name == "ActorChangeEnd" ||
+        name == "AnimationEnding" || name == "AnimationEnd";
+}
+
+bool IsSexLabPhysicsReloadEvent(std::string_view name)
+{
+    return name == "AnimationStart" || name == "AnimationChange" ||
+        name == "StageStart" || name == "AnimationEnd";
+}
+
+bool MatchesPlayerSceneThread(std::string_view argument, int playerThread)
+{
+    if (argument.empty() || playerThread < 0) return false;
+    int threadID = -1;
+    const auto parsed = std::from_chars(argument.data(), argument.data() + argument.size(), threadID);
+    return parsed.ec == std::errc{} && parsed.ptr == argument.data() + argument.size() &&
+        threadID == playerThread;
+}
 
 namespace {
 

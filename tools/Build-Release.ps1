@@ -53,6 +53,8 @@ if (-not [string]::IsNullOrWhiteSpace($GameRoot)) {
 }
 & (Join-Path $PSScriptRoot 'Build-PapyrusBridge.ps1') @papyrusArguments
 & (Join-Path $PSScriptRoot 'Build-Local.ps1') @buildArguments
+. (Join-Path $PSScriptRoot 'SPS.PexContracts.ps1')
+New-SPSBuildReceipt -Repo $repo -Build (Join-Path $repo 'out\build') -Version $Version
 & (Join-Path $PSScriptRoot 'New-ReleasePackage.ps1') `
     -Version $Version -BuildDirectory 'out\build' -CreateZip
 
@@ -66,6 +68,8 @@ try {
     Expand-Archive -LiteralPath $zip -DestinationPath $verifyRoot
     & (Join-Path $PSScriptRoot 'Test-ReleasePackage.ps1') `
         -PackagePath $verifyRoot -Version $Version
+    & (Join-Path $PSScriptRoot 'Test-PackageGuards.ps1') `
+        -PackagePath $verifyRoot -Version $Version
 
     $builtHash = (Get-FileHash -Algorithm SHA256 -LiteralPath `
         (Join-Path $repo 'out\build\SchlongPhysicsSwapper.dll')).Hash
@@ -77,7 +81,13 @@ try {
 }
 finally {
     if (Test-Path -LiteralPath $verifyRoot) {
-        Remove-Item -LiteralPath $verifyRoot -Recurse -Force
+        $resolvedVerify = (Resolve-Path -LiteralPath $verifyRoot).Path
+        $resolvedTemp = (Resolve-Path -LiteralPath ([IO.Path]::GetTempPath())).Path.TrimEnd('\')
+        if ((Split-Path -Parent $resolvedVerify) -ne $resolvedTemp -or
+            (Split-Path -Leaf $resolvedVerify) -notmatch '^SPS-Release-[0-9a-f-]{36}$') {
+            throw "Refusing to clear unexpected verification path: $resolvedVerify"
+        }
+        Remove-Item -LiteralPath $resolvedVerify -Recurse -Force
     }
 }
 

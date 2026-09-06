@@ -34,14 +34,15 @@ public:
     void QuerySexLabRole();
     void QueryOStimRole();
     void InvalidateQueries();
+    void ResetSession();
     void ResetPPA(int ignoreMs = 0);
 
     [[nodiscard]] SceneState& State();
     [[nodiscard]] const SceneState& State() const;
 
-    void AcceptSexLabResult(std::uint64_t generation, RE::BSScript::Variable result);
-    void AcceptSexLabRoleResult(std::uint64_t generation, RE::BSScript::Variable result);
-    void AcceptOStimRoleResult(std::uint64_t generation, RE::BSScript::Variable result);
+    void AcceptSexLabResult(std::uint64_t generation, int result);
+    void AcceptSexLabRoleResult(std::uint64_t generation, int result);
+    void AcceptOStimRoleResult(std::uint64_t generation, int result);
 
 private:
     void QueueEvaluation(bool querySexLabRole = false);
