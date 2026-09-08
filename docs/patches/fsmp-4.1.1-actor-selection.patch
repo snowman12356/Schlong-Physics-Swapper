@@ -1,0 +1,20 @@
+--- a/src/dhdtPapyrusFunctions.cpp
++++ b/src/dhdtPapyrusFunctions.cpp
+@@ -76,7 +76,7 @@
+ 	auto& skeletons = AM->getSkeletons();
+ 
+ 	for (auto& skeleton : skeletons) {
+-		if (!skeleton.skeleton) {
++		if (!skeleton.skeleton || !AM->skeletonNeedsParts(skeleton.skeleton.get())) {
+ 			continue;
+ 		}
+ 
+@@ -163,7 +163,7 @@
+ 	auto& skeletons = AM->getSkeletons();
+ 
+ 	for (auto& skeleton : skeletons) {
+-		if (!skeleton.skeleton) {
++		if (!skeleton.skeleton || !AM->skeletonNeedsParts(skeleton.skeleton.get())) {
+ 			continue;
+ 		}
+ 		auto owner = skeleton.skeleton->GetUserData();

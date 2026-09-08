@@ -185,6 +185,21 @@ Current DLL SHA-256:
 `4B6288444AD32DCE356A60B0CEEAFEF1FC63B5DE19A7A8F971AEE970650477D5`.
 Current ZIP SHA-256:
 `6EB5F3DDBFB32DF390D4B7872A05F5FED369783C1076815FE38D69159FC51F5F`.
+On 2026-09-08 investigation continued after the user reported that ordinary
+swapping works only with SMP disabled globally, while viewing the player in
+third person; scenes with the audit repair build remain untested. The installed
+paired SPS build is unchanged. FSMP 4.1.1 source contains a confirmed selection
+defect: actor toggle/reset calls can stop at the first-person skeleton before
+reaching the body. An isolated candidate reuses FSMP's existing skeleton
+classification in those two functions. Extracted-function regression tests
+reproduce the original failure and pass with the patch. The full AVX Release
+candidate builds with SE/AE/VR targets and passes binary/version/dependency
+checks; its DLL and PDB identifiers match. It is packaged separately from SPS
+under `out/diagnostics/fsmp-actor-api-20260907`. Its relevance to the user's live
+failure still needs an in-game test; no FSMP installation or activation has
+been changed. See `docs/FSMP_ACTOR_SELECTION_2026-09-08.md` for evidence, scope,
+build provenance and the reversible test plan. The immediate gate is ordinary
+soft/erect switching with SMP globally enabled before resuming scene testing.
 The package remains `out/release/Schlong-Physics-Swapper-2.0.0.zip`. The gate must verify receiving scenes stay soft, post-scene resting
 length returns, penetrating scenes switch to CBPC, equipment changes reconnect,
 Repair remains usable afterward and P+ adds no new thread-not-found errors.
