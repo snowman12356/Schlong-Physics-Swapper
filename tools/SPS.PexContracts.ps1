@@ -106,7 +106,7 @@ function Read-SPSPexContract {
 
 function Get-SPSBridgeContracts {
     @(
-        @{ Name = 'SPS_FSMPBridge'; Version = 3; Prefix = ''; Signatures = @{
+        @{ Name = 'SPS_FSMPBridge'; Version = 6; Prefix = ''; Signatures = @{
             SetPlayerOwnerV3 = 'Bool(String,Bool,Int,Int):1'
             EnterOperation = 'Bool(String):3'; OperationCurrent = 'Bool(String):3'
             QueueResetBarrier = 'Bool(String):3'; ResetBarrierPassed = 'Bool(String):3'

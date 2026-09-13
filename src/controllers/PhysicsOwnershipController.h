@@ -15,7 +15,8 @@ enum class OwnershipPurpose : int {
     resetSoft = 6,
     resetAngle = 7,
     resetMesh = 8,
-    reconnectMesh = 9
+    reconnectMesh = 9,
+    maintainCBPC = 10
 };
 
 enum class OwnershipBeginStatus {
@@ -37,6 +38,7 @@ struct OwnershipCompletion {
     bool previousCBPC{ false };
     bool softTransition{ false };
     OwnershipPurpose purpose{ OwnershipPurpose::switchOwner };
+    bool superseded{ false };
 };
 
 struct PhysicsOwnershipSnapshot {
@@ -50,6 +52,7 @@ struct PhysicsOwnershipSnapshot {
     std::int64_t pendingSinceMs{ 0 };
     unsigned successes{ 0 };
     unsigned failures{ 0 };
+    bool pendingSuperseded{ false };
 };
 
 class PhysicsOwnershipController {
@@ -64,6 +67,10 @@ public:
     [[nodiscard]] OwnershipCompletion Expire(
         std::int64_t now, std::int64_t timeoutMs);
     void ResetPending();
+    // Invalidate an opposite request, retaining its slot until completion.
+    [[nodiscard]] bool Supersede(bool targetCBPC);
+    [[nodiscard]] bool CanMaintainCBPC(
+        bool wantsCBPC, bool relaxing, std::int64_t now) const;
     [[nodiscard]] PhysicsOwnershipSnapshot Read() const;
 
 private:

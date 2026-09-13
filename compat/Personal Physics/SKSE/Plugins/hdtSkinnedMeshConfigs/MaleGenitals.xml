@@ -327,7 +327,7 @@
 <no-collide-with-tag>scrotum</no-collide-with-tag>
 </per-triangle-shape>
 
-<per-triangle-shape name="scotumcollision">
+<per-triangle-shape name="scrotumcollision">
 <margin>0.10</margin>
 <penetration>0</penetration>
 <tag>scrotum</tag>

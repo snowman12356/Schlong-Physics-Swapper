@@ -43,6 +43,7 @@ bool SexLabSceneWantsCBPC(const Settings& settings, const SexLabDecisionState& s
 bool OStimSceneWantsCBPC(const Settings& settings, const SceneDecisionState& state);
 bool SoftHandoffNeedsRetry(bool animating, bool ownerKnown, bool usingCBPC);
 bool MaintenanceWantsCBPC(bool normalTarget, int manualTest, bool testActive);
+bool ManualPhysicsTestHoldsControl(int pendingAction, bool pendingActive, bool visibleActive);
 std::optional<float> ValidArousalReading(float reading);
 bool IsSexLabThreadEvent(std::string_view name);
 bool IsSexLabPhysicsReloadEvent(std::string_view name);

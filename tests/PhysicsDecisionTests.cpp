@@ -331,6 +331,62 @@ int main()
         actorContext.physics.successes.load() == 1,
         "completed ownership callback commits the selected owner");
 
+    // An unreported FSMP reset does not change SPS's cached owner. Maintenance
+    // must remain eligible after confirmation has ended, without a new event.
+    SPS::Controllers::PhysicsOwnershipState safeguardState;
+    SPS::Controllers::PhysicsOwnershipController safeguard(safeguardState);
+    using Purpose = SPS::Controllers::OwnershipPurpose;
+    using BeginStatus = SPS::Controllers::OwnershipBeginStatus;
+    Expect(!safeguard.CanMaintainCBPC(true, false, 30000),
+        "unknown ownership cannot dispatch an SMP-off-only safeguard");
+    const auto erect = safeguard.Begin(true, Purpose::switchOwner, false, 30000);
+    Expect(!safeguard.CanMaintainCBPC(true, false, 30001),
+        "safeguard cannot overtake an active handoff");
+    Expect(safeguard.Complete(erect.generation, true, 30300).success,
+        "safeguard setup completes the erect handoff");
+    Expect(!safeguard.CanMaintainCBPC(true, false, 31299) &&
+        safeguard.CanMaintainCBPC(true, false, 31300),
+        "safeguard waits one second after transaction completion");
+    Expect(!safeguard.CanMaintainCBPC(false, false, 90000) &&
+        !safeguard.CanMaintainCBPC(true, true, 90000),
+        "a receiving/soft decision or ongoing relaxation suppresses SMP-off even with cached CBPC");
+    Expect(safeguard.CanMaintainCBPC(true, false, 90000),
+        "cached erect owner still gets SMP-off after unreported dynamics resumption");
+    Expect(safeguard.Begin(false, Purpose::maintainCBPC, false, 90000).status == BeginStatus::blocked,
+        "SMP-off maintenance rejects a soft target");
+    const auto maintain = safeguard.Begin(true, Purpose::maintainCBPC, false, 90000);
+    Expect(maintain.status == BeginStatus::started &&
+        !safeguard.CanMaintainCBPC(true, false, 91000),
+        "one safeguard occupies the existing ownership transaction slot");
+    Expect(safeguard.Begin(false, Purpose::resetMesh, false, 90001).status == BeginStatus::blocked,
+        "reset cannot overlap a running SMP-off command");
+    Expect(safeguard.Complete(maintain.generation, true, 90200).success &&
+        safeguardState.known.load() && safeguardState.usingCBPC.load() &&
+        safeguardState.successes.load() == 1 && safeguardState.lastSwitchMs.load() == 30300,
+        "maintenance completion preserves owner, switch count and switch cooldown");
+    Expect(!safeguard.CanMaintainCBPC(true, false, 91199) &&
+        safeguard.CanMaintainCBPC(true, false, 91200),
+        "repeated fast polls cannot flood maintenance dispatch");
+    const auto delayedMaintain = safeguard.Begin(true, Purpose::maintainCBPC, false, 91200);
+    Expect(safeguard.Expire(96200, 5000).matched && !safeguardState.known.load() &&
+        !safeguard.CanMaintainCBPC(true, false, 98000),
+        "timed-out maintenance requires full owner recovery instead of continuing SMP-off-only work");
+    Expect(!safeguard.Complete(delayedMaintain.generation, true, 96300).matched,
+        "late safeguard success cannot overwrite a timeout");
+    const auto soft = safeguard.Begin(false, Purpose::switchOwner, false, 98000);
+    Expect(safeguard.Complete(soft.generation, true, 98500).success &&
+        !safeguard.CanMaintainCBPC(true, false, 100000),
+        "soft/disabled owner cannot receive SMP-off maintenance");
+    const auto recoveredErect = safeguard.Begin(true, Purpose::switchOwner, false, 101000);
+    Expect(safeguard.Complete(recoveredErect.generation, true, 101300).success,
+        "normal handoff restores eligibility after maintenance failure");
+    const auto savedMaintain = safeguard.Begin(true, Purpose::maintainCBPC, false, 102300);
+    safeguard.ResetPending();
+    safeguardState.known.store(false);
+    Expect(!safeguard.Complete(savedMaintain.generation, true, 103000).matched &&
+        !safeguard.CanMaintainCBPC(true, false, 103000),
+        "load invalidation rejects old maintenance callbacks and waits for a fresh owner");
+
     const auto staleOwnerRequest = ownership.Begin(
         false, SPS::Controllers::OwnershipPurpose::switchOwner, true, 31000);
     ownership.ResetPending();
@@ -397,6 +453,90 @@ int main()
     Expect(gate.Prepare("not-started") , "queued-only cancellation releases its slot");
     gate.Cancel();
     Expect(!gate.Enter("not-started"), "timed-out queued stack has no side effects when it finally starts");
+
+    // A newer scene/arousal/disabled target must win even if the obsolete
+    // stack reports success, or the request flips back before it has returned.
+    for (const auto purpose : { Purpose::switchOwner, Purpose::confirmSoft,
+             Purpose::confirmCBPC, Purpose::restore, Purpose::resetLoad,
+             Purpose::resetSoft, Purpose::resetAngle, Purpose::resetMesh,
+             Purpose::reconnectMesh, Purpose::maintainCBPC }) {
+        for (const bool target : { false, true }) {
+            if (purpose == Purpose::maintainCBPC && !target) continue;
+            for (const bool entered : { false, true }) {
+                SPS::Controllers::PhysicsOwnershipState latestState;
+                SPS::Controllers::PhysicsOwnershipController latest(latestState);
+                SPS::Controllers::PapyrusOperationGate latestGate;
+                latestState.known.store(true);
+                latestState.usingCBPC.store(target);
+                latestState.smpConnected.store(true);
+                latestState.cbpcConnected.store(true);
+                const auto old = latest.Begin(target, purpose, !target, 1000);
+                Expect(old.status == BeginStatus::started && latestGate.Prepare("obsolete"),
+                    "supersession starts an ordered physics operation");
+                if (entered) Expect(latestGate.Enter("obsolete"), "simulated bridge starts work");
+                Expect(!latest.Supersede(target) && !latest.Read().pendingSuperseded,
+                    "unchanged policy retains its current transaction");
+                Expect(latest.Supersede(!target), "opposite policy supersedes every operation purpose");
+                latestGate.Cancel();
+                Expect(latest.Read().pending && latest.Read().pendingSuperseded &&
+                    !latestState.known.load() && !latestState.smpConnected.load() &&
+                    !latestState.cbpcConnected.load() && !latestGate.Current("obsolete"),
+                    "supersession cancels future steps without guessing the partially changed owner");
+                Expect(latestGate.Busy() == entered,
+                    "only an entered cancelled stack retains its execution lease");
+                Expect(!latest.Supersede(target) &&
+                    latest.Begin(target, purpose, false, 1100).status == BeginStatus::blocked,
+                    "rapid reversal cannot revive the obsolete request");
+                const auto retired = latest.Complete(old.generation, true, 1200);
+                Expect(retired.matched && retired.superseded && !retired.success &&
+                    !latest.Read().pending && !latestState.known.load() &&
+                    latestState.successes.load() == 0 && latestState.failures.load() == 0 &&
+                    latestState.retryAfterMs.load() == 0,
+                    "late obsolete success neither commits ownership nor reports an engine failure");
+                latestGate.Complete("obsolete");
+                Expect(!latestGate.Busy() && latestGate.Prepare("replacement") &&
+                    latestGate.Enter("replacement"), "replacement runs after the old stack retires");
+                const auto replacement = latest.Begin(!target, Purpose::switchOwner, false, 1300);
+                Expect(!latest.Complete(old.generation, true, 1350).matched,
+                    "old completion cannot overwrite replacement generation");
+                Expect(latest.Complete(replacement.generation, true, 1400).success &&
+                    latestState.known.load() && latestState.usingCBPC.load() == !target,
+                    "fresh ordered handoff acknowledges the latest requested owner");
+            }
+        }
+    }
+
+    SPS::Controllers::PhysicsOwnershipState drainingState;
+    SPS::Controllers::PhysicsOwnershipController draining(drainingState);
+    SPS::Controllers::PapyrusOperationGate drainingGate;
+    const auto drainingRequest = draining.Begin(true, Purpose::switchOwner, false, 1000);
+    Expect(drainingGate.Prepare("draining") && drainingGate.Enter("draining") &&
+        draining.Supersede(false), "superseded running stack awaits disposal");
+    drainingGate.Cancel();
+    Expect(draining.Expire(6000, 5000).superseded && drainingGate.Busy() &&
+        !draining.Read().pending && !drainingGate.Prepare("too-early"),
+        "controller timeout must not allow replacement to overtake a cancelled running stack");
+    Expect(drainingState.failures.load() == 0 &&
+        !draining.Complete(drainingRequest.generation, true, 6100).matched,
+        "cancelled timeout and late callback do not publish obsolete results");
+    drainingGate.Complete("draining");
+    Expect(!drainingGate.Busy(), "retirement permits deferred dispatch without repeated failures");
+    const auto beforeLoad = draining.Begin(true, Purpose::switchOwner, false, 7000);
+    Expect(draining.Supersede(false), "pre-load operation is cancelled");
+    draining.ResetPending();
+    Expect(!draining.Read().pendingSuperseded &&
+        !draining.Complete(beforeLoad.generation, true, 7100).matched,
+        "load clears supersession state and rejects previous-save callbacks");
+
+    Expect(SPS::Core::ManualPhysicsTestHoldsControl(0, true, false) &&
+        SPS::Core::ManualPhysicsTestHoldsControl(1, true, false),
+        "both queued tests hold normal control while their handoff is pending");
+    Expect(!SPS::Core::ManualPhysicsTestHoldsControl(0, false, false) &&
+        !SPS::Core::ManualPhysicsTestHoldsControl(2, true, false) &&
+        !SPS::Core::ManualPhysicsTestHoldsControl(-1, true, false),
+        "expired tests, repair and absent tests do not suppress normal control");
+    Expect(SPS::Core::ManualPhysicsTestHoldsControl(-1, false, true),
+        "completed manual test retains its existing visible test window");
 
     const auto resetting = ownership.Begin(false,
         SPS::Controllers::OwnershipPurpose::resetMesh, false, 50000);

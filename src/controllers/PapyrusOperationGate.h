@@ -10,6 +10,11 @@ namespace SPS::Controllers {
 // until its callback. A replacement cannot overtake an old engine mutation.
 class PapyrusOperationGate {
 public:
+    bool Busy() const
+    {
+        std::scoped_lock lock(lock_);
+        return !expected_.empty() || !executing_.empty();
+    }
     bool Prepare(std::string token)
     {
         std::scoped_lock lock(lock_);

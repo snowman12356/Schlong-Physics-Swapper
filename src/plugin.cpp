@@ -1239,13 +1239,10 @@ void RunSoftHandoffSMPReset() {
         return;
     }
 
-    // TogglePhysics acknowledges previous states, not the resulting simulated
-    // shape. Rebuilding just the player after a real CBPC -> SMP handoff is the
-    // actor-scoped equivalent of the FSMP "SMP reset" button that repairs it.
-    // ResetPhysics(..., true) already snaps the actor to the reference pose and
-    // clears velocity. Freezing the six bones immediately before that reset can
-    // make FSMP rebuild from the frozen transitional shape, leaving the soft
-    // mesh visibly stretched even though the ownership calls all succeeded.
+    // The actor reset reloads meshes but does not run the global button's
+    // physics-world reset. The guarded soft reset also lets the six managed
+    // bones follow the skeleton briefly after rebuilding, then resumes SMP.
+    // Command completion still cannot prove the visible resting length.
     playerContext.recovery.ignoreNodeEventsUntilMs.store(now + 3000);
     const bool dispatched = QueueOwnershipHandoff(false, SPS::Controllers::OwnershipPurpose::resetSoft);
     if (!dispatched) {
@@ -1259,6 +1256,20 @@ void RunSoftHandoffSMPReset() {
 
 void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& completion) {
     if (!completion.matched) return;
+
+    if (completion.superseded) {
+        logger::debug("Outdated physics transaction retired; current policy will select the next owner");
+        return;
+    }
+
+    if (completion.purpose == SPS::Controllers::OwnershipPurpose::maintainCBPC) {
+        playerContext.physics.smpConnected.store(completion.success);
+        if (!completion.success)
+            logger::warn("SMP-off safeguard did not complete; ownership is unknown and will be recovered");
+        // A single SMP-off command cannot acknowledge CBPC attachment, clear
+        // unrelated repair errors, or restart the selected owner's bend timers.
+        return;
+    }
 
     const auto now = NowMs();
     playerContext.physics.smpConnected.store(completion.success);
@@ -1428,6 +1439,9 @@ bool QueueOwnershipHandoff(
     if (!player) return false;
 
     if (!PapyrusReadyForDispatch() || !SPS::Runtime::OrderedFsmpBridgeAvailable()) return false;
+    // A timed-out/cancelled stack can still be retiring. Waiting for its lease
+    // is not another failed physics attempt, and must not inflate SPS-010.
+    if (!ownershipController.Read().pending && SPS::Runtime::PhysicsOperationBusy()) return false;
     const auto begin = ownershipController.Begin(cbpc, purpose, softTransition, NowMs());
     if (begin.status == SPS::Controllers::OwnershipBeginStatus::alreadyPending)
         return true;
@@ -1435,9 +1449,11 @@ bool QueueOwnershipHandoff(
         return false;
 
     using Purpose = SPS::Controllers::OwnershipPurpose;
-    const bool reset = purpose == Purpose::resetLoad || purpose == Purpose::resetSoft ||
+    const bool reset = purpose == Purpose::resetLoad ||
         purpose == Purpose::resetAngle || purpose == Purpose::resetMesh;
-    const int preparation = reset ? 1 : (purpose == Purpose::reconnectMesh ? 2 : 0);
+    const int preparation = purpose == Purpose::maintainCBPC ? 3 :
+        (purpose == Purpose::resetSoft ? 4 :
+            (reset ? 1 : (purpose == Purpose::reconnectMesh ? 2 : 0)));
     int softBend = -1;
     if (purpose == Purpose::resetAngle && SosAeNativeLoaded()) {
         std::scoped_lock lock(settingsLock);
@@ -1463,8 +1479,15 @@ bool QueueOwnershipHandoff(
 
 bool SetOwner(bool cbpc, bool force) {
     const auto now = NowMs();
+    if (ownershipController.Supersede(cbpc)) {
+        SPS::Runtime::CancelPhysicsOperation();
+        CancelErectionAnimation();
+        logger::debug("Requested physics owner changed to {}; cancelling the outdated transaction",
+            cbpc ? "CBPC" : "SMP");
+    }
     const auto ownership = ownershipController.Read();
     if (ownership.pending) {
+        if (ownership.pendingSuperseded) return false;
         if (ownership.pendingCBPC == cbpc &&
             ownership.pendingPurpose == SPS::Controllers::OwnershipPurpose::switchOwner)
             return true;
@@ -1473,9 +1496,8 @@ bool SetOwner(bool cbpc, bool force) {
         return false;
     }
     if (!force && playerContext.physics.known.load() && playerContext.physics.usingCBPC.load() == cbpc) {
-        // Mesh changes, API reset notices and the bounded post-switch check
-        // schedule targeted repairs. Repeating an FSMP call on every ordinary
-        // poll only adds Papyrus traffic without proving who owns the bones.
+        // The end-of-tick safeguard reasserts SMP-off for the erect owner after
+        // higher-priority recovery has had a chance to acquire the bridge.
         return true;
     }
     if (!FsmpActorApiAvailable()) {
@@ -1609,7 +1631,9 @@ void Evaluate(bool force) {
 
     // A manual troubleshooting test should remain visible long enough for the
     // user to inspect it. Scene requests still take control immediately.
-    if (normalControl && !force && NowMs() < manualPhysicsTestUntilMs.load()) return;
+    if (normalControl && !force && SPS::Core::ManualPhysicsTestHoldsControl(
+            pendingQuickAction.load(), NowMs() < pendingQuickActionUntilMs.load(),
+            NowMs() < manualPhysicsTestUntilMs.load())) return;
     if (!normalControl) manualPhysicsTestUntilMs.store(0);
 
     // Scene integrations take priority over an everyday/spontaneous softening
@@ -1663,6 +1687,10 @@ void Tick() {
     HandleOwnershipCompletion(expired);
     if (!copy.enabled) {
         const auto ownership = ownershipController.Read();
+        if (ownership.pending) {
+            SetOwner(false, true);
+            return;
+        }
         if (!ownership.pending && (!ownership.known || ownership.usingCBPC) &&
             FsmpActorApiAvailable() && PapyrusReadyForDispatch()) {
             SetOwner(false, true);
@@ -1701,7 +1729,11 @@ void Tick() {
             // That old path produced soft -> erect during every high-arousal
             // load and doubled the number of Papyrus physics handoffs precisely
             // while the VM and player mesh were busiest.
-            forceStartupDecision = !waitingForInitialArousal;
+            // Startup reconciliation must not supersede a queued manual test
+            // merely because that test has not acknowledged an owner yet.
+            forceStartupDecision = !waitingForInitialArousal &&
+                !SPS::Core::ManualPhysicsTestHoldsControl(pendingQuickAction.load(),
+                    now < pendingQuickActionUntilMs.load(), now < manualPhysicsTestUntilMs.load());
             playerContext.recovery.startupReconcileDueMs.store(now + (waitingForInitialArousal ? 500 : 1000));
         } else {
             playerContext.recovery.startupReconcileDueMs.store(0);
@@ -1944,6 +1976,14 @@ void Tick() {
             ApplyRequestedBend(true, true, true);
             Record("Erect angle restored after the replacement mesh settled");
         }
+    }
+
+    // FSMP can restore XML dynamics without an event SPS receives. Keep its
+    // six managed bones off while the current policy still requests CBPC.
+    // Do this last so real handoffs, resets and equipment repair take priority.
+    if (ownershipController.CanMaintainCBPC(
+            targetStillWantsCBPC, playerContext.position.relaxing.load(), now)) {
+        QueueOwnershipHandoff(true, SPS::Controllers::OwnershipPurpose::maintainCBPC);
     }
 }
 
@@ -2716,6 +2756,18 @@ void ProcessPendingQuickAction() {
         const auto* reason = SPS::Runtime::PapyrusWaitReason(papyrusDispatchAllowedAfterMs.load(), now);
         Record(fmt::format("SPS-020: Requested quick fix timed out ({})",
             reason ? reason : "physics handoff incomplete"), true);
+        return;
+    }
+    Settings copy;
+    { std::scoped_lock lock(settingsLock); copy = settings; }
+    if (action != 2 && (!copy.enabled || AnySceneHasPriority(copy) || ActiveAPIRequest())) {
+        // A queued test must not re-request its owner on every tick after a
+        // scene/API request has superseded it.
+        pendingQuickAction.store(-1);
+        pendingQuickActionUntilMs.store(0);
+        activeManualPhysicsTest.store(-1);
+        manualPhysicsTestUntilMs.store(0);
+        Record("Queued physics test cancelled because another control source has priority");
         return;
     }
     if (!PapyrusReadyForDispatch()) return;

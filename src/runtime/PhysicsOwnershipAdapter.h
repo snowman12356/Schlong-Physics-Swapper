@@ -17,6 +17,7 @@ using OwnershipCompletion = std::function<void(bool)>;
 bool OrderedFsmpBridgeAvailable();
 bool RegisterPhysicsBridge(RE::BSScript::IVirtualMachine* vm);
 void CancelPhysicsOperation();
+bool PhysicsOperationBusy();
 void ResetPhysicsOperations();
 OwnershipDispatchResult SetPlayerPhysicsOwner(
     RE::Actor* actor,

@@ -181,9 +181,9 @@ installed and verified in the dedicated MO2 test mod. Its INI/meta.ini, all
 private SOFTBODY XMLs and `docs/USEFUL_WEB_LINKS.txt` remained unchanged. The
 previous installed files and pre-update logs are retained under
 `out/diagnostics/audit-repairs-20260906`. No release was published.
-Current DLL SHA-256:
+2026-09-06 DLL SHA-256:
 `4B6288444AD32DCE356A60B0CEEAFEF1FC63B5DE19A7A8F971AEE970650477D5`.
-Current ZIP SHA-256:
+2026-09-06 ZIP SHA-256:
 `6EB5F3DDBFB32DF390D4B7872A05F5FED369783C1076815FE38D69159FC51F5F`.
 On 2026-09-08 investigation continued after the user reported that ordinary
 swapping works only with SMP disabled globally, while viewing the player in
@@ -198,12 +198,204 @@ checks; its DLL and PDB identifiers match. It is packaged separately from SPS
 under `out/diagnostics/fsmp-actor-api-20260907`. Its relevance to the user's live
 failure still needs an in-game test; no FSMP installation or activation has
 been changed. See `docs/FSMP_ACTOR_SELECTION_2026-09-08.md` for evidence, scope,
-build provenance and the reversible test plan. The immediate gate is ordinary
-soft/erect switching with SMP globally enabled before resuming scene testing.
-The package remains `out/release/Schlong-Physics-Swapper-2.0.0.zip`. The gate must verify receiving scenes stay soft, post-scene resting
-length returns, penetrating scenes switch to CBPC, equipment changes reconnect,
-Repair remains usable afterward and P+ adds no new thread-not-found errors.
-The wider gate must also confirm that a compatible six-bone schlong is recognised automatically after
+build provenance and the reversible test plan. The user subsequently rejected
+changes to other mods; the FSMP candidate is not an active repair plan and
+remains uninstalled. All resumed implementation and installation work is
+restricted to SPS and its dedicated MO2 test mod.
+
+On 2026-09-09 the user authorized restoring only the missing SMP-off safeguard,
+keeping the existing bridge and modular rework. The supplied archive named
+1.8.3 is byte-identical to the published 1.8.2 release candidate. That source
+reasserts SMP-off for the six managed bones on ordinary erect-state polls;
+1.9.2 removed this before the bridge and formal rework were introduced. This
+is a confirmed behavioural difference and a regression candidate, not proof
+of the cause of the user's current failure. The old release is a comparison
+baseline, not a fresh successful test in the current setup.
+
+SPS now restores that narrow command at the end of its existing tick, only
+while current policy still requests CBPC, the cached owner is known CBPC,
+relaxation is inactive and no physics transaction is pending. It waits at least
+one active second after the last successful transaction. Reset/reconnection
+and scene decisions retain priority. The guarded bridge adds an SMP-off-only
+operation; it does not restart CBPC, reset SMP, change bend timers or publish
+another owner change. Failure invalidates ownership through the existing
+recovery path. Bridge version 4 is required to prevent an older bridge treating
+the new operation as a full handoff; previous function signatures remain.
+No persistent script state, settings, save layout, XML or external mod changes
+are required. Existing saves are probably safe, subject to the player gate.
+
+The safeguard build passed native compilation with SE/AE/VR enabled, the core
+regression tests, all five Papyrus compiles without warnings/errors, compiled
+bridge ABI/version checks, all eleven paired-build hashes, FOMOD/XML/expanded-ZIP
+validation and package rejection tests. The actual previously installed V3
+bridge was also confirmed incompatible with the new version-4 requirement.
+After confirming Skyrim was closed, six changed SPS DLL/PEX/PSC files were
+installed into the dedicated test mod and all 21 selected package files were
+hash-verified. Its INI, MO2 metadata and selected XMLs are unchanged, as are the
+private SOFTBODY override, installed FSMP DLL and user-owned links file.
+The backup, build log and installation receipt are retained under
+`out/diagnostics/smp-off-safeguard-20260909`. No other mod was edited or installed
+and no release was published. Safeguard-build DLL SHA-256:
+`9F4D346DA171A208F9D2DF7E9AD44E53D86C703B0CA258760CB57FCF0AF8C136`.
+2026-09-09 ZIP SHA-256:
+`726698CEEEA6DD20989F9C518055078A271F740E482FB6BBBAFADD1829D34EE3`.
+
+On 2026-09-13 the personal physics option's collision-shape name was corrected
+from `scotumcollision` to `scrotumcollision`, matching the local UBE SOS/TNG
+collision meshes and UBE's supplied XML. FSMP looks up mesh shapes by this name;
+the misspelling can omit the intended scrotum collider. Only that identifier
+changes; dynamics, tags and collision exclusions remain intact. This XML-only
+fix preserves the existing paired DLL/bridges and does not change save data.
+The dedicated test mod uses the combined SOFTBODY option, which does not contain
+this typo, so its profile must not be replaced with the personal option. The
+separate private SOFTBODY override remains outside the authorized SPS-only
+change. Validation confirmed that only the intended name changed, the XML is
+well formed and its collision shape names are unique. The package was rebuilt
+using the unchanged paired DLL/bridges; FOMOD/XML, compiled bridge contracts,
+eleven build hashes, expanded-ZIP validation and package rejection checks pass.
+With Skyrim closed, all 21 files selected by the dedicated test mod were
+verified against the rebuilt package. They already match, so no installation
+writes or profile change were needed. The INI, metadata, private XMLs, FSMP DLL
+and user-owned links are unchanged. Evidence is retained under
+`out/diagnostics/scrotum-name-20260913`. No release was published. XML-only ZIP
+SHA-256: `FF1918EA3B18094498214F40893664AE698C9D9D9295947EDF34C048EAD0FC41`.
+This is independent of the still-unverified SMP/CBPC switching regression.
+
+Later on 2026-09-13 the user reported that swapping seems to work, but the
+floppy shaft remains too long until FSMP's `smp reset` control is used. Scenes
+have not been tested. The matching safeguard-build log shows three ordinary
+erect-to-soft transitions, each followed by a queued player pose reset and
+acknowledged bridge completion. Thus the automatic reset trigger is present;
+acknowledged completion has not established restoration of the resting length.
+The inspected FSMP source shows that the global reset also resets the physics
+world after reloading meshes, whereas the actor API used by SPS reloads that
+actor's meshes. Their equivalence must not be assumed. This difference is not
+yet a proven cause, and the earlier actor-selection risk is also unconfirmed
+in this session. The user then confirmed that SPS's manual Repair current
+physics does not shorten it; only FSMP's reset does.
+The logs are retained under `out/diagnostics/soft-length-20260913`; nine installed
+SPS code files match the safeguard build. No runtime code, installed files or
+other-mod settings were changed during that investigation.
+
+A targeted SPS soft-reset candidate now briefly makes the six managed bones
+kinematic after the actor mesh reload and CBPC stop calls, uses the existing
+0.25-second settle wait, then resumes SMP. The local FSMP implementation makes
+kinematic bodies follow the skeleton during simulation; enabling an already
+dynamic body, as the old reset sequence did, exits without that alignment.
+This is a source-supported correction to test, not proof of the live cause.
+Only the existing soft-pose recovery operation uses it, including Test soft,
+Repair and post-scene soft recovery. Ordinary owner changes, mesh reconnects,
+the erect safeguard and other actors are unchanged. The operation retains the
+existing cancellation lease, reset task barrier, pause clock and timeout.
+Bridge version 5 adds the new preparation mode while preserving all existing
+function signatures; install it only with its paired DLL. No saved script
+state, XML, settings or external-mod changes are required.
+
+The soft-reset candidate passed native compilation with SE/AE/VR enabled, the
+core regression tests, all five Papyrus compiles without warnings/errors,
+compiled bridge ABI/version checks, all eleven paired-build hashes,
+FOMOD/XML/expanded-ZIP validation and package rejection tests. The previously
+installed V4 bridge was also confirmed incompatible with the V5 requirement.
+With Skyrim closed, six changed SPS DLL/PEX/PSC files were installed into the
+dedicated test mod at 12:52 BST on 2026-09-13; all 21 selected package files were
+hash-verified. The installed INI, metadata and selected XMLs, private SOFTBODY
+override, FSMP DLL and user-owned links file are unchanged. The verified backup,
+build log and installation receipt are under
+`out/diagnostics/soft-length-20260913`. No other mod was changed and no release
+was published. Soft-reset candidate DLL SHA-256:
+`5AEF4DD2F0C1C6FB5D3C93A9BEFD5B6E3F4789AB8C2F966CFF91AB9245E62A9C`.
+Soft-reset candidate ZIP SHA-256:
+`19C6538631982905EF2AE0F847BAB01781B9B31E9623DA8F13F6E1E6D05BD937`.
+These checks do not validate simulated motion or resting length in-game. The
+next gate is repeated ordinary erect-to-soft changes with normal resting length
+returning without FSMP reset, before scene testing resumes.
+
+The user subsequently requested further SPS-only switching reliability work.
+Inspection found that `SetOwner` waited for an opposite in-flight transaction
+to finish rather than invalidating its remaining calls. A scene/arousal/disable
+decision could therefore be followed by the obsolete owner's final commands.
+The controller now marks such work superseded, invalidates uncertain ownership
+and cancels its existing execution token. It retains the transaction slot until
+completion/timeout and the adapter retains any running stack's lease until it
+actually retires. A superseded callback cannot commit ownership, run recovery
+side effects or revive its target if policy reverses again. The latest policy
+then requests a fresh ordered handoff; unchanged requests retain their original
+transaction. Waiting for a retired stack's lease no longer creates repeated
+failed dispatches or increments the physics failure counter.
+
+Queued manual tests now retain priority over ordinary arousal polling while
+waiting for their handoff, and are withdrawn when scene/API/disabled control
+takes priority. The existing visible ten-second test period is unchanged.
+The bridge also checks that the player's 3D remains loaded before subsequent
+physics steps and before acknowledging completion. Bridge version 6 is required;
+all existing entry-point signatures and the version-5 soft-pose recovery remain.
+No new Skyrim API, native hook, global reset, polling thread, saved script state,
+INI setting, XML profile or external-mod change is introduced. Save compatibility
+is probably preserved but still needs live testing; the new controller flag is
+transient native state and clears on load.
+
+Focused regression coverage includes opposite-target supersession for every
+ownership purpose, queued and running stacks, rapid reversals, late successful
+callbacks, timeout while a lease remains held, load invalidation and queued-test
+priority. Startup reconciliation also respects queued manual tests. The final
+native build with SE/AE/VR enabled, all core regression tests and all five
+Papyrus compiles passed without compiler warnings/errors. Staged and expanded
+ZIP checks passed, including bridge ABI/version validation, eleven paired-build
+hashes, 25 FOMOD references, four XMLs and deliberate package rejection cases.
+The previously installed V5 bridge was explicitly rejected by the V6 contract.
+With Skyrim confirmed closed, six changed SPS code files were installed into
+the dedicated test mod; all 21 selected package files were hash-verified. Its
+INI, metadata and selected XMLs, the private SOFTBODY override, FSMP DLL and
+user-owned links file are unchanged. The previous package, verified install
+backup, build log and installation receipt are retained under
+`out/diagnostics/switch-reliability-20260913`. No other mod was changed and no
+release was published. Current DLL SHA-256:
+`470575B47C18664007888B3777C6B0A846B252DEC5C116058FE8FE2DA9C5DFBC`.
+Current ZIP SHA-256:
+`E8A23CF7E2DB6C16FE6A5BA14E2D758540FA3838ECA12F56C11610A94C758F34`.
+Additional in-game coverage to record includes a target reversal during
+a pending handoff, disable during a handoff, queued tests at conflicting arousal,
+scene priority over a queued test and loading while work is pending. These are
+specific ordering repairs, not proof that FSMP's actor API reached the live bodies
+or that the previously reported length problem is fixed. A VM stack that never
+resumes/disposes still cannot safely be overtaken; the existing loading/restart
+recovery boundary is retained.
+
+After testing the reliability build, the user reported that it was fine. The
+2026-09-13 session from 20:24 to 20:41 records three CBPC handoffs, three SMP
+handoffs and three completed automatic soft-pose rebuilds. One startup SPS-010
+at 20:27:34 recovered automatically at 20:27:42; one deferred CBPC confirmation
+also completed later. There were no later SPS errors, no SPS bridge errors and
+no P+ thread-not-found messages in the matching Papyrus log. All 21 selected
+installed files match the last validated build; the ZIP hash is unchanged and
+the staged package passes validation again. The log snapshots and verification
+record are under `out/diagnostics/release-check-20260913`. No runtime code or
+installed files changed during this check.
+
+The user subsequently confirmed that the remaining queried checks were fine:
+normal soft length without an FSMP reset and scene/equipment recovery. Record
+these as user-observed passes, alongside the log-supported ordinary switching
+results; the archived log itself does not show active scenes or equipment
+recovery. The reported switching, resting-length and scene/equipment regressions
+are therefore considered passed on the tested player setup. Together with the
+successful build, regression tests and package checks, this supports release
+readiness for the current 2.0.0 player build. No further speculative physics
+change is warranted by this test result. The recovered startup timeout remains
+recorded, rather than being described as an entirely error-free session.
+
+Release readiness is not a claim that every runtime, optional integration or
+physics profile below has been tested. Detailed manual Repair, disable/re-enable
+and pending-operation load/reversal coverage remain unrecorded. All further work
+remains SPS-only. The user has now explicitly authorized uploading 2.0.0 to
+GitHub and requested the validated ZIP and a simple changelog for their own
+Nexus upload. Publication is being prepared from the existing tested build;
+no rebuild or physics change is needed. Release notes are recorded in
+`docs/RELEASE_NOTES_2.0.0.md`. The validated release package remains
+`out/release/Schlong-Physics-Swapper-2.0.0.zip`, with the hashes above unchanged.
+
+The broader compatibility checklist remains for follow-up testing; do not mark
+these cases passed from the user's confirmation of the reported regressions.
+Confirm that a compatible six-bone schlong is recognised automatically after
 loading without using Repair current physics, and that the corrected OSL
 2.9.3 query runs without the `OSLAroused.dll` access violation, then confirm
 that OSL Aroused's MCM opens normally, TNG no longer logs
@@ -222,5 +414,6 @@ and confirm the scrotum and collision behaviour remain stable. Separately test
 the packaged personal profile with compatible SOS, TNG and UBE six-bone builds.
 Test the packaged generic combined option with SOFTBODY and a compatible
 six-bone build, confirming that its single merged `MaleGenitals` shape supports
-collisions in all three SOFTBODY profiles. Do not begin managed NPC support
-until the player gate has passed.
+collisions in all three SOFTBODY profiles. Managed NPC support remains outside
+this release and requires a separate authorized phase after broader player
+coverage is complete.

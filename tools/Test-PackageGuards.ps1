@@ -15,7 +15,7 @@ function Assert-Rejected {
 $contracts = @(Get-SPSBridgeContracts)
 $bridge = Join-Path $PackagePath 'Scripts/SPS_FSMPBridge.pex'
 $wrongVersion = $contracts[0].Clone()
-$wrongVersion.Version = 2
+$wrongVersion.Version = 5
 Assert-Rejected { Test-SPSPexContract $bridge $wrongVersion } 'incorrect GetSPSBridgeVersion return value'
 $wrongABI = $contracts[0].Clone()
 $wrongABI.Signatures = $wrongABI.Signatures.Clone()

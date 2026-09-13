@@ -13,12 +13,14 @@ struct PhysicsOwnershipState {
     std::atomic<bool> sosConnected{ false };
     std::atomic<std::int64_t> lastSwitchMs{ 0 };
     std::atomic<std::int64_t> retryAfterMs{ 0 };
+    std::atomic<std::int64_t> smpOffReassertAfterMs{ 0 };
     std::atomic<unsigned> successes{ 0 };
     std::atomic<unsigned> failures{ 0 };
     std::atomic<bool> pending{ false };
     std::atomic<bool> pendingCBPC{ false };
     std::atomic<int> pendingPurpose{ 0 };
     std::atomic<bool> pendingSoftTransition{ false };
+    std::atomic<bool> pendingSuperseded{ false };
     std::atomic<std::int64_t> pendingSinceMs{ 0 };
     std::atomic<std::uint64_t> requestGeneration{ 0 };
 };

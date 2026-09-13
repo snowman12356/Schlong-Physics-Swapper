@@ -65,9 +65,9 @@ public:
     {
         if (generation_ != versionGeneration.load()) return;
         const int version = result.IsInt() ? result.GetSInt() : -1;
-        bridgeVersion.store(version == 3 ? 3 : -1);
+        bridgeVersion.store(version == 6 ? 6 : -1);
         versionPending.store(false);
-        if (version != 3) SKSE::log::error("SPS-003: Physics bridge ABI mismatch; install the paired DLL and scripts");
+        if (version != 6) SKSE::log::error("SPS-003: Physics bridge ABI mismatch; install the paired DLL and scripts");
     }
     void SetObject(const RE::BSTSmartPointer<RE::BSScript::Object>&) override {}
 private:
@@ -102,6 +102,7 @@ bool RegisterPhysicsBridge(RE::BSScript::IVirtualMachine* vm)
 }
 
 void CancelPhysicsOperation() { operationGate.Cancel(); }
+bool PhysicsOperationBusy() { return operationGate.Busy(); }
 void ResetPhysicsOperations()
 {
     operationGate.ResetSession();
@@ -112,7 +113,7 @@ void ResetPhysicsOperations()
 
 bool OrderedFsmpBridgeAvailable()
 {
-    if (bridgeVersion.load() != 0) return bridgeVersion.load() == 3;
+    if (bridgeVersion.load() != 0) return bridgeVersion.load() == 6;
     const auto now = NowMs();
     if (now < versionRetryAfterMs.load()) return false;
     if (versionPending.load() && now - versionStartedMs.load() < 5000) return false;

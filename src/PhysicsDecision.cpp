@@ -16,6 +16,11 @@ bool MaintenanceWantsCBPC(bool normalTarget, int manualTest, bool testActive)
     return testActive && manualTest >= 0 ? manualTest == 1 : normalTarget;
 }
 
+bool ManualPhysicsTestHoldsControl(int pendingAction, bool pendingActive, bool visibleActive)
+{
+    return visibleActive || (pendingActive && (pendingAction == 0 || pendingAction == 1));
+}
+
 std::optional<float> ValidArousalReading(float reading)
 {
     if (!std::isfinite(reading) || reading < 0.0F) return std::nullopt;

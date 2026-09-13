@@ -13,11 +13,16 @@ OwnershipBeginResult PhysicsOwnershipController::Begin(
 {
     if (state_.pending.load()) {
         return {
-            state_.pendingCBPC.load() == targetCBPC &&
+            !state_.pendingSuperseded.load() && state_.pendingCBPC.load() == targetCBPC &&
                     state_.pendingPurpose.load() == static_cast<int>(purpose) ?
                 OwnershipBeginStatus::alreadyPending : OwnershipBeginStatus::blocked,
             state_.requestGeneration.load()
         };
+    }
+
+    if (purpose == OwnershipPurpose::maintainCBPC &&
+        !CanMaintainCBPC(targetCBPC, false, now)) {
+        return {};
     }
 
     auto generation = state_.requestGeneration.fetch_add(1) + 1;
@@ -27,6 +32,7 @@ OwnershipBeginResult PhysicsOwnershipController::Begin(
     state_.pendingCBPC.store(targetCBPC);
     state_.pendingPurpose.store(static_cast<int>(purpose));
     state_.pendingSoftTransition.store(softTransition);
+    state_.pendingSuperseded.store(false);
     state_.pendingSinceMs.store(now);
     state_.pending.store(true);
     return { OwnershipBeginStatus::started, generation };
@@ -54,7 +60,30 @@ void PhysicsOwnershipController::ResetPending()
     state_.pending.store(false);
     state_.pendingPurpose.store(0);
     state_.pendingSoftTransition.store(false);
+    state_.pendingSuperseded.store(false);
     state_.pendingSinceMs.store(0);
+    state_.smpOffReassertAfterMs.store(0);
+}
+
+bool PhysicsOwnershipController::Supersede(bool targetCBPC)
+{
+    if (!state_.pending.load() || state_.pendingCBPC.load() == targetCBPC ||
+        state_.pendingSuperseded.exchange(true)) return false;
+
+    // The old stack may already have changed one engine. Do not restore the
+    // cached owner or let its eventual success acknowledge the obsolete target.
+    state_.known.store(false);
+    state_.smpConnected.store(false);
+    state_.cbpcConnected.store(false);
+    return true;
+}
+
+bool PhysicsOwnershipController::CanMaintainCBPC(
+    bool wantsCBPC, bool relaxing, std::int64_t now) const
+{
+    return wantsCBPC && !relaxing && state_.known.load() && state_.usingCBPC.load() &&
+        !state_.pending.load() && now >= state_.retryAfterMs.load() &&
+        now >= state_.smpOffReassertAfterMs.load();
 }
 
 PhysicsOwnershipSnapshot PhysicsOwnershipController::Read() const
@@ -69,7 +98,8 @@ PhysicsOwnershipSnapshot PhysicsOwnershipController::Read() const
         static_cast<OwnershipPurpose>(state_.pendingPurpose.load()),
         state_.pendingSinceMs.load(),
         state_.successes.load(),
-        state_.failures.load()
+        state_.failures.load(),
+        state_.pendingSuperseded.load()
     };
 }
 
@@ -87,12 +117,22 @@ OwnershipCompletion PhysicsOwnershipController::Finish(
         state_.known.load(),
         state_.usingCBPC.load(),
         state_.pendingSoftTransition.load(),
-        static_cast<OwnershipPurpose>(state_.pendingPurpose.load())
+        static_cast<OwnershipPurpose>(state_.pendingPurpose.load()),
+        state_.pendingSuperseded.load()
     };
     state_.pending.store(false);
     state_.pendingPurpose.store(0);
     state_.pendingSoftTransition.store(false);
+    state_.pendingSuperseded.store(false);
     state_.pendingSinceMs.store(0);
+
+    if (result.superseded) {
+        // A policy change is not an engine failure. The adapter retains the
+        // execution lease if this completion came from the timeout path.
+        result.success = false;
+        state_.retryAfterMs.store(0);
+        return result;
+    }
 
     if (!success) {
         ++state_.failures;
@@ -106,6 +146,9 @@ OwnershipCompletion PhysicsOwnershipController::Finish(
     }
 
     state_.retryAfterMs.store(0);
+    // Leave a full second after any completed transaction. Routine maintenance
+    // uses the normal tick and never queues extra work behind an active stack.
+    state_.smpOffReassertAfterMs.store(now + 1000);
     if (result.purpose == OwnershipPurpose::switchOwner) {
         state_.usingCBPC.store(result.targetCBPC);
         state_.known.store(true);
