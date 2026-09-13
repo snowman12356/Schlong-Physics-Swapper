@@ -386,11 +386,21 @@ recorded, rather than being described as an entirely error-free session.
 Release readiness is not a claim that every runtime, optional integration or
 physics profile below has been tested. Detailed manual Repair, disable/re-enable
 and pending-operation load/reversal coverage remain unrecorded. All further work
-remains SPS-only. The user has now explicitly authorized uploading 2.0.0 to
-GitHub and requested the validated ZIP and a simple changelog for their own
-Nexus upload. Publication is being prepared from the existing tested build;
-no rebuild or physics change is needed. Release notes are recorded in
-`docs/RELEASE_NOTES_2.0.0.md`. The validated release package remains
+remains SPS-only. With explicit user authorization, 2.0.0 was published on
+GitHub on 2026-09-13 from release commit
+`738b2eecea0bb034440003a642f6b254cba8419b` and tag `v2.0.0` on
+`codex/codebase-rework`. Release URL:
+`https://github.com/snowman12356/Schlong-Physics-Swapper/releases/tag/v2.0.0`.
+The public release is neither a draft nor a prerelease. GitHub reports the
+uploaded ZIP's SHA-256 as the same validated hash above (470,982 bytes).
+No rebuild, physics change or installed-mod update was performed for publication.
+Automatic approval review rejected the proposed default-branch update as outside
+the upload request, so publication used the project branch and tag; `main`
+remains unchanged. The release notes are in `docs/RELEASE_NOTES_2.0.0.md`, with
+a plain-text copy at `out/release/Schlong-Physics-Swapper-2.0.0-changelog.txt`.
+The ZIP is ready for the user's Nexus upload; Nexus was not changed. The
+user-owned `docs/USEFUL_WEB_LINKS.txt` remains untracked and unmodified.
+The validated release package remains
 `out/release/Schlong-Physics-Swapper-2.0.0.zip`, with the hashes above unchanged.
 
 The broader compatibility checklist remains for follow-up testing; do not mark
