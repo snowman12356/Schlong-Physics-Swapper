@@ -86,3 +86,10 @@ ordinary switching. A local regression test is not an in-game confirmation.
 Do not publish automatically or combine this with the pending Predator XML test.
 
 Evidence and reproduction artifacts: `out/diagnostics/unicode-startup-20260915`.
+
+With explicit user authorization, the unchanged candidate was published as
+2.0.1 on GitHub on 2026-09-15 from commit
+`7aa9f80267fcea662cdd0d270396e65d499bc366`, tag `v2.0.1`. The uploaded ZIP and
+changelog hashes were verified against the local files. The release notes
+retain the pending in-game confirmation; publication does not close that gate.
+Publication records are in `out/diagnostics/publish-201-20260915`.

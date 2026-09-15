@@ -506,15 +506,22 @@ The next gate is reaching the main menu and loading a save on the reporter's
 unchanged setup, followed by ordinary soft/erect switching. See
 `docs/STARTUP_CRASH_2026-09-15.md`. The separate Predator test and NPC hold remain.
 
-The user explicitly requested GitHub publication of the latest build on
-2026-09-15. The unchanged 2.0.1 ZIP (473,306 bytes) passed fresh expanded-archive
-validation, and both regression executables passed again. Its ZIP/DLL hashes
-still match the values above. Publication is being prepared from
-`codex/codebase-rework`; the release notes disclose that the reporter's in-game
-confirmation remains pending. The separate Predator experiment is not included
-in the release asset. The copy-paste changelog is
+With explicit user authorization, 2.0.1 was published on GitHub on 2026-09-15
+from commit `7aa9f80267fcea662cdd0d270396e65d499bc366` and tag `v2.0.1` on
+`codex/codebase-rework`. Release URL:
+`https://github.com/snowman12356/Schlong-Physics-Swapper/releases/tag/v2.0.1`.
+The unchanged ZIP (473,306 bytes) passed fresh expanded-archive validation,
+and both regression executables passed again. GitHub reports the uploaded
+ZIP's SHA-256 as the same validated hash above. The uploaded changelog was
+also hash-verified. The release is public, neither draft nor prerelease.
+The release notes disclose that the reporter's in-game confirmation remains
+pending. The separate Predator experiment is not included in the release
+asset. The copy-paste changelog is
 `out/release/Schlong-Physics-Swapper-2.0.1-changelog.txt` and the release notes
-are in `docs/RELEASE_NOTES_2.0.1.md`. No new rebuild or installation is needed.
+are in `docs/RELEASE_NOTES_2.0.1.md`. Verification records are under
+`out/diagnostics/publish-201-20260915`. No rebuild, installation, default-branch
+change or Nexus upload was performed for publication. The user-owned links
+file remains untracked and unmodified.
 
 The broader compatibility checklist remains for follow-up testing; do not mark
 these cases passed from the user's confirmation of the reported regressions.
