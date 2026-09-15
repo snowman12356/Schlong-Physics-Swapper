@@ -403,6 +403,119 @@ user-owned `docs/USEFUL_WEB_LINKS.txt` remains untracked and unmodified.
 The validated release package remains
 `out/release/Schlong-Physics-Swapper-2.0.0.zip`, with the hashes above unchanged.
 
+On 2026-09-13 the Nexus Mods description for mod 188174 was updated in the
+existing edit page for version 2.0.0. The wording and structure were retained,
+while outdated statements were corrected: the page now describes the optional
+SPS and combined SOFTBODY physics profiles, current OSL version choices,
+optional OStim support, scene/equipment recovery, the current Scenes and
+Troubleshooting menu names, and the current test/repair controls. The broken
+compatibility-API link markup was also corrected. The Nexus mod version field
+was changed from 1.9.6 to 2.0.0. The page saved successfully; no files or
+settings in the local mod installation were changed.
+
+On 2026-09-14 the supplied Predator SMP Head 1.4 and TNG/HIMBO XML archives
+were compared with the released SPS profiles. The TNG/HIMBO `MaleGenitals`
+collision definition is already retained by both SPS physics options; the
+incoming genital XML alone supplies no active shaft dynamics. Predator's
+facial bones do not overlap SPS's six managed bones, and the inspected head
+and genital collision tags allow interaction. No runtime or XML patch was
+applied. A subsequent Nexus screenshot reports missing lip/throat response
+with SPS installed, so compatibility is now recorded as an unresolved reported
+failure. The tag comparison did not account for SPS's zero shaft collision-margin
+multipliers: FSMP scales the collider margin and penetration with these values,
+and a scalar contact-plane example confirms that some contacts accepted by the
+original collision-only profile are rejected. This is a plausible contributor,
+not a confirmed cause of the user's report. Obtain the active genital XML and
+soft/erect comparison before a targeted SPS test; a blanket multiplier change
+can enlarge other proxy colliders. Combined head collisions during CBPC
+ownership and after the player's pose reset remain untested. See
+`docs/PREDATOR_HIMBO_COMPATIBILITY_2026-09-14.md`. Installed mods and the
+published release remain unchanged.
+
+The reporter's **Use my SOFTBODY physics** selection was subsequently confirmed.
+An isolated XML-only contact-margin test was prepared from the hash-verified
+2.0.0 release using `tools/New-PredatorHeadCollisionTest.ps1`. Each of the three
+SOFTBODY profiles has exactly six zero-to-one shaft margin-multiplier edits;
+all remaining bytes, dynamics, filters and weight thresholds are preserved.
+The selected component contains no personal-profile margin-4 proxy shapes,
+but other shaft contacts and NPCs using the same XML paths can still be affected.
+Structure, exact-diff, ZIP-entry hashes and archive integrity checks passed.
+The test is `out/compatibility/predator-head-test-1/` and its ZIP SHA-256 is
+`CA3F3CB89300309B35B6A1209DB1045CE3692F54A36A4A40F318CB6A00324EB1`.
+No DLL/bridge build, installation or release update was performed. The next
+gate is the reporter's lip/throat response in soft and erect states, followed
+by other collisions and ordinary switching/reset/scene recovery checks.
+Do not call this a confirmed fix before those in-game results.
+
+On 2026-09-15 the reporter's follow-up screenshots confirmed only partial,
+unsatisfactory improvement from the Predator collision test. Their setup uses
+Skyrim 1.6.1170, 3BA, SOFTBODY, OStim, HIMBO and TNG. They offered custom working
+XMLs; those remain outstanding. The supplied SOFTBODY PPA patch v3.0 was checked
+as a baseline: its two XMLs have the same 58 bone names and 11 collision-shape
+names as the corresponding SPS profiles. Ten shape definitions match exactly
+apart from formatting; the remaining shape retains all PPA exclusions/weights
+but has SPS's extra filters and penetration setting. The patch supplies no
+dynamic shaft chain or soft-profile XML, so it must not replace the SPS profiles
+wholesale. Await the reporter's custom XMLs to identify the remaining differences
+before another targeted test. Comparison details are in the Predator document
+and `out/diagnostics/ppa-softbody-v3-20260915`. No runtime/profile/package or
+installed-mod changes were made for this comparison; test 1 remains unconfirmed.
+
+The earlier standalone XML packaging request was also completed on 2026-09-14.
+`out/release/SPS-SOFTBODY-MaleGenitals-XML-2.0.0.zip` contains the three
+combined SOFTBODY XMLs at their game-data paths and the original README with
+credits. All four entries were hash-matched to the published 2.0.0 archive,
+and the ZIP integrity check passed. This is the existing SOFTBODY option,
+not a newly tested Predator patch. No DLL/bridge rebuild or install occurred.
+Standalone ZIP SHA-256:
+`22847076F062C234E1856F9F16225991A8524FE0630263E1F1A040B4A996A7A6`.
+
+On 2026-09-14 the user chose to wait one week for Nexus bug reports before
+considering NPC support. Hold NPC implementation until at least 2026-09-21
+and until the user explicitly authorizes that phase. During this observation
+period, prioritize evidence-backed player bug reports and the pending Predator
+SOFTBODY collision-test result. A quiet week alone does not validate the
+remaining compatibility checks or automatically authorize NPC development.
+
+On 2026-09-15 dacama's supplied pre-menu crash report was traced to SPS's
+startup diagnostics filename conversion. A symbol-only relink of the retained
+2.0.0 objects produced byte-identical executable code and mapped the reported
+stack to `OnMessage -> RefreshDiagnostics -> Diagnostics::Scan ->` Windows
+wide-to-narrow conversion, throwing error 1113. The unchanged scanner reproduces
+that error with an unrelated Unicode TXT filename in the plugin directory.
+The 2.0.1 hotfix candidate compares filenames/extensions in their native encoding
+and uses UTF-8 for displayed summaries, with a label fallback for malformed
+UTF-16. The existing file scan is isolated within diagnostics so regression
+tests exercise the actual startup scanner without Skyrim. Detection rules,
+scan scope, physics ownership, APIs, Papyrus contracts, saved data, settings
+and XML profiles are unchanged. The original scanner fails the Unicode TXT
+reproducer with error 1113; the fixed scanner passes. The native build with
+SE/AE/VR enabled, both test executables, all five Papyrus compiles, staged and
+expanded ZIP validation and package rejection tests passed. With Skyrim closed,
+five changed SPS code files were backed up and installed in the dedicated test
+mod. Twenty selected package files and all 23 installed files were verified;
+the INI, metadata, selected XMLs, private SOFTBODY override, FSMP DLL and user
+links file are unchanged. Records are under
+`out/diagnostics/unicode-startup-20260915`. The unpublished candidate is
+`out/release/Schlong-Physics-Swapper-2.0.1.zip`, SHA-256
+`B5056B31BDF2ECB1D85D9067FBEB856266DAC5C54320E7E9522DAFC6C10CEB4A`.
+DLL SHA-256:
+`4A0C1AA600B5C8FF2E97B2ECE7278C5573175A4793C92615C1A3A1AD3D7A21A6`.
+The published 2.0.0 archive is preserved. Nothing has been republished.
+The next gate is reaching the main menu and loading a save on the reporter's
+unchanged setup, followed by ordinary soft/erect switching. See
+`docs/STARTUP_CRASH_2026-09-15.md`. The separate Predator test and NPC hold remain.
+
+The user explicitly requested GitHub publication of the latest build on
+2026-09-15. The unchanged 2.0.1 ZIP (473,306 bytes) passed fresh expanded-archive
+validation, and both regression executables passed again. Its ZIP/DLL hashes
+still match the values above. Publication is being prepared from
+`codex/codebase-rework`; the release notes disclose that the reporter's in-game
+confirmation remains pending. The separate Predator experiment is not included
+in the release asset. The copy-paste changelog is
+`out/release/Schlong-Physics-Swapper-2.0.1-changelog.txt` and the release notes
+are in `docs/RELEASE_NOTES_2.0.1.md`. No new rebuild or installation is needed.
+
 The broader compatibility checklist remains for follow-up testing; do not mark
 these cases passed from the user's confirmation of the reported regressions.
 Confirm that a compatible six-bone schlong is recognised automatically after

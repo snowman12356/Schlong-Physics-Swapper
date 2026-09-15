@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '2.0.0',
+    [string]$Version = '2.0.1',
     [string]$BuildDirectory = 'out\build',
     [string]$OutputDirectory = 'out\release',
     [switch]$CreateZip

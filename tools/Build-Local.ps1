@@ -218,10 +218,12 @@ try {
     Invoke-SPSProcess -FilePath $cmakeCommand.Path -ArgumentList $buildArguments `
         -Environment $cleanEnvironment -Description 'SPS build'
 
-    $coreTests = Join-Path $physicalBuild "$Configuration\SPSCoreTests.exe"
-    if (Test-Path -LiteralPath $coreTests -PathType Leaf) {
-        Invoke-SPSProcess -FilePath $coreTests -ArgumentList @() `
-            -Environment $cleanEnvironment -Description 'SPS core unit tests'
+    foreach ($testName in @('SPSCoreTests', 'SPSDiagnosticsTests')) {
+        $testExecutable = Join-Path $physicalBuild "$Configuration\$testName.exe"
+        if (Test-Path -LiteralPath $testExecutable -PathType Leaf) {
+            Invoke-SPSProcess -FilePath $testExecutable -ArgumentList @() `
+                -Environment $cleanEnvironment -Description $testName
+        }
     }
 
     $dll = Join-Path $physicalBuild "$Configuration\SchlongPhysicsSwapper.dll"

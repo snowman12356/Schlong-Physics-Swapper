@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(SchlongPhysicsSwapper VERSION 2.0.0 LANGUAGES CXX)
+project(SchlongPhysicsSwapper VERSION 2.0.1 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(NOT DEFINED ENV{COMMONLIB_SSE_FOLDER})
@@ -35,6 +35,8 @@ add_library(SPSCore STATIC
     src/api/ExternalControlRegistry.h
     src/diagnostics/ActivityLog.cpp
     src/diagnostics/ActivityLog.h
+    src/diagnostics/PhysicsFileScan.cpp
+    src/diagnostics/PhysicsFileScan.h
     src/controllers/ActorContext.h
     src/controllers/ExecutionClock.h
     src/controllers/PapyrusOperationGate.h
@@ -97,6 +99,13 @@ if(SPS_BUILD_CORE_TESTS)
   endif()
   add_test(NAME SPSCoreTests COMMAND SPSCoreTests)
   add_dependencies(${PROJECT_NAME} SPSCoreTests)
+  add_executable(SPSDiagnosticsTests tests/DiagnosticsTests.cpp)
+  target_link_libraries(SPSDiagnosticsTests PRIVATE SPSCore)
+  if(MSVC)
+    target_compile_options(SPSDiagnosticsTests PRIVATE /W4)
+  endif()
+  add_test(NAME SPSDiagnosticsTests COMMAND SPSDiagnosticsTests)
+  add_dependencies(${PROJECT_NAME} SPSDiagnosticsTests)
 endif()
 target_precompile_headers(${PROJECT_NAME} PRIVATE src/PCH.h)
 if(SPS_BUILD_API_TEST_PLUGIN)
