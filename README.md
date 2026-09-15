@@ -116,6 +116,17 @@ choice merges the SPS shaft physics and collision exclusions with SOFTBODY's
 normal, soft and anal collision profiles. When selected, make SPS win conflicts
 for all three `MaleGenitals` XML files.
 
+**Predator SMP Head compatibility is under investigation.** A user reports
+that its lips and throat stop responding to genital collisions with SPS
+installed. Both SPS physics options include the `MaleGenitals` shape and tag
+filters from `TNG_Himbo_SMP_XMLs`, but that does not preserve every collision
+property: SPS's shaft bones use zero collision-margin multipliers. The
+incoming standalone genital XML has no active shaft dynamics, so replacing
+SPS's profile with it also loses the supplied floppy simulation. Keep the
+separate HIMBO and Predator files; no tested compatibility fix is available
+yet. See [the investigation](docs/PREDATOR_HIMBO_COMPATIBILITY_2026-09-14.md)
+for the evidence and remaining checks.
+
 When PPA/Accurate Penetration or SOFTBODY may have changed a soft shaft during
 a scene, SPS performs one delayed player-only SMP pose refresh after scene
 cleanup. Equipment recovery, ownership handoffs, and bend replay are serialized
