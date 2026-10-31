@@ -16,6 +16,10 @@ This checks PowerShell, Visual Studio C++ tools, CommonLibSSE-NG, the installed
 vcpkg packages, the pinned CMake executable, SKSE Menu Framework source, Git and
 GitHub CLI. It does not contact GitHub or print authentication tokens.
 
+CommonLibSSE-NG must be `alandtse/CommonLibSSE-NG` v15.4.0 or newer; the
+`openvr` submodule must be initialised for the VR target. The build enforces the
+minimum version and stops with a clear message when the checkout is older.
+
 Local build dependencies live outside the repository in the sibling
 `.sps-deps` directory. The scripts also accept `COMMONLIB_SSE_FOLDER`,
 `VCPKG_ROOT`, `SPS_MENU_FRAMEWORK_SOURCE` and `SPS_REFERENCE_ROOT` overrides.

@@ -28,7 +28,8 @@ requiring users to repair the state manually.
    arousal, scenes, position, recovery, diagnostics and MCM presentation
    separated. New fixes should not destabilise unrelated systems.
 3. **Runtime compatibility.** Preserve Skyrim SE, AE and VR support through
-   CommonLibSSE-NG where possible.
+   CommonLibSSE-NG. The pinned dependency is `alandtse/CommonLibSSE-NG`
+   v15.4.0 or newer; see `docs/DEVELOPMENT.md`.
 4. **Managed NPC support after the player is stable.** Users will be able to
    select NPCs and add or remove them from SPS management. Managed NPCs should
    receive SPS switching, transitions, scene handling, positioning and bounded

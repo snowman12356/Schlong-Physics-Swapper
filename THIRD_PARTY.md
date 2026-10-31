@@ -1,8 +1,8 @@
 # Third-party notice
 
-The MIT licence in the repository root covers only original Schlong Physics
-Swapper material authored for this project. It does not replace or relicense
-third-party material.
+The GPL-3.0-or-later licence in the repository root covers only original
+Schlong Physics Swapper material authored for this project. It does not replace
+or relicense third-party material.
 
 Schlong Physics Swapper calls or reads public compatibility interfaces supplied
 by SKSE Menu Framework, Faster HDT-SMP, CBPC, OSL Aroused, SLO Aroused NG,
@@ -18,6 +18,14 @@ archives include their applicable copyright and licence notices in the
 [THIRD_PARTY_LICENSES.txt](Licenses/Third-Party-Software-Licenses.txt). These
 notices do not imply that the upstream projects endorse Schlong Physics
 Swapper.
+
+CommonLibSSE-NG is pinned to `alandtse/CommonLibSSE-NG` v15.4.0 or newer. That
+project relicensed from MIT to GPL-3.0-or-later (with its Modding Exception and
+GPL-3.0 Linking Exception) at v15, so the compiled DLL is distributed under
+GPL-3.0-or-later as a combined work. Because the DLL is a combined work with a
+statically linked GPL-3.0 component, corresponding source must be made available
+alongside binary releases. The permissive notices for the remaining dependencies
+are unaffected.
 
 ## Optional legacy OSL Aroused compatibility
 

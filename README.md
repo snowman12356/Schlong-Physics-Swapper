@@ -49,11 +49,19 @@ still contain mistakes, so useful bug reports and diagnostic logs are welcome.
 ## Permissions and credit
 
 All original Schlong Physics Swapper code, configuration, and documentation are
-released under the [MIT License](LICENSE). You may freely use, copy, modify,
-redistribute, include, or build upon them, including in your own mods, provided
-you preserve the licence notice and give credit as:
+released under the [GNU General Public License v3.0 or later](LICENSE). You may
+use, copy, modify, and redistribute them, including in your own mods, under the
+terms of that licence. In practice that means:
+
+- If you distribute SPS, or a mod built from it, you must also make the
+  corresponding source available under GPL-3.0-or-later.
+- You must preserve the licence notice and give credit as:
 
 > Schlong Physics Swapper by snowman12356
+
+- Because the DLL statically links CommonLibSSE-NG v15+, which is
+  GPL-3.0-or-later, the distributed binary is a GPL-3.0-or-later combined work.
+  See [THIRD_PARTY.md](THIRD_PARTY.md) for that dependency's exact terms.
 
 Please link to the original GitHub or Nexus page where practical. Third-party
 projects used through public compatibility interfaces remain under their
@@ -578,12 +586,21 @@ actual result, and short reproduction steps. See [SUPPORT.md](docs/SUPPORT.md).
 
 ## Building
 
-The project requires Visual Studio 2022, CMake 3.24 or newer, vcpkg, and the
-[CharmedBaryon/CommonLibSSE-NG](https://github.com/CharmedBaryon/CommonLibSSE-NG)
-checkout. Set `COMMONLIB_SSE_FOLDER` to that checkout, configure with the vcpkg
-toolchain, then build the `SchlongPhysicsSwapper` target. The Menu Framework SDK
-headers are fetched during configuration. For a VR-capable build, initialise
-CommonLibSSE-NG's `extern/openvr` submodule before configuring.
+The project requires Visual Studio 2022, CMake 3.24 or newer, vcpkg, and an
+[alandtse/CommonLibSSE-NG](https://github.com/alandtse/CommonLibSSE-NG)
+checkout at **v15.4.0 or newer**. Set `COMMONLIB_SSE_FOLDER` to that checkout,
+configure with the vcpkg toolchain, then build the `SchlongPhysicsSwapper`
+target. The Menu Framework SDK headers are fetched during configuration.
+
+`CMakeLists.txt` enforces the minimum and stops with a clear message if the
+checkout is older, so a stale dependency cannot silently produce a DLL. The
+`openvr` submodule is required for the VR target and is part of the v15.4.0
+release, so initialise submodules after cloning:
+
+```powershell
+git clone --recurse-submodules --branch v15.4.0 `
+    https://github.com/alandtse/CommonLibSSE-NG.git
+```
 
 The optional OSL 2.9.0-to-2.9.2 compatibility override is stored in
 `compat/OSL Aroused` with its patched Papyrus source and upstream Unlicense. It
@@ -609,7 +626,9 @@ By default, the heavy CMake build cache is kept under
 `%LOCALAPPDATA%\SPSBuild` instead of OneDrive. The script reuses that cache,
 skips a full configure when possible, and builds with four parallel jobs.
 The first build still has to compile CommonLib, but later builds should be
-much faster.
+much faster. CommonLibSSE-NG v15.4.0 also ships prebuilt bundles; a consumer
+pinned to the release tag can opt in with `-DCOMMONLIB_PREBUILT=ON` to skip
+compiling CommonLib entirely.
 
 The finished DLL is copied to `out\build\SchlongPhysicsSwapper.dll`, ready
 for testing or packaging. Useful optional switches are:

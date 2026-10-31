@@ -6,9 +6,6 @@ Schlong Physics Swapper, and inclusion does not imply endorsement.
 
 MIT-LICENSED COMPONENTS
 
-CommonLibSSE-NG / CommonLibSSE
-Copyright (c) 2018 Ryan-rsm-McKenzie
-
 SKSE Menu Framework 3 Example headers
 Copyright (c) 2024 Thiago Kaique
 
@@ -114,3 +111,25 @@ INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
 CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
 ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE.
+
+COMMONLIBSSE-NG — GPL-3.0-OR-LATER WITH MODDING EXCEPTION
+
+CommonLibSSE-NG / CommonLibSSE
+Copyright (c) 2018 Ryan-rsm-McKenzie
+Copyright (c) alandtse and CommonLibSSE-NG contributors
+
+CommonLibSSE-NG changed from MIT to GPL-3.0-or-later at v15, which is the
+first release SPS targets. SPS links it statically, so the DLL is distributed
+under the terms of the GNU General Public License version 3 or later, together
+with CommonLibSSE-NG's Modding Exception and GPL-3.0 Linking Exception (with
+Corresponding Source).
+
+The Modding Exception permits linking against Skyrim itself and proprietary
+hardware SDKs. It does not cover plugin or mod code, so the combined work is
+GPL-3.0-or-later. The full texts are available from the upstream project:
+
+* https://github.com/alandtse/CommonLibSSE-NG/blob/main/COPYING.txt
+* https://github.com/alandtse/CommonLibSSE-NG/blob/main/EXCEPTIONS.md
+
+This notice does not relicense any other component listed above; the MIT,
+BSD 3-Clause and other permissive notices remain in force for those projects.
