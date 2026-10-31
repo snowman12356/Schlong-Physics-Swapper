@@ -23,6 +23,29 @@ set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
 add_subdirectory("$ENV{COMMONLIB_SSE_FOLDER}" "${CMAKE_BINARY_DIR}/commonlib")
 list(APPEND CMAKE_MODULE_PATH "$ENV{COMMONLIB_SSE_FOLDER}/cmake")
 include(CommonLibSSE)
+
+# SPS is validated against alandtse/CommonLibSSE-NG v15.4.0. That release moved
+# TESForm raw ID resolution to master position and added BSSubIndexTriShape
+# segment counts, both of which are visible through the headers SPS includes.
+# Older checkouts build but are not what the release was verified against, so
+# fail loudly rather than silently producing a DLL from an untested tree.
+#
+# CommonLibSSE-NG does not export its version as a CMake variable (the compile
+# definition is PRIVATE to its own target), so read it from the checkout's
+# project() block, which is what actually governs the headers being compiled.
+set(SPS_COMMONLIB_MINIMUM 15.4.0)
+file(READ "$ENV{COMMONLIB_SSE_FOLDER}/CMakeLists.txt" SPS_COMMONLIB_CMAKE_TEXT)
+if(SPS_COMMONLIB_CMAKE_TEXT MATCHES "project\\([ \t\r\n]*CommonLibSSE[^)]*VERSION[ \t\r\n]+([0-9]+\\.[0-9]+\\.[0-9]+)")
+  set(SPS_COMMONLIB_VERSION "${CMAKE_MATCH_1}")
+else()
+  set(SPS_COMMONLIB_VERSION "")
+endif()
+if(NOT SPS_COMMONLIB_VERSION OR SPS_COMMONLIB_VERSION VERSION_LESS SPS_COMMONLIB_MINIMUM)
+  message(FATAL_ERROR
+    "SPS requires CommonLibSSE-NG ${SPS_COMMONLIB_MINIMUM} or newer; found '${SPS_COMMONLIB_VERSION}'.\n"
+    "Point COMMONLIB_SSE_FOLDER at an alandtse/CommonLibSSE-NG v${SPS_COMMONLIB_MINIMUM} checkout.")
+endif()
+message(STATUS "SPS: CommonLibSSE-NG ${SPS_COMMONLIB_VERSION} (minimum ${SPS_COMMONLIB_MINIMUM})")
 # SimpleIni ships a CMake config in some vcpkg revisions and is header-only in
 # others, so use the package target when available and otherwise use vcpkg's
 # include directory directly.

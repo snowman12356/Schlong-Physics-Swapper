@@ -52,8 +52,24 @@ $resolvedCommonLib = Resolve-SPSFirstDirectory @(
 )
 $commonLibReady = $resolvedCommonLib -and
     (Test-Path -LiteralPath (Join-Path $resolvedCommonLib 'CMakeLists.txt') -PathType Leaf)
-Write-Check 'CommonLibSSE-NG' $commonLibReady `
-    $(if ($commonLibReady) { $resolvedCommonLib } else { 'not found' })
+$commonLibVersion = ''
+$openvrReady = $false
+if ($commonLibReady) {
+    $commonLibText = Get-Content -LiteralPath (Join-Path $resolvedCommonLib 'CMakeLists.txt') -Raw
+    if ($commonLibText -match 'project\(\s*CommonLibSSE[^)]*VERSION\s+(\d+\.\d+\.\d+)') {
+        $commonLibVersion = $Matches[1]
+    }
+    $openvrReady = Test-Path -LiteralPath (Join-Path $resolvedCommonLib 'extern\openvr\headers\openvr.h') -PathType Leaf
+}
+if ($commonLibReady) {
+    $openvrState = if ($openvrReady) { 'ready' } else { 'missing' }
+    $versionLabel = if ($commonLibVersion) { $commonLibVersion } else { 'version unknown' }
+    $commonLibDetail = "$resolvedCommonLib ($versionLabel); openvr $openvrState"
+}
+else {
+    $commonLibDetail = 'not found'
+}
+Write-Check 'CommonLibSSE-NG' $commonLibReady $commonLibDetail
 
 try {
     $resolvedVcpkg = Resolve-SPSVcpkgRoot @(
