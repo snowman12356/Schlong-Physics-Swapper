@@ -5,6 +5,8 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <mutex>
+#include <optional>
 #include <string>
 
 namespace SPS::Controllers {
@@ -23,6 +25,8 @@ public:
     [[nodiscard]] float Value() const;
     [[nodiscard]] bool Valid() const;
     [[nodiscard]] bool Connected() const;
+    // Coherent value/validity pair for read-only callers on other threads.
+    [[nodiscard]] std::optional<float> Reading() const;
 
     void AcceptResult(std::uint64_t generation, float result);
     void AcceptExternalReading(float reading);
@@ -33,6 +37,7 @@ private:
     void Record(std::string message, bool error) const;
 
     std::atomic<float> value_{ 0.0F };
+    mutable std::mutex readingLock_;
     std::atomic<bool> valid_{ false };
     std::atomic<bool> connected_{ false };
     std::atomic<bool> queryPending_{ false };

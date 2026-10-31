@@ -50,6 +50,11 @@ public:
         std::scoped_lock lock(lock_);
         expected_.clear();
     }
+    void Cancel(std::string_view token)
+    {
+        std::scoped_lock lock(lock_);
+        if (!token.empty() && token == expected_) expected_.clear();
+    }
     void Complete(std::string_view token)
     {
         std::scoped_lock lock(lock_);

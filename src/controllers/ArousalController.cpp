@@ -74,15 +74,20 @@ void ArousalController::Query(bool force)
         nextQueryMs_.store(0);
         auto* faction = RE::TESForm::LookupByEditorID<RE::TESFaction>("sla_Arousal");
         if (!faction) {
-            valid_.store(false);
+            ResetReading();
             connected_.store(false);
             Record("SPS-002: The arousal faction was not found", true);
             return;
         }
         const float reading = static_cast<float>(
             std::clamp(player->GetFactionRank(faction, true), 0, 100));
-        const auto previous = value_.exchange(reading);
-        const auto wasValid = valid_.exchange(true);
+        float previous;
+        bool wasValid;
+        {
+            std::scoped_lock lock(readingLock_);
+            previous = value_.exchange(reading);
+            wasValid = valid_.exchange(true);
+        }
         connected_.store(true);
         if (clearError_) {
             clearError_();
@@ -97,7 +102,7 @@ void ArousalController::Query(bool force)
 
     if (!Runtime::OslArousedLoaded()) {
         queryPending_.store(false);
-        valid_.store(false);
+        ResetReading();
         connected_.store(false);
         nextQueryMs_.store(0);
         return;
@@ -171,7 +176,14 @@ void ArousalController::Invalidate()
 
 void ArousalController::ResetReading()
 {
+    std::scoped_lock lock(readingLock_);
     valid_.store(false);
+}
+
+std::optional<float> ArousalController::Reading() const
+{
+    std::scoped_lock lock(readingLock_);
+    return valid_.load() ? std::optional{ value_.load() } : std::nullopt;
 }
 
 float ArousalController::Value() const
@@ -218,8 +230,13 @@ void ArousalController::AcceptExternalReading(float reading)
 
 void ArousalController::ApplyReading(float reading)
 {
-    const auto previous = value_.exchange(reading);
-    const auto wasValid = valid_.exchange(true);
+    float previous;
+    bool wasValid;
+    {
+        std::scoped_lock lock(readingLock_);
+        previous = value_.exchange(reading);
+        wasValid = valid_.exchange(true);
+    }
     const bool changed = !wasValid || std::abs(previous - reading) >= 0.5F;
     connected_.store(true);
     retryAfterMs_.store(0);

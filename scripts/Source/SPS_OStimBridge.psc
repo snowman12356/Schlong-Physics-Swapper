@@ -1,6 +1,18 @@
 Scriptname SPS_OStimBridge Hidden
 
 Int Function GetSPSBridgeVersion() Global
+    Return 2
+EndFunction
+
+; Called only from inside the actor bridge after native target validation.
+; Actor membership covers NPC threads and a player/NPC shared scene alike.
+Int Function GetActorSceneState(Actor targetActor) Global
+    If targetActor == None
+        Return 0
+    EndIf
+    If OActor.IsInOStim(targetActor)
+        Return 2
+    EndIf
     Return 1
 EndFunction
 

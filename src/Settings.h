@@ -4,6 +4,8 @@ namespace SPS::Core {
 
 struct Settings {
     bool enabled{ true };
+    bool basicNpcEnabled{ false };
+    bool basicNpcProviderSosDisabled{ false };
     float threshold{ 60.0F };
     float hysteresis{ 5.0F };
     int mode{ 0 };  // 0 automatic, 1 force SMP, 2 force CBPC

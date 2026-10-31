@@ -41,7 +41,13 @@ OwnershipBeginResult PhysicsOwnershipController::Begin(
 OwnershipCompletion PhysicsOwnershipController::Complete(
     std::uint64_t generation, bool success, std::int64_t now)
 {
-    return Finish(generation, success, now);
+    return Finish(generation, OwnershipEvidence{ success }, now);
+}
+
+OwnershipCompletion PhysicsOwnershipController::Complete(
+    std::uint64_t generation, const OwnershipEvidence& evidence, std::int64_t now)
+{
+    return Finish(generation, evidence, now);
 }
 
 OwnershipCompletion PhysicsOwnershipController::Expire(
@@ -51,7 +57,7 @@ OwnershipCompletion PhysicsOwnershipController::Expire(
         now - state_.pendingSinceMs.load() < std::max<std::int64_t>(1, timeoutMs)) {
         return {};
     }
-    return Finish(state_.requestGeneration.load(), false, now);
+    return Finish(state_.requestGeneration.load(), OwnershipEvidence{}, now);
 }
 
 void PhysicsOwnershipController::ResetPending()
@@ -99,26 +105,37 @@ PhysicsOwnershipSnapshot PhysicsOwnershipController::Read() const
         state_.pendingSinceMs.load(),
         state_.successes.load(),
         state_.failures.load(),
-        state_.pendingSuperseded.load()
+        state_.pendingSuperseded.load(),
+        state_.lastDynamicBonesBefore.load(),
+        state_.smpDriftDetections.load()
     };
 }
 
 OwnershipCompletion PhysicsOwnershipController::Finish(
-    std::uint64_t generation, bool success, std::int64_t now)
+    std::uint64_t generation, const OwnershipEvidence& evidence, std::int64_t now)
 {
     if (!state_.pending.load() || generation != state_.requestGeneration.load()) {
         return {};
     }
 
+    const bool targetCBPC = state_.pendingCBPC.load();
     OwnershipCompletion result{
         true,
-        success,
-        state_.pendingCBPC.load(),
+        evidence.success,
+        targetCBPC,
         state_.known.load(),
         state_.usingCBPC.load(),
         state_.pendingSoftTransition.load(),
         static_cast<OwnershipPurpose>(state_.pendingPurpose.load()),
-        state_.pendingSuperseded.load()
+        state_.pendingSuperseded.load(),
+        evidence.dynamicBonesBefore,
+        evidence.boneCount,
+        // Drift is only meaningful when SPS already believed CBPC owned these
+        // bones. On an ordinary SMP -> CBPC switch SMP is legitimately dynamic,
+        // so requiring the cached CBPC owner prevents a false alarm on every
+        // normal handoff.
+        evidence.dynamicBonesBefore > 0 && targetCBPC &&
+            state_.known.load() && state_.usingCBPC.load()
     };
     state_.pending.store(false);
     state_.pendingPurpose.store(0);
@@ -134,7 +151,7 @@ OwnershipCompletion PhysicsOwnershipController::Finish(
         return result;
     }
 
-    if (!success) {
+    if (!result.success) {
         ++state_.failures;
         // A failed callback normally means no work ran, but a timeout can race
         // a late Papyrus completion. The previous owner is no longer safe to
@@ -149,6 +166,10 @@ OwnershipCompletion PhysicsOwnershipController::Finish(
     // Leave a full second after any completed transaction. Routine maintenance
     // uses the normal tick and never queues extra work behind an active stack.
     state_.smpOffReassertAfterMs.store(now + 1000);
+    if (result.dynamicBonesBefore >= 0) {
+        state_.lastDynamicBonesBefore.store(result.dynamicBonesBefore);
+        if (result.smpDriftDetected) ++state_.smpDriftDetections;
+    }
     if (result.purpose == OwnershipPurpose::switchOwner) {
         state_.usingCBPC.store(result.targetCBPC);
         state_.known.store(true);

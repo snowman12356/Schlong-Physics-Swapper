@@ -12,6 +12,8 @@ Settings ReadSettings(CSimpleIniA& ini)
 {
     Settings settings;
     settings.enabled = ini.GetBoolValue("General", "Enabled", true);
+    settings.basicNpcEnabled = ini.GetBoolValue("NPCs", "BasicSOSEnabled", false);
+    settings.basicNpcProviderSosDisabled = ini.GetBoolValue("NPCs", "ProviderSOSDisabledConfirmed", false);
     settings.threshold = std::clamp(static_cast<float>(ini.GetDoubleValue("General", "ArousalThreshold", 60)), 0.0F, 100.0F);
     settings.hysteresis = std::clamp(static_cast<float>(ini.GetDoubleValue("General", "Hysteresis", 5)), 0.0F, 25.0F);
     settings.mode = std::clamp(static_cast<int>(ini.GetLongValue("General", "Mode", 0)), 0, 2);
@@ -89,6 +91,8 @@ bool SaveSettings(const std::filesystem::path& path, const Settings& settings)
     CSimpleIniA ini;
     ini.SetUnicode();
     ini.SetBoolValue("General", "Enabled", settings.enabled);
+    ini.SetBoolValue("NPCs", "BasicSOSEnabled", settings.basicNpcEnabled);
+    ini.SetBoolValue("NPCs", "ProviderSOSDisabledConfirmed", settings.basicNpcProviderSosDisabled);
     ini.SetDoubleValue("General", "ArousalThreshold", settings.threshold);
     ini.SetDoubleValue("General", "Hysteresis", settings.hysteresis);
     ini.SetLongValue("General", "Mode", settings.mode);

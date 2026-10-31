@@ -30,6 +30,16 @@ struct OwnershipBeginResult {
     std::uint64_t generation{ 0 };
 };
 
+struct OwnershipEvidence {
+    bool success{ false };
+    // FSMP's previous-state read-back for the managed bones at the moment of a
+    // disable call. Above zero proves SMP still owned bone(s) (drift). -1 means
+    // this path never sampled. A zero/false entry is ambiguous ("kinematic or
+    // not found") and is never treated as proof that SMP released a bone.
+    int dynamicBonesBefore{ -1 };
+    int boneCount{ 0 };
+};
+
 struct OwnershipCompletion {
     bool matched{ false };
     bool success{ false };
@@ -39,11 +49,21 @@ struct OwnershipCompletion {
     bool softTransition{ false };
     OwnershipPurpose purpose{ OwnershipPurpose::switchOwner };
     bool superseded{ false };
+    // Execution evidence only: the bridge stack completed and the player 3D
+    // was present. It does not prove either engine changed state.
+    int dynamicBonesBefore{ -1 };
+    int boneCount{ 0 };
+    // True when a disable was issued while FSMP reported managed bones still
+    // dynamic. This is the only passive drift proof SPS has.
+    bool smpDriftDetected{ false };
 };
 
 struct PhysicsOwnershipSnapshot {
     bool known{ false };
     bool usingCBPC{ false };
+    // These describe the owner SPS selected and corroborate it with accepted
+    // commands. They are not read-back of live engine state: CBPC exposes none,
+    // and FSMP can only prove a bone was still dynamic, never that it stopped.
     bool smpConnected{ false };
     bool cbpcConnected{ false };
     bool pending{ false };
@@ -53,6 +73,8 @@ struct PhysicsOwnershipSnapshot {
     unsigned successes{ 0 };
     unsigned failures{ 0 };
     bool pendingSuperseded{ false };
+    int lastDynamicBonesBefore{ -1 };
+    unsigned smpDriftDetections{ 0 };
 };
 
 class PhysicsOwnershipController {
@@ -64,6 +86,8 @@ public:
         bool softTransition, std::int64_t now);
     [[nodiscard]] OwnershipCompletion Complete(
         std::uint64_t generation, bool success, std::int64_t now);
+    [[nodiscard]] OwnershipCompletion Complete(
+        std::uint64_t generation, const OwnershipEvidence& evidence, std::int64_t now);
     [[nodiscard]] OwnershipCompletion Expire(
         std::int64_t now, std::int64_t timeoutMs);
     void ResetPending();
@@ -75,7 +99,7 @@ public:
 
 private:
     [[nodiscard]] OwnershipCompletion Finish(
-        std::uint64_t generation, bool success, std::int64_t now);
+        std::uint64_t generation, const OwnershipEvidence& evidence, std::int64_t now);
 
     PhysicsOwnershipState& state_;
 };

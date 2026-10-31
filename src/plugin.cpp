@@ -21,6 +21,8 @@
 #include "diagnostics/Diagnostics.h"
 #include "diagnostics/SupportReport.h"
 #include "runtime/Compatibility.h"
+#include "runtime/ActorBridgeAdapter.h"
+#include "runtime/BasicNpcRuntime.h"
 #include "runtime/PapyrusGateway.h"
 #include "runtime/PhysicsOwnershipAdapter.h"
 #include "runtime/PositionBackendAdapter.h"
@@ -38,6 +40,7 @@
 #include <random>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace logger = SKSE::log;
@@ -46,7 +49,7 @@ namespace Mod {
 namespace fs = std::filesystem;
 
 constexpr auto kName = "Schlong Physics Swapper";
-constexpr auto kVersion = "2.0.1";
+constexpr auto kVersion = "2.1.0.3";
 constexpr auto kIni = "Data/SKSE/Plugins/SchlongPhysicsSwapper.ini";
 constexpr auto kLegacyIni = "Data/SKSE/Plugins/UBEPhysicsSwitch.ini";
 constexpr auto kReport = "Data/SKSE/Plugins/SchlongPhysicsSwapper_Diagnostics.txt";
@@ -69,6 +72,7 @@ using SPS::Runtime::SosAeNativeModuleName;
 using SPS::Runtime::TngLoaded;
 
 Settings settings;
+bool settingsLoaded{ false };  // protected by settingsLock
 Diagnostics diagnostics;
 std::mutex settingsLock;
 std::mutex diagnosticsLock;
@@ -80,6 +84,7 @@ std::vector<std::string> debugCaptureLines;
 SPS::APIControl::ExternalControlRegistry apiRegistry;
 
 SPS::Controllers::ArousalController arousalController;
+SPS::Controllers::ActorWorkOwner playerArousalWriteOwner{ SPS::API::kPlayerFormID, {}, true };
 SPS::Controllers::ActorContext playerContext{ 0x14 };
 SPS::Controllers::PhysicsOwnershipController ownershipController{ playerContext.physics };
 SPS::Controllers::PositionController positionController{ playerContext.position };
@@ -100,6 +105,9 @@ std::atomic<std::uint64_t> debugCaptureGeneration{ 0 };
 std::atomic<unsigned> externalResetNotices{ 0 };
 std::atomic<unsigned> ownerRestorations{ 0 };
 std::atomic<bool> fsmpCompatibilityWarningShown{ false };
+std::atomic<bool> playerArousalWriteRequested{ false };
+std::atomic<bool> playerArousalWriteInFlight{ false };
+std::atomic<float> requestedPlayerArousal{ 0.0F };
 std::jthread pollThread;
 std::jthread erectionAnimationThread;
 std::jthread debugCaptureThread;
@@ -140,6 +148,7 @@ bool QueueOwnershipHandoff(
     SPS::Controllers::OwnershipPurpose purpose,
     bool softTransition = false);
 void FinishOwnershipHandoff(std::uint64_t generation, bool success);
+void ReportSmpDrift(const SPS::Controllers::OwnershipCompletion& completion);
 void ProcessPendingQuickAction();
 
 const char* SexLabRoleName(int role) {
@@ -242,6 +251,13 @@ std::uint32_t __cdecl APIGetCapabilities() {
         static_cast<std::uint32_t>(Capability::ResetNotification);
 }
 
+std::uint32_t __cdecl APIGetCapabilitiesV2() {
+    using SPS::API::Capability;
+    return APIGetCapabilities() |
+        static_cast<std::uint32_t>(Capability::LiveArousalReadback) |
+        static_cast<std::uint32_t>(Capability::ErectThresholdReadback);
+}
+
 bool __cdecl APIIsActorSupported(std::uint32_t actorFormID) {
     return actorFormID == SPS::API::kPlayerFormID;
 }
@@ -261,6 +277,23 @@ SPS::API::Result __cdecl APIGetState(std::uint32_t actorFormID, SPS::API::StateS
     snapshot->activeRequest = request ? request->handle : 0;
     snapshot->activeRequestCount = static_cast<std::uint32_t>(apiRegistry.Count());
     return playerContext.physics.known.load() ? SPS::API::Result::Success : SPS::API::Result::NotReady;
+}
+
+SPS::API::Result __cdecl APIGetArousal(std::uint32_t actorFormID, float* arousal) {
+    if (!arousal) return SPS::API::Result::InvalidArgument;
+    if (!APIIsActorSupported(actorFormID)) return SPS::API::Result::UnsupportedActor;
+    const auto reading = arousalController.Reading();
+    if (!reading) return SPS::API::Result::NotReady;
+    *arousal = *reading;
+    return SPS::API::Result::Success;
+}
+
+SPS::API::Result __cdecl APIGetErectThreshold(float* threshold) {
+    if (!threshold) return SPS::API::Result::InvalidArgument;
+    std::scoped_lock lock(settingsLock);
+    if (!settingsLoaded) return SPS::API::Result::NotReady;
+    *threshold = settings.threshold;
+    return SPS::API::Result::Success;
 }
 
 SPS::API::RequestHandle __cdecl APIRequestPhysics(const SPS::API::PhysicsRequest* request) {
@@ -595,7 +628,10 @@ void Load() {
     {
         std::scoped_lock lock(settingsLock);
         settings = result.settings;
+        settingsLoaded = true;
     }
+    SPS::Runtime::ConfigureBasicNpcCommands(result.settings.enabled && result.settings.basicNpcEnabled &&
+        result.settings.basicNpcProviderSosDisabled);
     spdlog::set_level(settings.verboseLogging ? spdlog::level::debug : spdlog::level::info);
     if (result.shouldWriteCurrent) {
         Save();
@@ -618,6 +654,34 @@ void Save() {
 
 void QueryArousal(bool force = false) {
     arousalController.Query(force);
+}
+
+void RequestPlayerOslArousalWrite(float value) {
+    if (!SPS::Core::ValidArousalReading(value) || !OslArousedLoaded()) return;
+    requestedPlayerArousal.store(value);
+    playerArousalWriteRequested.store(true);
+}
+
+void ServicePlayerOslArousalWrite() {
+    if (!playerArousalWriteRequested.load() || playerArousalWriteInFlight.load()) return;
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    if (!player) return;
+    const float requested = requestedPlayerArousal.load();
+    if (SPS::Runtime::QueueActorArousalWrite(playerArousalWriteOwner.Lease(), player, requested,
+            papyrusDispatchAllowedAfterMs.load(), [requested](auto, auto result) {
+                playerArousalWriteInFlight.store(false);
+                if (!result) {
+                    if (std::abs(requestedPlayerArousal.load() - requested) < 0.01F)
+                        playerArousalWriteRequested.store(false);
+                    Record("OSL Aroused did not accept the requested player arousal value", true);
+                    return;
+                }
+                arousalController.AcceptExternalReading(*result);
+                if (std::abs(requestedPlayerArousal.load() - requested) < 0.01F)
+                    playerArousalWriteRequested.store(false);
+                Record(fmt::format("OSL player arousal set to {:.1f}", *result));
+            }))
+        playerArousalWriteInFlight.store(true);
 }
 
 void QuerySexLab() {
@@ -1263,7 +1327,12 @@ void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& comp
     }
 
     if (completion.purpose == SPS::Controllers::OwnershipPurpose::maintainCBPC) {
-        playerContext.physics.smpConnected.store(completion.success);
+        // The selected owner is CBPC, so only CBPC is corroborated here. The
+        // disabled direction cannot be proved: FSMP reports "kinematic or not
+        // found" identically, so SMP is not marked ready on that basis.
+        playerContext.physics.cbpcConnected.store(completion.success && completion.targetCBPC);
+        playerContext.physics.smpConnected.store(false);
+        ReportSmpDrift(completion);
         if (!completion.success)
             logger::warn("SMP-off safeguard did not complete; ownership is unknown and will be recovered");
         // A single SMP-off command cannot acknowledge CBPC attachment, clear
@@ -1272,8 +1341,17 @@ void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& comp
     }
 
     const auto now = NowMs();
-    playerContext.physics.smpConnected.store(completion.success);
-    playerContext.physics.cbpcConnected.store(completion.success);
+    // The selected owner and its opposite are reported separately. Both were
+    // previously set from one boolean, which made an SMP-off handoff report SMP
+    // as ready and overstated engine health in support reports.
+    if (completion.success) {
+        playerContext.physics.cbpcConnected.store(completion.targetCBPC);
+        playerContext.physics.smpConnected.store(!completion.targetCBPC);
+    } else {
+        playerContext.physics.smpConnected.store(false);
+        playerContext.physics.cbpcConnected.store(false);
+    }
+    ReportSmpDrift(completion);
     if (!completion.success) {
         CancelErectionAnimation();
         if (completion.softTransition)
@@ -1431,6 +1509,19 @@ void FinishOwnershipHandoff(std::uint64_t generation, bool success) {
     HandleOwnershipCompletion(ownershipController.Complete(generation, success, NowMs()));
 }
 
+void ReportSmpDrift(const SPS::Controllers::OwnershipCompletion& completion)
+{
+    using Purpose = SPS::Controllers::OwnershipPurpose;
+    if (!completion.smpDriftDetected) return;
+    const bool backgroundProbe = completion.purpose == Purpose::maintainCBPC ||
+        completion.purpose == Purpose::restore;
+    Record(fmt::format(
+        "SMP resumed ownership of {}/6 managed bones while {} was selected{}; the owner was reasserted",
+        completion.dynamicBonesBefore,
+        completion.targetCBPC ? "CBPC" : "SMP",
+        backgroundProbe ? " during a background check" : ""), backgroundProbe);
+}
+
 bool QueueOwnershipHandoff(
     bool cbpc,
     SPS::Controllers::OwnershipPurpose purpose,
@@ -1462,10 +1553,15 @@ bool QueueOwnershipHandoff(
     const auto dispatched = SPS::Runtime::SetPlayerPhysicsOwner(
         static_cast<RE::Actor*>(player), cbpc, preparation, softBend,
         FsmpActorApiAvailable(), papyrusDispatchAllowedAfterMs.load(), NowMs(),
-        [generation = begin.generation](bool completed) {
+        [generation = begin.generation](SPS::Runtime::OwnershipReadback readback) {
             if (auto* tasks = SKSE::GetTaskInterface()) {
-                tasks->AddTask([generation, completed] {
-                    FinishOwnershipHandoff(generation, completed);
+                tasks->AddTask([generation, readback] {
+                    SPS::Controllers::OwnershipEvidence evidence;
+                    evidence.success = readback.acknowledged;
+                    evidence.dynamicBonesBefore = readback.dynamicBonesBefore;
+                    evidence.boneCount = readback.boneCount;
+                    HandleOwnershipCompletion(
+                        ownershipController.Complete(generation, evidence, NowMs()));
                 });
             }
         });
@@ -1680,6 +1776,8 @@ void Tick() {
     Settings copy;
     { std::scoped_lock lock(settingsLock); copy = settings; }
     const auto now = NowMs();
+
+    ServicePlayerOslArousalWrite();
 
     ProcessPendingQuickAction();
     const auto expired = ownershipController.Expire(now, 5000);
@@ -1990,13 +2088,37 @@ void Tick() {
 void StartPolling() {
     if (polling.exchange(true)) return;
     pollThread = std::jthread([](std::stop_token token) {
+        auto nextPlayerTick = std::chrono::steady_clock::now();
         while (!token.stop_requested()) {
-            int wait;
-            { std::scoped_lock lock(settingsLock); wait = settings.pollMs; }
+            int pollMs;
+            bool basicEnabled;
+            {
+                std::scoped_lock lock(settingsLock);
+                pollMs = settings.pollMs;
+                basicEnabled = settings.enabled && settings.basicNpcEnabled && settings.basicNpcProviderSosDisabled;
+            }
+            const int wait = basicEnabled ? std::min(pollMs, 250) : pollMs;
             std::this_thread::sleep_for(std::chrono::milliseconds(wait));
-            if (!token.stop_requested())
-                if (auto* tasks = SKSE::GetTaskInterface(); tasks && !tickQueued.exchange(true))
-                    tasks->AddTask([] { tickQueued.store(false); Tick(); });
+            if (!token.stop_requested()) {
+                if (auto* tasks = SKSE::GetTaskInterface(); tasks && !tickQueued.exchange(true)) {
+                    const auto now = std::chrono::steady_clock::now();
+                    const bool playerDue = now >= nextPlayerTick;
+                    if (playerDue) nextPlayerTick = now + std::chrono::milliseconds(pollMs);
+                    tasks->AddTask([playerDue] {
+                        tickQueued.store(false);
+                        if (playerDue) Tick();
+                        else SPS::Runtime::UpdateExecutionClock();
+                        Settings current;
+                        { std::scoped_lock lock(settingsLock); current = settings; }
+                        const auto ownership = ownershipController.Read();
+                        const auto position = positionController.Read();
+                        const bool playerBusy = !ownership.known || ownership.pending || position.animating ||
+                            position.relaxing || pendingQuickAction.load() >= 0 || activeManualPhysicsTest.load() >= 0;
+                        SPS::Runtime::TickBasicNpcs(current.enabled && current.basicNpcEnabled,
+                            current.basicNpcProviderSosDisabled, papyrusDispatchAllowedAfterMs.load(), playerBusy);
+                    });
+                }
+            }
         }
     });
 }
@@ -2084,6 +2206,9 @@ void UseRecommendedSettings(Settings& value) {
 }
 
 void SaveSettingsAndApply(const Settings& copy, const Settings& previous) {
+    const bool basicChanged = copy.enabled != previous.enabled ||
+        copy.basicNpcEnabled != previous.basicNpcEnabled ||
+        copy.basicNpcProviderSosDisabled != previous.basicNpcProviderSosDisabled;
     const bool softPositionChanged = copy.flaccidAngleControl != previous.flaccidAngleControl ||
         copy.flaccidBend != previous.flaccidBend;
     const bool positionChanged = copy.erectBend != previous.erectBend || softPositionChanged ||
@@ -2104,6 +2229,8 @@ void SaveSettingsAndApply(const Settings& copy, const Settings& previous) {
         copy.morningErections != previous.morningErections ||
         copy.morningErectionDurationSeconds != previous.morningErectionDurationSeconds;
     { std::scoped_lock lock(settingsLock); settings = copy; }
+    if (basicChanged) SPS::Runtime::ConfigureBasicNpcCommands(copy.enabled && copy.basicNpcEnabled &&
+        copy.basicNpcProviderSosDisabled);
     if (!copy.equipmentChangeRecovery) {
         playerContext.recovery.nodeRefreshDueMs.store(0);
         playerContext.recovery.nodeRefreshFollowupDueMs.store(0);
@@ -2138,8 +2265,9 @@ void SaveSettingsAndApply(const Settings& copy, const Settings& previous) {
         playerContext.spontaneous.morningActive.store(false);
     }
     if (auto* tasks = SKSE::GetTaskInterface()) {
-        tasks->AddTask([positionChanged, softPositionChanged,
+        tasks->AddTask([positionChanged, softPositionChanged, basicChanged,
             enabled = copy.enabled, positionEnabled = copy.positionControl] {
+            if (basicChanged) SPS::Runtime::ResetBasicNpcs();
             if (positionChanged && positionEnabled) {
                 if (playerContext.physics.known.load() && playerContext.physics.usingCBPC.load()) ApplyRequestedBend(true, true, false);
                 else if (playerContext.physics.known.load() && softPositionChanged) ScheduleSoftAngleRefresh();
@@ -2453,6 +2581,84 @@ void __stdcall RenderScenes() {
             "Not installed (optional)", ppaLoaded ? 2 : 1);
     }
 
+    if (changed) SaveSettingsAndApply(copy, previous);
+}
+
+void __stdcall RenderNPCs() {
+    Settings copy;
+    { std::scoped_lock lock(settingsLock); copy = settings; }
+    const Settings previous = copy;
+    bool changed = false;
+    PageHeading("NPCs - BASIC TEST", "Ordinary arousal-based SOS poses for up to eight nearby NPCs using OSL Aroused.");
+    ImGuiMCP::TextWrapped("Disable OSL Aroused's Enable SOS option before using this. SPS does not change that setting for you.");
+    changed |= ImGuiMCP::Checkbox("I disabled OSL's SOS control", &copy.basicNpcProviderSosDisabled);
+    if (!copy.basicNpcProviderSosDisabled && copy.basicNpcEnabled) { copy.basicNpcEnabled = false; changed = true; }
+    ImGuiMCP::BeginDisabled(!copy.basicNpcProviderSosDisabled);
+    changed |= ImGuiMCP::Checkbox("Enable basic NPC behavior", &copy.basicNpcEnabled);
+    ImGuiMCP::EndDisabled();
+    ImGuiMCP::TextWrapped("This test changes soft/erect poses. Full NPC physics switching and selecting managed NPCs are still being developed. It does not add SMP support to a mesh.");
+    ImGuiMCP::TextWrapped("NPC poses wait during scenes or when scene information is unavailable. Turning this off stops further changes and leaves the last pose; restore OSL's SOS control yourself if desired.");
+    if (!copy.enabled) ImGuiMCP::TextWrapped("SPS is disabled on the Home page, so NPC behavior is also off.");
+    const auto npc = SPS::Runtime::ReadBasicNpcStatus();
+    SectionHeading("CURRENT TEST STATUS");
+    ImGuiMCP::TextWrapped("%s", npc.state.c_str());
+    ImGuiMCP::TextWrapped("Nearby NPCs: %u / 8. Waiting for information: %u. In scenes: %u. Pending requests: %u.",
+        npc.tracked, npc.waiting, npc.inScene, npc.pending);
+    ImGuiMCP::TextWrapped("Current NPCs: %llu completed commands, %llu scene deferrals, %llu failed or expired requests.",
+        static_cast<unsigned long long>(npc.completed), static_cast<unsigned long long>(npc.deferred),
+        static_cast<unsigned long long>(npc.failed));
+    ImGuiMCP::TextWrapped("Requests waiting for a bridge or free slot this session: %llu. Completed commands still need a visible in-game check.",
+        static_cast<unsigned long long>(npc.blocked));
+
+    ImGuiMCP::Separator();
+    SectionHeading("OSL AROUSAL TEST VALUES");
+    ImGuiMCP::TextWrapped("These sliders write the real OSL Aroused value when released. They are test controls, not SPS-only overrides, and OSL can change the values again afterward.");
+    const bool oslReady = OslArousedLoaded() && !SloArousedLoaded() && !ClassicArousedLoaded();
+    ImGuiMCP::BeginDisabled(!oslReady);
+    struct SliderState { float value{ 0.0F }; bool editing{ false }; };
+    static SliderState playerSlider;
+    static std::unordered_map<std::uint32_t, SliderState> npcSliders;
+    std::erase_if(npcSliders, [&npc](const auto& item) {
+        return std::none_of(npc.actors.begin(), npc.actors.end(),
+            [formID = item.first](const auto& actor) { return actor.formID == formID; });
+    });
+    if (!oslReady) {
+        playerSlider.editing = false;
+        npcSliders.clear();
+    }
+    if (!playerSlider.editing && arousalController.Valid()) playerSlider.value = arousalController.Value();
+    if (ImGuiMCP::SliderFloat("Player OSL arousal", &playerSlider.value, 0.0F, 100.0F, "%.0f"))
+        playerSlider.editing = true;
+    if (ImGuiMCP::IsItemDeactivatedAfterEdit()) {
+        RequestPlayerOslArousalWrite(playerSlider.value);
+        playerSlider.editing = false;
+    }
+    for (const auto& actor : npc.actors) {
+        auto& slider = npcSliders[actor.formID];
+        if (!slider.editing && actor.arousal) slider.value = *actor.arousal;
+        const auto label = fmt::format("{} [0x{:08X}]###OSL NPC arousal {:08X}",
+            actor.name, actor.formID, actor.formID);
+        if (ImGuiMCP::SliderFloat(label.c_str(), &slider.value, 0.0F, 100.0F, "%.0f"))
+            slider.editing = true;
+        if (ImGuiMCP::IsItemDeactivatedAfterEdit()) {
+            // The basic NPC pool is game-thread-only. This render callback must
+            // not read or write it directly; the request is queued by ID so the
+            // pool can also be rebuilt or reset before the task runs.
+            const auto formID = actor.formID;
+            const auto value = slider.value;
+            if (auto* tasks = SKSE::GetTaskInterface()) {
+                tasks->AddTask([formID, value] {
+                    if (!SPS::Runtime::QueueBasicNpcOslArousalWrite(formID, value,
+                            papyrusDispatchAllowedAfterMs.load()))
+                        Record(fmt::format("Could not queue an OSL arousal write for NPC {:08X}", formID), true);
+                });
+            }
+            slider.editing = false;
+        }
+    }
+    ImGuiMCP::EndDisabled();
+    if (!oslReady) ImGuiMCP::TextWrapped("Current OSL Aroused is required, without another arousal provider taking priority.");
+    else if (npc.actors.empty()) ImGuiMCP::TextWrapped("No eligible nearby NPC is currently tracked. NPC sliders appear here after discovery.");
     if (changed) SaveSettingsAndApply(copy, previous);
 }
 
@@ -2849,12 +3055,18 @@ void __stdcall RenderDebug() {
         StatusLine("Arousal mod", "Not installed - not needed in manual mode", 2);
     else
         StatusLine("Arousal mod", d.oslModuleLoaded && d.oslPluginLoaded ? (arousalController.Connected() ? fmt::format("{} - ready", providerName).c_str() : fmt::format("{} - still checking", providerName).c_str()) : "Missing", d.oslModuleLoaded && d.oslPluginLoaded ? (arousalController.Connected() ? 2 : 1) : 0);
+    // "Commands accepted" is deliberate: neither engine can be read back. FSMP
+    // reports only whether a bone was dynamic before a call, and CBPC's
+    // StartPhysics/StopPhysics return nothing at all. Claiming "ready" here was
+    // an overstatement in support reports.
     StatusLine("Soft physics", !d.fsmpModuleLoaded ? "Faster HDT-SMP is missing" :
         (!d.fsmpActorApiAvailable ? "FSMP is too old - update to 4.0.1+" :
             (!d.fsmpBridgePresent ? "SPS FSMP bridge is missing - reinstall SPS" :
-                (ownership.smpConnected ? "SMP - ready" : "SMP found - not tested yet"))),
+                (ownership.smpConnected ? "SMP - commands accepted" : "SMP found - not tested yet"))),
         !d.fsmpModuleLoaded || !d.fsmpActorApiAvailable || !d.fsmpBridgePresent ? 0 : (ownership.smpConnected ? 2 : 1));
-    StatusLine("Erect physics", d.cbpcModuleLoaded ? (ownership.cbpcConnected ? "CBPC - ready" : "CBPC found - not tested yet") : "CBPC is missing", d.cbpcModuleLoaded ? (ownership.cbpcConnected ? 2 : 1) : 0);
+    StatusLine("Erect physics", d.cbpcModuleLoaded ? (ownership.cbpcConnected ? "CBPC - commands accepted" : "CBPC found - not tested yet") : "CBPC is missing", d.cbpcModuleLoaded ? (ownership.cbpcConnected ? 2 : 1) : 0);
+    if (ownership.smpDriftDetections > 0)
+        StatusLine("SMP drift", fmt::format("Recovered {} time(s); {} of 6 bones had resumed", ownership.smpDriftDetections, ownership.lastDynamicBonesBefore).c_str(), 1);
     StatusLine("Compatible schlong", d.playerBonesFound == 6 ? "All 6 physics bones found" : fmt::format("Only {}/6 physics bones found", d.playerBonesFound).c_str(), d.playerBonesFound == 6 ? 2 : 0);
     const bool positionBackendFound = PositionBackendAvailable();
     StatusLine("Erect angle control", positionBackendFound ? fmt::format("{} - ready", PositionBackendName()).c_str() : "Not available - physics switching still works", positionBackendFound ? 2 : 1);
@@ -2964,6 +3176,7 @@ void RegisterMenu() {
     SKSEMenuFramework::AddSectionItem("Home", RenderMain);
     SKSEMenuFramework::AddSectionItem("Appearance", RenderLooks);
     SKSEMenuFramework::AddSectionItem("Scenes", RenderScenes);
+    SKSEMenuFramework::AddSectionItem("NPCs", RenderNPCs);
     SKSEMenuFramework::AddSectionItem("Advanced", RenderAdvanced);
     SKSEMenuFramework::AddSectionItem("Troubleshooting", RenderDebug);
 }
@@ -3076,6 +3289,15 @@ public:
     }
 };
 
+class NpcLoadedSink final : public RE::BSTEventSink<RE::TESObjectLoadedEvent> {
+public:
+    RE::BSEventNotifyControl ProcessEvent(const RE::TESObjectLoadedEvent* event,
+        RE::BSTEventSource<RE::TESObjectLoadedEvent>*) override {
+        if (event) SPS::Runtime::InvalidateBasicNpc(event->formID);
+        return RE::BSEventNotifyControl::kContinue;
+    }
+};
+
 class NiNodeSink final : public RE::BSTEventSink<SKSE::NiNodeUpdateEvent> {
 public:
     RE::BSEventNotifyControl ProcessEvent(const SKSE::NiNodeUpdateEvent* event, RE::BSTEventSource<SKSE::NiNodeUpdateEvent>*) override {
@@ -3144,6 +3366,8 @@ public:
 };
 
 void ResetTransientTimers() {
+    SPS::Runtime::ResetBasicNpcs();
+    SPS::Runtime::ResetActorBridgeRequests();
     SPS::Runtime::ResetPhysicsOperations();
     ownershipController.ResetPending();
     recoveryController.ResetTransient();
@@ -3153,10 +3377,13 @@ void ResetTransientTimers() {
     activeManualPhysicsTest.store(-1);
     pendingQuickAction.store(-1);
     pendingQuickActionUntilMs.store(0);
+    playerArousalWriteRequested.store(false);
+    playerArousalWriteInFlight.store(false);
 }
 
 ModEventSink modEventSink;
 NiNodeSink niNodeSink;
+NpcLoadedSink npcLoadedSink;
 EquipEventSink equipEventSink;
 MenuSink menuSink;
 
@@ -3194,6 +3421,7 @@ void OnMessage(SKSE::MessagingInterface::Message* message) {
         if (auto* source = SKSE::GetModCallbackEventSource()) source->AddEventSink(&modEventSink);
         if (auto* source = SKSE::GetNiNodeUpdateEventSource()) source->AddEventSink(&niNodeSink);
         if (auto* source = RE::ScriptEventSourceHolder::GetSingleton()) source->AddEventSink(&equipEventSink);
+        if (auto* source = RE::ScriptEventSourceHolder::GetSingleton()) source->AddEventSink(&npcLoadedSink);
         if (auto* ui = RE::UI::GetSingleton()) ui->AddEventSink(&menuSink);
         RefreshDiagnostics();
         return;
@@ -3273,6 +3501,25 @@ SchlongPhysicsSwapper_GetAPI_V1() {
     return &api;
 }
 
+extern "C" __declspec(dllexport) const SPS::API::InterfaceV2* __cdecl
+SchlongPhysicsSwapper_GetAPI_V2() {
+    static const SPS::API::InterfaceV2 api{
+        SPS::API::kVersionV2,
+        sizeof(SPS::API::InterfaceV2),
+        Mod::APIGetCapabilitiesV2,
+        Mod::APIIsActorSupported,
+        Mod::APIGetState,
+        Mod::APIRequestPhysics,
+        Mod::APIReleasePhysics,
+        Mod::APINotifyPhysicsReset,
+        Mod::APIRegisterStateListener,
+        Mod::APIUnregisterStateListener,
+        Mod::APIGetArousal,
+        Mod::APIGetErectThreshold
+    };
+    return &api;
+}
+
 SKSEPluginLoad(const SKSE::LoadInterface* skse) {
     Mod::runtimeVersion = skse->RuntimeVersion().string(".");
     Mod::skseVersion = REL::Version::unpack(skse->SKSEVersion()).string(".");
@@ -3284,7 +3531,9 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
         spdlog::flush_on(spdlog::level::info);
     }
     Mod::ConfigureControllers();
-    if (!SKSE::GetPapyrusInterface()->Register(SPS::Runtime::RegisterPhysicsBridge)) {
+    if (!SKSE::GetPapyrusInterface()->Register([](RE::BSScript::IVirtualMachine* vm) {
+            return SPS::Runtime::RegisterPhysicsBridge(vm) && SPS::Runtime::RegisterActorBridgeGuards(vm);
+        })) {
         logger::critical("SPS physics bridge registration failed");
         return false;
     }

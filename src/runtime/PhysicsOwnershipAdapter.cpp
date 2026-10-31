@@ -65,14 +65,41 @@ public:
     {
         if (generation_ != versionGeneration.load()) return;
         const int version = result.IsInt() ? result.GetSInt() : -1;
-        bridgeVersion.store(version == 6 ? 6 : -1);
+        bridgeVersion.store(version == kPhysicsBridgeVersion ? kPhysicsBridgeVersion : -1);
         versionPending.store(false);
-        if (version != 6) SKSE::log::error("SPS-003: Physics bridge ABI mismatch; install the paired DLL and scripts");
+        if (version != kPhysicsBridgeVersion) SKSE::log::error("SPS-003: Physics bridge ABI mismatch; install the paired DLL and scripts");
     }
     void SetObject(const RE::BSTSmartPointer<RE::BSScript::Object>&) override {}
 private:
     std::uint64_t generation_;
 };
+
+// The bridge returns Int[4]:
+//   [0] 1 = operation still valid and the player 3D was present,
+//   [1] managed bones that were dynamic at sampling time (-1 = unsampled),
+//   [2] managed bone array length, [3] reserved.
+// Verified against Faster HDT-SMP src/dhdtPapyrusFunctions.cpp: the per-bone
+// value is the state recorded before the change. Only [1] is evidence, and only
+// for a disable. A false entry is "kinematic or not found" and proves nothing.
+OwnershipReadback ReadBridgeReadback(const RE::BSScript::Variable& value)
+{
+    OwnershipReadback readback{};
+    if (!value.IsArray()) return readback;
+    const auto array = value.GetArray();
+    if (!array) return readback;
+
+    const auto size = array->size();
+    const auto at = [&array, size](std::uint32_t index) -> int {
+        if (index >= size) return 0;
+        const auto& element = (*array)[index];
+        return element.IsInt() ? element.GetSInt() : 0;
+    };
+
+    readback.acknowledged = at(0) != 0;
+    readback.dynamicBonesBefore = size > 1 ? at(1) : -1;
+    readback.boneCount = size > 2 ? at(2) : 0;
+    return readback;
+}
 
 class OwnerCompletionCallback final : public RE::BSScript::IStackCallbackFunctor {
 public:
@@ -83,7 +110,7 @@ public:
     {
         // Cancellation retains the lease until the stack really returns.
         operationGate.Complete(token_);
-        if (completion_) completion_(result.IsBool() && result.GetBool());
+        if (completion_) completion_(ReadBridgeReadback(result));
     }
     void SetObject(const RE::BSTSmartPointer<RE::BSScript::Object>&) override {}
 private:
@@ -102,6 +129,10 @@ bool RegisterPhysicsBridge(RE::BSScript::IVirtualMachine* vm)
 }
 
 void CancelPhysicsOperation() { operationGate.Cancel(); }
+std::string CreatePhysicsOperationToken() { return NewOperationToken(); }
+bool PreparePhysicsOperation(const std::string& token) { return operationGate.Prepare(token); }
+void CompletePhysicsOperation(const std::string& token) { operationGate.Complete(token); }
+void CancelPhysicsOperation(const std::string& token) { operationGate.Cancel(token); }
 bool PhysicsOperationBusy() { return operationGate.Busy(); }
 void ResetPhysicsOperations()
 {
@@ -113,7 +144,7 @@ void ResetPhysicsOperations()
 
 bool OrderedFsmpBridgeAvailable()
 {
-    if (bridgeVersion.load() != 0) return bridgeVersion.load() == 6;
+    if (bridgeVersion.load() != 0) return bridgeVersion.load() == kPhysicsBridgeVersion;
     const auto now = NowMs();
     if (now < versionRetryAfterMs.load()) return false;
     if (versionPending.load() && now - versionStartedMs.load() < 5000) return false;

@@ -150,6 +150,8 @@ int main()
 
     SPS::Core::Settings saved;
     saved.enabled = false;
+    saved.basicNpcEnabled = true;
+    saved.basicNpcProviderSosDisabled = true;
     saved.threshold = 73.5F;
     saved.hysteresis = 7.5F;
     saved.mode = 2;
@@ -182,6 +184,8 @@ int main()
                    "[Position]\nErectBend=99\nFlaccidBend=-5\nMaxAutomaticFailures=0\n";
     }
     const auto clamped = SPS::Core::LoadSettings(currentIni, legacyIni).settings;
+    Expect(!clamped.basicNpcEnabled && !clamped.basicNpcProviderSosDisabled,
+        "old INI files leave NPC behavior and coexistence confirmation off");
     Expect(clamped.threshold == 100.0F, "threshold clamps to supported maximum");
     Expect(clamped.hysteresis == 0.0F, "hysteresis clamps to supported minimum");
     Expect(clamped.mode == 2, "mode clamps to supported range");
@@ -367,6 +371,62 @@ int main()
     Expect(!safeguard.CanMaintainCBPC(true, false, 91199) &&
         safeguard.CanMaintainCBPC(true, false, 91200),
         "repeated fast polls cannot flood maintenance dispatch");
+
+    // Bridge v7 read-back. FSMP reports the PREVIOUS state, so only a dynamic
+    // entry is evidence. Drift requires that SPS already believed CBPC owned
+    // the bones; otherwise every ordinary SMP -> CBPC switch would false-alarm.
+    {
+        SPS::Controllers::PhysicsOwnershipState driftState;
+        SPS::Controllers::PhysicsOwnershipController drift(driftState);
+        const auto erectSwitch = drift.Begin(true, Purpose::switchOwner, false, 40000);
+        SPS::Controllers::OwnershipEvidence erectEvidence;
+        erectEvidence.success = true;
+        erectEvidence.dynamicBonesBefore = 6;  // SMP legitimately owned them
+        erectEvidence.boneCount = 6;
+        const auto erectDone = drift.Complete(erectSwitch.generation, erectEvidence, 40300);
+        Expect(erectDone.matched && erectDone.success && !erectDone.smpDriftDetected &&
+            driftState.smpDriftDetections.load() == 0,
+            "an ordinary SMP -> CBPC switch that reports dynamic bones is not drift");
+
+        const auto probe = drift.Begin(true, Purpose::maintainCBPC, false, 41400);
+        SPS::Controllers::OwnershipEvidence dirty;
+        dirty.success = true;
+        dirty.dynamicBonesBefore = 2;  // SMP had resumed two managed bones
+        dirty.boneCount = 6;
+        const auto dirtyDone = drift.Complete(probe.generation, dirty, 41600);
+        Expect(dirtyDone.matched && dirtyDone.smpDriftDetected &&
+            driftState.smpDriftDetections.load() == 1 &&
+            driftState.lastDynamicBonesBefore.load() == 2,
+            "a maintenance disable that reports dynamic bones is recorded as SMP drift");
+
+        const auto clean = drift.Begin(true, Purpose::maintainCBPC, false, 42600);
+        SPS::Controllers::OwnershipEvidence cleanEvidence;
+        cleanEvidence.success = true;
+        cleanEvidence.dynamicBonesBefore = 0;
+        cleanEvidence.boneCount = 6;
+        Expect(drift.Complete(clean.generation, cleanEvidence, 42800).success &&
+            driftState.smpDriftDetections.load() == 1 &&
+            driftState.lastDynamicBonesBefore.load() == 0,
+            "a clean maintenance pass updates the reading without adding drift");
+
+        const auto unsampled = drift.Begin(true, Purpose::maintainCBPC, false, 43800);
+        SPS::Controllers::OwnershipEvidence noSample;
+        noSample.success = true;
+        noSample.dynamicBonesBefore = -1;  // path never sampled
+        Expect(drift.Complete(unsampled.generation, noSample, 44000).success &&
+            driftState.smpDriftDetections.load() == 1 &&
+            driftState.lastDynamicBonesBefore.load() == 0,
+            "an unsampled path never fabricates drift evidence");
+
+        const auto softDrift = drift.Begin(false, Purpose::switchOwner, false, 45000);
+        SPS::Controllers::OwnershipEvidence softEvidence;
+        softEvidence.success = true;
+        softEvidence.dynamicBonesBefore = 3;
+        softEvidence.boneCount = 6;
+        Expect(!drift.Complete(softDrift.generation, softEvidence, 45300).smpDriftDetected,
+            "reported dynamic bones are not drift when the target owner is SMP");
+    }
+
     const auto delayedMaintain = safeguard.Begin(true, Purpose::maintainCBPC, false, 91200);
     Expect(safeguard.Expire(96200, 5000).matched && !safeguardState.known.load() &&
         !safeguard.CanMaintainCBPC(true, false, 98000),

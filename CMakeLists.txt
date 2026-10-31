@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(SchlongPhysicsSwapper VERSION 2.0.1 LANGUAGES CXX)
+project(SchlongPhysicsSwapper VERSION 2.1.0.3 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(NOT DEFINED ENV{COMMONLIB_SSE_FOLDER})
@@ -38,6 +38,16 @@ add_library(SPSCore STATIC
     src/diagnostics/PhysicsFileScan.cpp
     src/diagnostics/PhysicsFileScan.h
     src/controllers/ActorContext.h
+    src/controllers/ActorWorkLifetime.cpp
+    src/controllers/ActorWorkLifetime.h
+    src/controllers/BasicNpcPool.cpp
+    src/controllers/BasicNpcPool.h
+    src/controllers/ManagedActorRegistry.cpp
+    src/controllers/ManagedActorRegistry.h
+    src/controllers/ActorRequestLedger.cpp
+    src/controllers/ActorRequestLedger.h
+    src/controllers/BasicNpcPolicy.cpp
+    src/controllers/BasicNpcPolicy.h
     src/controllers/ExecutionClock.h
     src/controllers/PapyrusOperationGate.h
     src/controllers/SceneState.h
@@ -77,6 +87,10 @@ add_commonlibsse_plugin(${PROJECT_NAME} AUTHOR "snowman12356" SOURCES
     src/diagnostics/SupportReport.h
     src/runtime/Compatibility.cpp
     src/runtime/Compatibility.h
+    src/runtime/ActorBridgeAdapter.cpp
+    src/runtime/ActorBridgeAdapter.h
+    src/runtime/BasicNpcRuntime.cpp
+    src/runtime/BasicNpcRuntime.h
     src/runtime/PapyrusGateway.cpp
     src/runtime/PapyrusGateway.h
     src/runtime/PhysicsOwnershipAdapter.cpp
@@ -92,7 +106,7 @@ endif()
 
 if(SPS_BUILD_CORE_TESTS)
   enable_testing()
-  add_executable(SPSCoreTests tests/PhysicsDecisionTests.cpp)
+  add_executable(SPSCoreTests tests/PhysicsDecisionTests.cpp tests/SPSAPIContractTests.cpp)
   target_link_libraries(SPSCoreTests PRIVATE SPSCore)
   if(MSVC)
     target_compile_options(SPSCoreTests PRIVATE /W4)
@@ -106,6 +120,13 @@ if(SPS_BUILD_CORE_TESTS)
   endif()
   add_test(NAME SPSDiagnosticsTests COMMAND SPSDiagnosticsTests)
   add_dependencies(${PROJECT_NAME} SPSDiagnosticsTests)
+  add_executable(SPSActorRegistryTests tests/ManagedActorRegistryTests.cpp tests/ActorRequestLedgerTests.cpp tests/BasicNpcPolicyTests.cpp tests/BasicNpcPoolTests.cpp)
+  target_link_libraries(SPSActorRegistryTests PRIVATE SPSCore)
+  if(MSVC)
+    target_compile_options(SPSActorRegistryTests PRIVATE /W4)
+  endif()
+  add_test(NAME SPSActorRegistryTests COMMAND SPSActorRegistryTests)
+  add_dependencies(${PROJECT_NAME} SPSActorRegistryTests)
 endif()
 target_precompile_headers(${PROJECT_NAME} PRIVATE src/PCH.h)
 if(SPS_BUILD_API_TEST_PLUGIN)

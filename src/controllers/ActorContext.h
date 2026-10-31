@@ -23,6 +23,8 @@ struct PhysicsOwnershipState {
     std::atomic<bool> pendingSuperseded{ false };
     std::atomic<std::int64_t> pendingSinceMs{ 0 };
     std::atomic<std::uint64_t> requestGeneration{ 0 };
+    std::atomic<int> lastDynamicBonesBefore{ -1 };
+    std::atomic<unsigned> smpDriftDetections{ 0 };
 };
 
 struct PositionState {
