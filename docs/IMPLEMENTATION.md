@@ -105,7 +105,35 @@ missing bone; CBPC's per-node calls return no ownership result. Visible movement
 and first-/third-person skeleton attachment still require in-game tests. SPS
 does not guess engine internals or change another mod to hide this limitation.
 
-The focused audit regression list and save compatibility assessment are in
+## SMP drift detection, bridge version 7
+
+SPS previously discarded FSMP's `TogglePhysics` return value. Verified against
+Faster HDT-SMP `src/dhdtPapyrusFunctions.cpp` (`TogglePhysicsImpl`), the array
+holds, per requested bone, whether that bone **was dynamic at the moment of the
+call**. The sample is taken before any state change, is recorded once per bone
+even when several skinned meshes carry the same name, and FSMP early-outs when a
+bone already matches the requested state, so sampling does not alter a bone that
+already agrees.
+
+That makes the existing SMP-off maintenance call a passive drift probe: it runs
+only while policy still wants CBPC and the cached owner is already CBPC, so any
+bone reported dynamic there proves SMP had resumed ownership unseen. Drift is
+recorded only under that precondition; an ordinary SMP -> CBPC switch legitimately
+reports dynamic bones and must never raise an alarm.
+
+The inverse direction remains unprovable. FSMP reports "kinematic or not found"
+identically, so a false entry never confirms that SMP released a bone, and a
+CBPC -> SMP transition supplies no evidence at all. SPS therefore never
+re-asserts SMP purely to sample it. `smpConnected` and `cbpcConnected` are now
+set separately from the selected owner instead of from one shared boolean, which
+previously reported SMP as ready after an SMP-off handoff.
+
+Bridge version 7 returns `Int[4]` (validity, dynamic-bone count, bone-array
+length, reserved) and requires the paired DLL. CBPC exposes no state at all:
+`CBPCPluginScript.StartPhysics`/`StopPhysics` are void native calls, so "CBPC
+attached" remains an accepted command, never a verified condition.
+
+The audit regression list and save compatibility assessment are in
 [`AUDIT_REPAIRS_2026-09-06.md`](AUDIT_REPAIRS_2026-09-06.md).
 
 1. Disable CBPC handling of the chain temporarily and verify visible SMP motion

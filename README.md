@@ -1,4 +1,38 @@
-# Schlong Physics Swapper 2.0.0
+# Schlong Physics Swapper 2.1.0.3 - NPC arousal controls and API test
+
+This is a local development candidate, not the published 2.0.1 release. The new
+NPC behavior still needs in-game testing. Existing player settings are retained.
+
+This increment adds an optional native V2 compatibility API for reading SPS's
+current player arousal and configured erect threshold. V1 stays compatible.
+See `Mod Author API/README.md` in the package or
+[`docs/MOD_AUTHOR_API.md`](docs/MOD_AUTHOR_API.md) in the source tree.
+
+The **NPCs** page adds optional basic OSL arousal-to-SOS poses for up to eight
+nearby loaded adult humanoid NPCs with the required positioning node. It does
+not yet provide selected NPC physics switching, saved membership or NPC repair.
+Skeleton nodes alone do not establish mesh compatibility or floppy motion.
+
+For this test, disable **Enable SOS** in OSL Aroused, confirm that on the SPS
+NPCs page, then enable **basic NPC behavior**. Both new options default off.
+Scene participants are deferred; missing or stale scene information blocks
+output. Other arousal providers and a generic SOS-state fallback are not yet
+available for this NPC mode. Existing player provider support is unchanged.
+
+The same page has test sliders for the player and for every currently tracked
+NPC. Releasing a slider writes that actor's real OSL Aroused value through
+OSL's supported `SetArousal` function. These are not SPS-only overrides: OSL
+keeps ownership of the value and may change it again through normal gameplay.
+NPC sliders appear only after the bounded basic pool discovers an eligible
+actor, and writes are rejected when that actor unloads or belongs to an old
+game session.
+
+Observe one compatible NPC as arousal rises and falls, while also checking the
+player. Then check scene entry/exit, leaving and returning to the area, paused
+menus, save/load and disabling/re-enabling the option. Menu command counts are
+not proof of visible motion. Turning the option off leaves the last pose and
+stops further changes; re-enable OSL's own SOS control yourself if desired.
+Settings apply across saves, but the nearby NPC list is rebuilt each session.
 
 Native SKSE plugin for compatible SOS six-bone schlongs. Faster HDT-SMP owns
 Gen01-Gen06 while arousal is below a configurable threshold; CBPC owns them

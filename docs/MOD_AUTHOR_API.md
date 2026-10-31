@@ -1,4 +1,4 @@
-# SPS compatibility API (V1)
+# SPS compatibility API (V1 and V2)
 
 The SPS API lets another SKSE plugin cooperate with Schlong Physics Swapper
 without linking against it or making it a required dependency.
@@ -10,6 +10,10 @@ V1 can:
 - temporarily ask SPS to hold SMP or CBPC;
 - notify SPS after rebuilding/resetting player physics;
 - receive a callback after SPS changes the physics state.
+
+V2 preserves the complete V1 interface and adds read-only access to the live
+arousal value SPS is currently using and SPS's configured erect threshold. It
+does not query an arousal provider, change physics ownership or alter settings.
 
 The structures already carry an actor FormID so the interface can be extended
 to selected NPCs later. SPS V1 supports only the player (`0x14`). Always call
@@ -38,6 +42,72 @@ const SPS::API::InterfaceV1* GetSPSAPI()
         api->size >= sizeof(SPS::API::InterfaceV1) ? api : nullptr;
 }
 ```
+
+An addon that requires the V2 read-only values should resolve
+`SchlongPhysicsSwapper_GetAPI_V2`, require `version == kVersionV2`, validate
+`size >= sizeof(InterfaceV2)`, and check the `LiveArousalReadback` and
+`ErectThresholdReadback` capabilities. Keep using the V1 export when only V1
+features are required; that export and structure remain unchanged.
+
+## Reading live arousal and the erect threshold (V2)
+
+V2 is first available in the local **2.1.0.2 test candidate**. Published 2.0.1
+and the earlier 2.1.0.1 NPC candidate do not export it.
+
+```cpp
+const SPS::API::InterfaceV2* GetSPSReadAPI()
+{
+    const auto module = ::GetModuleHandleW(SPS::API::kPluginDLL);
+    const auto getAPI = module ? reinterpret_cast<SPS::API::GetAPIV2Fn>(
+        ::GetProcAddress(module, SPS::API::kGetAPIFunctionNameV2)) : nullptr;
+    const auto* api = getAPI ? getAPI() : nullptr;
+    if (!api || api->version != SPS::API::kVersionV2 ||
+        api->size < sizeof(SPS::API::InterfaceV2) || !api->GetCapabilities ||
+        !api->GetArousal || !api->GetErectThreshold) return nullptr;
+    const auto required = static_cast<std::uint32_t>(SPS::API::Capability::LiveArousalReadback) |
+        static_cast<std::uint32_t>(SPS::API::Capability::ErectThresholdReadback);
+    return (api->GetCapabilities() & required) == required ? api : nullptr;
+}
+
+const auto* apiV2 = GetSPSReadAPI();
+float arousal = 0.0F;
+float threshold = 0.0F;
+if (apiV2 && apiV2->GetArousal(SPS::API::kPlayerFormID, &arousal) ==
+        SPS::API::Result::Success &&
+    apiV2->GetErectThreshold(&threshold) == SPS::API::Result::Success) {
+    // arousal and threshold are both on SPS's 0-100 scale.
+}
+```
+
+`GetArousal(actorFormID, &arousal)` returns the latest accepted provider reading
+that SPS currently holds for its decisions. It returns `NotReady` when SPS has
+no valid reading, including after a save reset. A genuine zero is `Success`.
+It can succeed before physics ownership is confirmed, independently of
+`GetState`. During provider delays SPS may retain its last good value; paused,
+disabled or forced modes do not make this API resample the provider. There is
+no extra query, enrollment, evaluation, ownership request or settings write.
+
+`GetErectThreshold(&threshold)` reads the current `General/ArousalThreshold`
+setting under the settings lock. It returns `NotReady` before settings load,
+then succeeds regardless of arousal availability or physics readiness. It
+reports the configured threshold even in forced modes, scenes or while SPS is
+disabled. It is not the lower soft-return threshold (which includes hysteresis)
+or `ErectionStartArousal`. Scene/external overrides can choose physics separately,
+so comparing the two numbers does not replace `GetState`.
+
+Both methods return `InvalidArgument` for a null output pointer and leave the
+output unchanged on every failure. `GetArousal` returns `UnsupportedActor` for
+all IDs except the player (`0x14`), including zero; there is no implicit player
+fallback. Basic NPC tracking does not yet extend this public API's actor scope.
+Use `IsActorSupported` to check scope and handle `NotReady` separately.
+
+The reads are safe from other threads: arousal value and validity are captured
+together, while threshold reads share the existing settings lock. The two API
+calls are separate observations, not an atomic combined snapshot.
+
+V1's export, table layout, capabilities and behavior remain unchanged. V2 adds
+the two capability bits and function pointers. The request, snapshot and event
+payloads retain `apiVersion=1` even when passed through V2; use their defaults.
 
 ## Requesting physics
 
@@ -142,5 +212,5 @@ when supporting future API versions.
 - Do not use this API to control the live erection angle. SPS coordinates that
   separately with SOS/TNG and PPA.
 
-V1 is being introduced for SPS 1.8 and should be treated as an experimental API
-until that release is marked stable.
+V2 consumer behavior still needs an in-game check with a consuming plugin.
+Compilation and ABI/package validation do not establish a live integration pass.

@@ -1,0 +1,124 @@
+SCHLONG PHYSICS SWAPPER - USEFUL WEB LINKS
+===========================================
+
+SPS
+---
+SPS GitHub repository
+https://github.com/snowman12356/Schlong-Physics-Swapper
+
+SPS releases
+https://github.com/snowman12356/Schlong-Physics-Swapper/releases
+
+
+SKSE AND NATIVE PLUGIN DEVELOPMENT
+-----------------------------------
+SKSE official downloads and compatibility
+https://skse.silverlock.org/
+
+SKSE64 source
+https://github.com/ianpatt/skse64
+
+CommonLibSSE-NG source used by SPS
+https://github.com/CharmedBaryon/CommonLibSSE-NG
+
+Current CommonLibSSE-NG development
+https://github.com/doodlum/CommonLibSSE-NG
+
+CommonLibSSE-NG API reference
+https://ng.commonlib.dev/files.html
+
+SKSE Menu Framework 3
+https://github.com/QTR-Modding/SKSE-Menu-Framework-3
+
+SKSE Menu Framework example
+https://github.com/QTR-Modding/SKSE-Menu-Framework-3-Example
+
+SkyUI source
+https://github.com/schlangster/skyui
+
+
+PHYSICS AND SPS COMPATIBILITY
+-----------------------------
+FSMP - Faster HDT-SMP Nexus page
+https://www.nexusmods.com/skyrimspecialedition/mods/57339
+
+Faster HDT-SMP source
+https://github.com/DaymareOn/hdtSMP64
+
+Faster HDT-SMP wiki
+https://github.com/DaymareOn/hdtSMP64/wiki
+
+CBPC - Physics with Collisions
+https://www.nexusmods.com/skyrimspecialedition/mods/21224
+
+The New Gentleman (TNG)
+https://www.nexusmods.com/skyrimspecialedition/mods/104215
+
+OSL Aroused source
+https://github.com/ozooma10/OSLAroused
+
+Accurate Penetration documented SKSE API
+https://asdasdduck.github.io/ppa-docs/skse-api.html
+
+SexLab P+ source
+https://github.com/SLP-Community/SexLabpp
+
+OStim Standalone source
+https://github.com/VersuchDrei/OStimNG
+
+OStim Standalone Nexus page
+https://www.nexusmods.com/skyrimspecialedition/mods/98163
+
+HDT-SMP Flex
+https://www.nexusmods.com/skyrimspecialedition/mods/101564
+
+SOFTBODY
+https://www.nexusmods.com/skyrimspecialedition/mods/152103
+
+
+PAPYRUS, SKYRIM AND RECORD REFERENCES
+--------------------------------------
+Papyrus Index for Skyrim SE
+https://papyrus.bellcube.dev/skyrimse/
+
+Open Papyrus documentation
+https://open-papyrus.github.io/docs/
+
+Creation Kit Wiki
+https://ck.uesp.net/wiki/Main_Page
+
+SKSE plugin-development resources
+https://ck.uesp.net/wiki/SKSE_Plugin_Development/Resources
+
+xEdit source
+https://github.com/TES5Edit/TES5Edit
+
+Tome of xEdit documentation
+https://tes5edit.github.io/docs/
+
+
+BUILD AND RELEASE TOOLS
+-----------------------
+CMake documentation
+https://cmake.org/documentation/
+
+vcpkg
+https://github.com/microsoft/vcpkg
+
+SimpleIni
+https://github.com/brofield/simpleini
+
+GitHub CLI authentication
+https://cli.github.com/manual/gh_auth_login
+
+Visual Studio Build Tools
+https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio
+
+
+NOTES
+-----
+The local reference library takes priority over general web pages:
+D:\Modding\codex\codex-references
+
+Flex support is currently not planned for SPS. The Flex link is retained only
+for compatibility investigation and future reference.

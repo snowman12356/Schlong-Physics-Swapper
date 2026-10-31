@@ -51,6 +51,166 @@ requiring users to repair the state manually.
 
 ## Current development status
 
+**SMP drift read-back (implemented 2026-10-31, not installed):** the ownership
+bridge advances to version 7 and returns `Int[4]` instead of a bare boolean
+acknowledgement. SPS previously discarded Faster HDT-SMP's `TogglePhysics`
+return array. Reading FSMP's own `src/dhdtPapyrusFunctions.cpp`
+(`TogglePhysicsImpl`) established that each entry reports whether that bone was
+**dynamic at the moment of the call**, sampled before any state change, recorded
+once per bone even when several skinned meshes carry the same name, and skipped
+when the bone already matches the requested state. That makes the existing
+SMP-off maintenance call a passive drift probe: it runs only while policy wants
+CBPC and the cached owner is already CBPC, so any bone reported dynamic there
+proves SMP had resumed ownership unnoticed. Drift is claimed only under that
+precondition, because an ordinary SMP to CBPC switch legitimately reports
+dynamic bones. The opposite direction remains unprovable: "kinematic or not
+found" are indistinguishable, so a false entry never confirms that SMP released
+a bone, and a CBPC to SMP transition yields no evidence. SPS therefore never
+re-asserts SMP merely to sample it. `smpConnected` and `cbpcConnected` are now
+recorded separately from the selected owner rather than from one shared boolean,
+which had reported SMP as ready after an SMP-off handoff, and the Troubleshooting
+page now says "commands accepted" instead of "ready" because CBPC's
+`StartPhysics`/`StopPhysics` return nothing and cannot be verified at all.
+Drift recoveries and the last dynamic-bone count are reported in the menu.
+Validation: the FSMP bridge recompiled with zero errors/warnings and reports
+version 7 with the `Int[](String,Bool,Int,Int)` signature; the other four bridges
+recompiled unchanged; the native SE/AE/VR build passed with no compiler or linker
+warnings and all three test executables passed, including new coverage for
+legitimate-switch non-drift, real drift, clean pass, unsampled paths and
+SMP-target rejection. No installation, package build, commit or publication was
+performed; the paired-DLL/scripts candidate requires its own package validation
+and a live session before any claim of working drift recovery. DLL SHA-256:
+`5F35626040B0730C18589905432786D4A263BDCD3ED8CC40389E4AD26E146872`.
+
+**OSL test controls (requested, built and installed 2026-10-10):** the separate
+2.1.0.3 candidate extends the prior 2.1.0.2 API/NPC build. The NPC page adds a
+player slider and an individual slider for every actor currently held by the
+bounded basic NPC pool. Releasing a slider writes the actor's real OSL Aroused
+value through the installed, source-verified
+`OSLArousedNative.SetArousal(Actor, Float)` contract; it does not introduce an
+SPS-only override or edit OSL files. NPC writes retain the actor handle, root,
+lifetime and save-session guards. Player writes use a deliberately
+player-enabled test lifetime, and all writes wait until the Journal/MCM closes.
+The arousal bridge is version 3 and must stay paired with the new DLL. The
+SE/AE/VR native build, three native test executables, all five Papyrus compiles,
+compiled bridge ABI/version checks, DLL V1/V2 export check, paired-package
+validation, negative package guards and deterministic ZIP check passed. The
+2.1.0.3 candidate is now installed in the dedicated MO2 test mod. Installation
+ran with Skyrim/SKSE closed after a full verified backup. The ten selected files
+(DLL, four core PSC/PEX pairs and README) match the candidate; the other thirteen
+installed files retain their previous hashes, including the INI, `meta.ini`,
+CBPC configuration and selected SMP XMLs. Optional OStim remains unselected.
+Live validation was reported by the user as passing on 2026-10-31: the player
+slider below and above the SPS threshold, two tracked NPCs on opposite OSL
+values posing independently, scene entry/exit deferral, leaving and returning
+to the area (unload/reload), save/load, and disabling/re-enabling basic NPC
+behaviour. These are user-observed results; no matching log or capture was
+supplied, and command counts or OSL write success were not treated as motion
+evidence on their own. Unmanaged basic OSL behaviour remains the only live
+Stage 2 path: the generic SOS-state fallback, other arousal providers, and SE/AE/
+VR-specific runs are still unverified, as are NPC scene roles that belong to
+Stage 5. The next gate is Stage 3, one explicitly selected NPC with full SPS
+management, and requires explicit user authorization before implementation.
+Candidate ZIP SHA-256:
+`DAC86495951825411CDC1E773695C4553BBC2FC743D157DF5B0EE9BA8EC5A27B`.
+Candidate DLL SHA-256:
+`F45436EE3626E2AA02BB8E29A32123CD4D35D92EDEDECE87F14BBFAAA4130B1B`.
+Rollback: `out/backups/testmod-before-osl-controls-2.1.0.3-20261010-194143`.
+Evidence: `out/diagnostics/osl-arousal-controls-20261010/`.
+See
+[`docs/OSL_AROUSAL_CONTROLS_2026-10-10.md`](docs/OSL_AROUSAL_CONTROLS_2026-10-10.md).
+
+**API increment (requested 2026-10-09, installed 2026-10-10):** the user requested
+read-only arousal and erect threshold access. The V2 API work is complete in
+the separate 2.1.0.2 test candidate. `GetArousal(actorFormID, float*)` reads the
+player controller's accepted value/validity together, with no provider query;
+`GetErectThreshold(float*)` reads the loaded setting under its lock. Missing
+values return NotReady and outputs remain untouched on failure. V1's table,
+payloads and capabilities remain unchanged. V2 retains player-only API scope;
+basic NPC tracking does not grant public NPC API support. The SE/AE/VR build,
+all five Papyrus compiles, three test executables, V1/V2 layout checks, both DLL
+exports and paired-package validation passed with no native warnings/errors.
+The dedicated test mod now has the paired 2.1.0.2 DLL/bridges. Installation ran
+with Skyrim closed after a full backup; INI, meta.ini and physics files retain
+their previous hashes. The earlier approval-review usage-limit failure ran no
+installation and was resolved by the approved retry. Live API/NPC checks remain
+outstanding. The 2.1.0.1 test ZIP and published 2.0.1 ZIP remain unchanged.
+Current ZIP SHA-256: `BE04AA864244E744DB7AE7349155951F1E5835E3CC65FA9CC0B3D6B0A7E48BE9`.
+Current DLL SHA-256: `17AD898F6806EBD4ED670D448C94D283F17C2F429B09513E22C5AB8CA4045120`.
+Rollback: `out/backups/testmod-before-api-2.1.0.2-20261010-131042`.
+Evidence: `out/diagnostics/api-readback-20261009/validation.json`. See
+[`docs/API_READBACK_2026-10-09.md`](docs/API_READBACK_2026-10-09.md).
+
+**NPC milestone (2026-10-03):** the user authorized starting the NPC
+workflow and confirmed user-observed passes for disable/re-enable, manual
+Repair and state changes/save loading during a pending handoff. Follow
+[`docs/NPC_SUPPORT_WORKFLOW.md`](docs/NPC_SUPPORT_WORKFLOW.md). Initial API
+findings and the tested first Stage 1 increment are recorded in
+[`docs/NPC_SUPPORT_FOUNDATION_2026-09-21.md`](docs/NPC_SUPPORT_FOUNDATION_2026-09-21.md).
+The user supplied a prior design screenshot to
+clarify the intended solution: SPS will supply basic arousal-to-SOS soft/erect
+behaviour for ordinary unmanaged NPCs while external SOS control is disabled;
+explicitly managed NPCs receive full SPS positioning, physics switching,
+transitions and recovery. Prefer numeric arousal APIs, with a verified general
+SOS-state fallback when unavailable, and retain the existing version-gated
+legacy OSL option. This basic bridge is separate from full physics enrollment
+and must respect scenes and bounded loaded-actor work. The OSL global switch
+is a known constraint; the screenshot specifies intent, not verified APIs or
+an already working integration. No other installed mod is to be changed.
+After the basic bridge, the first full-management milestone is one explicitly
+selected NPC alongside the player, followed by saved membership, bounded
+multiple-NPC support and scenes.
+A bounded native NPC registry now reuses `ActorContext`, isolates actor work
+with lifetime generations, and rejects old callbacks across unload, removal
+and save changes. The actor bridge increment adds actor-specific arousal and
+position bridge entry points with verified handle resolution, bounded requests
+and game-thread completion. Actor position calls share the existing physics
+operation gate; scoped cancellation cannot cancel a different actor's command
+or release a running stack early. The latest increment adds per-actor scene
+queries and a basic SOS policy: unknown/stale inputs block output, clear scenes
+settle before resumption, and the guarded basic write rechecks scene membership.
+The legacy OSL event mapping is independent of player SPS thresholds. OSL and
+OStim native scene queries require verified bound functions; optional OStim
+membership uses the actor rather than player thread 0. Position is now bridge
+version 3, optional OStim version 2 and arousal version 3; the player entry
+points and FSMP version 6 are preserved. No saved variables
+or properties were added. Full managed enrollment remains inactive. The native SE/AE/VR build,
+all five Papyrus compiles, all three test executables and isolated paired-package
+checks passed. See
+[`docs/NPC_BASIC_SOS_POLICY_2026-09-22.md`](docs/NPC_BASIC_SOS_POLICY_2026-09-22.md)
+for the latest code, source evidence and validation; the preceding actor bridge
+increment remains documented separately. The current working increment connects
+a separate basic NPC loop: at most eight nearby loaded adult humanoid actors,
+32 high-process handles inspected per second and one actor serviced per 250 ms.
+It uses OSL numeric arousal and the verified legacy event mapping, defaults off,
+and requires explicit confirmation that OSL SOS control is disabled. Basic state
+does not instantiate full physics contexts. Shared lifetime generations, 3D
+identity checks, timeouts and immediate permission revocation protect queued
+work; player actions retain priority through the existing shared gate. A new
+NPC menu exposes opt-in and basic status. Managed physics handoff/controller
+wiring remains part of Stage 1/3 work. The complete paired 2.1.0.1 build now
+passes: all five Papyrus compiles, three test executables, stage/expanded ZIP,
+bridge ABI/version/hash checks and package rejection tests. Final native build
+has zero compiler/linker warnings or errors. One-through-eight actor cadence
+tests include frame jitter. The candidate was installed into the dedicated test
+mod with Skyrim closed, after a full backup; its INI, meta.ini, optional OStim
+selection and physics files were preserved. Live NPC checks are the next gate;
+see [`docs/NPC_BASIC_RUNTIME_2026-10-03.md`](docs/NPC_BASIC_RUNTIME_2026-10-03.md).
+No independent generic SOS-state getter has yet been established from the
+inspected local sources; do not claim that fallback is implemented. That NPC
+candidate's metadata is 2.1.0.1 (NPC basic test), separate from published 2.0.1;
+its dedicated installation has since been superseded by the API increment above.
+The test ZIP is `out/release/Schlong-Physics-Swapper-2.1.0.1.zip`, SHA-256
+`72D9DA657D73800D500B12295A1D6E410BA152A1FF3D26C4E6057BE3F47A75E2`;
+DLL SHA-256 `C9C1254F702F1785CB92430D375F8F7372365458CF107D45D440FFA2F9545621`.
+Evidence is under `out/diagnostics/npc-basic-runtime-20261003`; rollback backup
+is `out/backups/testmod-before-npc-2.1.0.1-20261003-173315`.
+The earlier inactive packages retain baseline version metadata and must not
+be offered as live candidates. Published 2.0.1 bytes and other installed mods
+remain unchanged. No push, publication or external posting was performed.
+Broader compatibility checks and separate publication authorization still apply;
+no NPC live-motion result is claimed.
+
 Development continues on `codex/codebase-rework`. The workspace migration and
 cleanup are complete, the reproducible native/Papyrus/package workflow passes,
 and the player implementation now has modular decision, runtime, ownership,
