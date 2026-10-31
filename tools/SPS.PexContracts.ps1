@@ -106,8 +106,9 @@ function Read-SPSPexContract {
 
 function Get-SPSBridgeContracts {
     @(
-        @{ Name = 'SPS_FSMPBridge'; Version = 6; Prefix = ''; Signatures = @{
-            SetPlayerOwnerV3 = 'Bool(String,Bool,Int,Int):1'
+        @{ Name = 'SPS_FSMPBridge'; Version = 7; Prefix = ''; Signatures = @{
+            SetPlayerOwnerV3 = 'Int[](String,Bool,Int,Int):1'
+            CountDynamicBones = 'Int(Bool[]):1'
             EnterOperation = 'Bool(String):3'; OperationCurrent = 'Bool(String):3'
             QueueResetBarrier = 'Bool(String):3'; ResetBarrierPassed = 'Bool(String):3'
             SetPlayerOwnerV2 = 'Bool(Bool):1'; SetPlayerOwner = 'None(Bool):1'
@@ -116,11 +117,27 @@ function Get-SPSBridgeContracts {
         @{ Name = 'SPS_SexLabBridge'; Version = 3; Prefix = ''; Signatures = @{
             GetPlayerThreadID = 'Int():1'; IsPlayerActive = 'Bool():1'; GetPlayerRole = 'Int():1'
         }}
-        @{ Name = 'SPS_PositionBridge'; Version = 1; Prefix = ''; Signatures = @{
+        @{ Name = 'SPS_PositionBridge'; Version = 3; Prefix = ''; Signatures = @{
             SendPlayerAnimationEvent = 'Bool(String):1'; SetPlayerSchlongBend = 'Bool(Int):1'
+            ActorRequestCurrent = 'Bool(String,Actor):3'
+            ResolveActorRequest = 'Actor(String):3'
+            ApplyActorPosition = 'Bool(String,String,Bool,Int):1'
+            SceneRequestCurrent = 'Bool(String,Actor):3'; ResolveSceneRequest = 'Actor(String):3'
+            GetActorSceneState = 'Int(String,Bool,Bool,Bool):1'
+            ReadActorSceneState = 'Int(Actor,Bool,Bool,Bool):1'
+            ApplyBasicActorPosition = 'Int(String,String,Bool,Bool,Bool):1'
         }}
-        @{ Name = 'SPS_ArousalBridge'; Version = 1; Prefix = ''; Signatures = @{ GetPlayerArousal = 'Float():1' }}
-        @{ Name = 'SPS_OStimBridge'; Version = 1; Prefix = 'Optional/OStim/'; Signatures = @{ GetPlayerRole = 'Int():1' }}
+        @{ Name = 'SPS_ArousalBridge'; Version = 3; Prefix = ''; Signatures = @{
+            GetPlayerArousal = 'Float():1'; GetActorArousal = 'Float(String):1'
+            ActorRequestCurrent = 'Bool(String,Actor):3'
+            ResolveActorRequest = 'Actor(String):3'
+            ArousalWriteRequestCurrent = 'Bool(String,Actor):3'
+            ResolveArousalWriteRequest = 'Actor(String):3'
+            SetActorArousal = 'Float(String,Float):1'
+        }}
+        @{ Name = 'SPS_OStimBridge'; Version = 2; Prefix = 'Optional/OStim/'; Signatures = @{
+            GetPlayerRole = 'Int():1'; GetActorSceneState = 'Int(Actor):1'
+        }}
     )
 }
 

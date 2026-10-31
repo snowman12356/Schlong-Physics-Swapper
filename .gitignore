@@ -69,6 +69,7 @@ scripts/BuildStubs/*
 !scripts/BuildStubs/DynamicHDT.psc
 !scripts/BuildStubs/CBPCPluginScript.psc
 !scripts/BuildStubs/OThread.psc
+!scripts/BuildStubs/OActor.psc
 !scripts/BuildStubs/OMetadata.psc
 !scripts/BuildStubs/SOSAE_SKSE.psc
 !scripts/BuildStubs/OSLArousedNative.psc
