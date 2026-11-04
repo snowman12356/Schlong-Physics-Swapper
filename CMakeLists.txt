@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(SchlongPhysicsSwapper VERSION 2.1.0.3 LANGUAGES CXX)
+project(SchlongPhysicsSwapper VERSION 2.3.0.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(NOT DEFINED ENV{COMMONLIB_SSE_FOLDER})
@@ -53,8 +53,7 @@ find_package(SimpleIni CONFIG QUIET)
 option(SPS_BUILD_API_TEST_PLUGIN "Build the developer-only SPS API smoke-test plugin" OFF)
 option(SPS_BUILD_CORE_TESTS "Build the game-independent SPS core tests" ON)
 
-add_library(SPSCore STATIC
-    src/api/ExternalControlRegistry.cpp
+add_library(SPSCore STATIC    src/api/ExternalControlRegistry.cpp
     src/api/ExternalControlRegistry.h
     src/diagnostics/ActivityLog.cpp
     src/diagnostics/ActivityLog.h
@@ -78,6 +77,7 @@ add_library(SPSCore STATIC
     src/controllers/PhysicsOwnershipController.h
     src/controllers/PositionController.cpp
     src/controllers/PositionController.h
+    src/controllers/PoseTargets.h
     src/controllers/RecoveryController.cpp
     src/controllers/RecoveryController.h
     src/PhysicsDecision.cpp
@@ -86,6 +86,15 @@ add_library(SPSCore STATIC
     src/SettingsStore.cpp
     src/SettingsStore.h)
 target_include_directories(SPSCore PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+# The core tests check the shipped INI template against the keys the parser
+# reads, so the template cannot drift out of step with the code. The template is
+# also staged beside the test binaries, because a packaged build runs from a
+# temporary source mirror that no longer exists when tests are run later.
+add_custom_command(TARGET SPSCore POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/config/SchlongPhysicsSwapper.ini"
+        "$<TARGET_FILE_DIR:SPSCore>/SchlongPhysicsSwapper.ini"
+    VERBATIM)
 if(TARGET SimpleIni::SimpleIni)
   target_link_libraries(SPSCore PUBLIC SimpleIni::SimpleIni)
 else()
@@ -114,12 +123,16 @@ add_commonlibsse_plugin(${PROJECT_NAME} AUTHOR "snowman12356" SOURCES
     src/runtime/ActorBridgeAdapter.h
     src/runtime/BasicNpcRuntime.cpp
     src/runtime/BasicNpcRuntime.h
+    src/runtime/ManagedNpcRuntime.cpp
+    src/runtime/ManagedNpcRuntime.h
     src/runtime/PapyrusGateway.cpp
     src/runtime/PapyrusGateway.h
     src/runtime/PhysicsOwnershipAdapter.cpp
     src/runtime/PhysicsOwnershipAdapter.h
     src/runtime/PositionBackendAdapter.cpp
-    src/runtime/PositionBackendAdapter.h)
+    src/runtime/PositionBackendAdapter.h
+    src/runtime/SosPoseAngle.cpp
+    src/runtime/SosPoseAngle.h)
 target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE "${mcp_sdk_SOURCE_DIR}/include")
 target_compile_definitions(${PROJECT_NAME} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_link_libraries(${PROJECT_NAME} PRIVATE SPSCore)
@@ -143,7 +156,7 @@ if(SPS_BUILD_CORE_TESTS)
   endif()
   add_test(NAME SPSDiagnosticsTests COMMAND SPSDiagnosticsTests)
   add_dependencies(${PROJECT_NAME} SPSDiagnosticsTests)
-  add_executable(SPSActorRegistryTests tests/ManagedActorRegistryTests.cpp tests/ActorRequestLedgerTests.cpp tests/BasicNpcPolicyTests.cpp tests/BasicNpcPoolTests.cpp)
+  add_executable(SPSActorRegistryTests tests/ManagedActorRegistryTests.cpp tests/ActorRequestLedgerTests.cpp tests/BasicNpcPolicyTests.cpp tests/BasicNpcPoolTests.cpp tests/PoseAngleTests.cpp tests/PoseTargetsTests.cpp)
   target_link_libraries(SPSActorRegistryTests PRIVATE SPSCore)
   if(MSVC)
     target_compile_options(SPSActorRegistryTests PRIVATE /W4)
@@ -176,6 +189,8 @@ install(FILES scripts/SPS_ArousalBridge.pex DESTINATION "Scripts")
 install(FILES scripts/Source/SPS_ArousalBridge.psc DESTINATION "Source/Scripts")
 install(FILES scripts/SPS_FSMPBridge.pex DESTINATION "Scripts")
 install(FILES scripts/Source/SPS_FSMPBridge.psc DESTINATION "Source/Scripts")
+install(FILES scripts/SPS_PoseAngle.pex DESTINATION "Scripts")
+install(FILES scripts/Source/SPS_PoseAngle.psc DESTINATION "Source/Scripts")
 install(FILES scripts/SPS_OStimBridge.pex DESTINATION "Optional/OStim/Scripts")
 install(FILES scripts/Source/SPS_OStimBridge.psc DESTINATION "Optional/OStim/Source/Scripts")
 install(FILES

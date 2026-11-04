@@ -133,6 +133,25 @@ length, reserved) and requires the paired DLL. CBPC exposes no state at all:
 `CBPCPluginScript.StartPhysics`/`StopPhysics` are void native calls, so "CBPC
 attached" remains an accepted command, never a verified condition.
 
+## Actor-scoped ownership, bridge version 8
+
+Version 8 adds `SetActorOwnerV3(String token, Bool useCBPC, Int preparation)` for
+explicitly managed NPCs. It returns the same `Int[4]` read-back as the player
+path, so NPC switching has the same evidence and the same limits: only the
+disable direction proves anything, and CBPC attachment stays an accepted command.
+
+It deliberately omits the player-only steps in `SetPlayerOwnerV3` -- the SOS
+flaccid event, the soft-pose bend and the full `ResetPhysics`. Those follow player
+settings and would overwrite an NPC's own configured pose.
+
+`OwnershipRequestCurrent` and `ResolveOwnershipRequest` are actor-scoped guards.
+A token resolves to exactly one actor and is re-checked after every engine
+mutation, so a removed, unloaded or superseded NPC cannot fall back to the player.
+This is the rule from the NPC workflow: never resolve a failed NPC target to the
+player. Ownership shares `PapyrusOperationGate` with the player and position
+paths, so an NPC handoff can never overlap a player handoff; the caller's ledger
+slot is released only when the real stack returns.
+
 The audit regression list and save compatibility assessment are in
 [`AUDIT_REPAIRS_2026-09-06.md`](AUDIT_REPAIRS_2026-09-06.md).
 

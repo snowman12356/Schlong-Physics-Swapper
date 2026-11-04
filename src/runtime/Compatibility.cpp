@@ -4,11 +4,47 @@
 #include <Windows.h>
 
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <filesystem>
+#include <mutex>
 #include <ranges>
+#include <unordered_map>
 
 namespace SPS::Runtime {
+
+namespace {
+
+std::atomic<bool> compatibilityFrozen{ false };
+
+// -1 = not computed yet. Before FreezeCompatibilityCache the value is always
+// recomputed, so nothing is cached while the load order is still being read.
+template <class Compute>
+bool CachedCheck(std::atomic<int>& slot, Compute compute)
+{
+    if (!compatibilityFrozen.load()) {
+        return compute();
+    }
+    const int cached = slot.load();
+    if (cached >= 0) {
+        return cached != 0;
+    }
+    const bool result = compute();
+    slot.store(result ? 1 : 0);
+    return result;
+}
+
+std::atomic<int> legacySosCache{ -1 };
+std::atomic<int> softbodyCache{ -1 };
+std::atomic<int> classicArousedPluginCache{ -1 };
+std::atomic<int> positionBridgeCache{ -1 };
+
+}
+
+void FreezeCompatibilityCache()
+{
+    compatibilityFrozen.store(true);
+}
 
 bool ModuleLoaded(const wchar_t* name)
 {
@@ -21,11 +57,24 @@ std::optional<REL::Version> LoadedDllVersionValue(const wchar_t* name)
     if (!module) {
         return std::nullopt;
     }
-    std::array<wchar_t, 32768> path{};
-    if (::GetModuleFileNameW(module, path.data(), static_cast<DWORD>(path.size())) == 0) {
-        return std::nullopt;
+    // A loaded module's file version cannot change while it stays loaded, so
+    // read the version resource once per module instead of on every call.
+    static std::mutex cacheLock;
+    static std::unordered_map<HMODULE, std::optional<REL::Version>> cache;
+    {
+        std::scoped_lock lock(cacheLock);
+        if (const auto found = cache.find(module); found != cache.end()) {
+            return found->second;
+        }
     }
-    return REL::GetFileVersion(path.data());
+    std::array<wchar_t, 32768> path{};
+    std::optional<REL::Version> version;
+    if (::GetModuleFileNameW(module, path.data(), static_cast<DWORD>(path.size())) != 0) {
+        version = REL::GetFileVersion(path.data());
+    }
+    std::scoped_lock lock(cacheLock);
+    cache.insert_or_assign(module, version);
+    return version;
 }
 
 std::string LoadedDllVersion(const wchar_t* name)
@@ -87,7 +136,7 @@ std::optional<float> ReadOslArousal(RE::Actor* actor)
 bool ClassicArousedLoaded()
 {
     return !SloArousedLoaded() && !OslArousedLoaded() &&
-        PluginLoaded({ "SexLabAroused.esm" });
+        CachedCheck(classicArousedPluginCache, [] { return PluginLoaded({ "SexLabAroused.esm" }); });
 }
 
 std::string ArousalProviderName()
@@ -128,14 +177,25 @@ bool TngLoaded()
 
 bool LegacySosLoaded()
 {
-    return PluginLoaded({ "Schlongs of Skyrim.esp" }) &&
-        (std::filesystem::exists("Data/Scripts/SOS_API.pex") ||
-            std::filesystem::exists("Data/Scripts/SOS_SKSE.pex"));
+    return CachedCheck(legacySosCache, [] {
+        std::error_code ec;
+        return PluginLoaded({ "Schlongs of Skyrim.esp" }) &&
+            (std::filesystem::exists("Data/Scripts/SOS_API.pex", ec) ||
+                std::filesystem::exists("Data/Scripts/SOS_SKSE.pex", ec));
+    });
 }
 
 bool SoftbodyLoaded()
 {
-    return PluginLoaded({ "HDT SMP Object - Simple.esp" });
+    return CachedCheck(softbodyCache, [] { return PluginLoaded({ "HDT SMP Object - Simple.esp" }); });
+}
+
+bool PositionBridgeScriptPresent()
+{
+    return CachedCheck(positionBridgeCache, [] {
+        std::error_code ec;
+        return std::filesystem::exists("Data/Scripts/SPS_PositionBridge.pex", ec);
+    });
 }
 
 bool PositionBackendAvailable()

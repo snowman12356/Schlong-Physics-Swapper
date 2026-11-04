@@ -10,3 +10,9 @@ The shared Skyrim reference library is `D:\Modding\codex\codex-references`.
 Follow the parent Skyrim modding instructions and verify unfamiliar APIs against
 the local reference library before relying on memory.
 
+When a dependency removes or changes an API we call, read
+`docs/DEPENDENCY_API_REMOVAL_PLAYBOOK.md` before changing any code. The short
+version: find the upstream source first, and do not assume the surviving code
+path is a correct replacement — a fallback that never took effect was never
+validated.
+

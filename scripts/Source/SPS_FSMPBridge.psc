@@ -1,13 +1,20 @@
 Scriptname SPS_FSMPBridge Hidden
 
 Int Function GetSPSBridgeVersion() Global
-    Return 7
+    Return 9
 EndFunction
 
 Bool Function EnterOperation(String token) Global Native
 Bool Function OperationCurrent(String token) Global Native
 Bool Function QueueResetBarrier(String token) Global Native
 Bool Function ResetBarrierPassed(String token) Global Native
+
+; Actor-scoped guards for managed NPC ownership. These are separate from the
+; player entry points: a token resolves to one actor, and every mutation below
+; re-checks it so a removed, reloaded or superseded NPC target is rejected
+; instead of silently resolving to the player.
+Bool Function OwnershipRequestCurrent(String token, Actor targetActor) Global Native
+Actor Function ResolveOwnershipRequest(String token) Global Native
 
 ; One lease covers preparation, settling and the final owner. Expired tokens
 ; cannot start work or be overtaken while their stack is still running.
@@ -16,30 +23,25 @@ Bool Function ResetBarrierPassed(String token) Global Native
 ; Bridge version 5 adds 4: player reset followed by six-bone soft-pose alignment.
 ; Bridge version 6 also rejects later steps if the player's 3D unloads.
 ; Bridge version 7 returns live SMP read-back instead of a bare acknowledgement.
-;
-; Read-back semantics, verified against Faster HDT-SMP src/dhdtPapyrusFunctions.cpp
-; (TogglePhysicsImpl): the returned array reports, per requested bone, whether
-; that bone WAS DYNAMIC at the moment of the call. The value is recorded before
-; any state change, and it is recorded once per bone even if several skinned
-; meshes carry the same bone name. FSMP also early-outs when a bone is already
-; in the requested state, so a sample never alters a bone that already matches:
+; Bridge version 9 samples the bones again after an SMP enable. FSMP returns
+; the state before the call and does not change a bone that is already dynamic,
+; so a true entry on that second call is proof the bone is dynamic. A false
+; entry is still "kinematic or not found" and proves nothing. CBPC's
+; StartPhysics and StopPhysics return nothing and are not part of this proof.
 ;   result[0] = 1 when the operation is still valid and the player 3D is present
-;   result[1] = managed bones that were DYNAMIC at sampling time, or -1 if this
-;               path never sampled. Above zero during a disable proves SMP still
-;               owned bone(s). A false entry means "kinematic OR not found", so
-;               it is never treated as confirmation that a bone stopped.
-;   result[2] = bone array length (a short array means an incomplete skeleton)
-;   result[3] = reserved, always 0
-; FSMP documents the value as the PREVIOUS state, so the sample is taken before
-; the corresponding call. On a CBPC->SMP transition the enabling call is not
-; used for evidence: it reports the prior (kinematic) state, which says nothing
-; about whether SMP subsequently took ownership.
+;   result[1] = managed bones that were DYNAMIC at the disable sample, or -1
+;               when this path never sampled a disable. A false entry is never
+;               proof that SMP let go.
+;   result[2] = bone array length
+;   result[3] = managed bones DYNAMIC on the post-enable sample, or -1 when
+;               this path did not ask SMP to take the bones. Equal to result[2]
+;               is the only certain SMP handoff.
 Int[] Function SetPlayerOwnerV3(String token, Bool useCBPC, Int preparation, Int softBend) Global
     Int[] result = new Int[4]
     result[0] = 0
     result[1] = -1
     result[2] = 0
-    result[3] = 0
+    result[3] = -1
     If !EnterOperation(token)
         Return result
     EndIf
@@ -70,7 +72,10 @@ Int[] Function SetPlayerOwnerV3(String token, Bool useCBPC, Int preparation, Int
             If !OperationCurrent(token) || !targetActor.Is3DLoaded()
                 Return result
             EndIf
-            SOSAE_SKSE.SetSchlongBend(targetActor, softBend)
+            ; Schlongs of Skyrim AE 4.0.0 removed SOSAE_SKSE.SetSchlongBend.
+            ; The pose angle is owned by the plugin instead, which rotates the
+            ; base of the assembly directly and needs no SOS native.
+            SPS_PoseAngle.SetActorPoseAngle(targetActor, softBend, -1.0)
             If !OperationCurrent(token) || !targetActor.Is3DLoaded()
                 Return result
             EndIf
@@ -138,10 +143,99 @@ Int[] Function SetPlayerOwnerV3(String token, Bool useCBPC, Int preparation, Int
             Return result
         EndIf
         DynamicHDT.TogglePhysics(targetActor, bones, true)
+        If !OperationCurrent(token) || !targetActor.Is3DLoaded()
+            Return result
+        EndIf
+        ; Second enable. The first call's return is the state before the change.
+        ; This return is the state after it, and a bone that is already dynamic
+        ; is left alone. Every true entry is a live dynamic bone.
+        result[3] = CountDynamicBones(DynamicHDT.TogglePhysics(targetActor, bones, true))
     EndIf
-    ; Execution acknowledgment is not read-back of live engine ownership. Only
-    ; result[1] carries evidence, and only for the disable direction.
+    ; result[0] only says the stack stayed valid. result[3] is the post-enable
+    ; dynamic count and is the SMP proof. result[1] is the disable sample.
     If OperationCurrent(token) && targetActor.Is3DLoaded()
+        result[0] = 1
+    EndIf
+    Return result
+EndFunction
+
+; Actor-scoped ownership handoff for an explicitly managed NPC. This mirrors the
+; ordering of SetPlayerOwnerV3 without the player-only steps: no SOS flaccid
+; event, no soft-pose bend, and no full ResetPhysics, because those are driven
+; by player settings and would fight the NPC's own configured pose.
+;
+; preparation: 0 ordinary handoff, 1 stop both engines before reattaching.
+; The caller must already hold the managed-actor lease; this function verifies
+; the resolved actor on both sides of every engine mutation.
+;   result[0] = 1 when the operation stayed current through the final step
+;   result[1] = managed bones DYNAMIC at the disable sample, or -1 if unsampled
+;   result[2] = managed bone array length
+;   result[3] = managed bones DYNAMIC after the SMP enable, or -1 when the
+;               target is CBPC. Equal to result[2] is the only certain sample.
+Int[] Function SetActorOwnerV3(String token, Bool useCBPC, Int preparation) Global
+    Int[] result = new Int[4]
+    result[0] = 0
+    result[1] = -1
+    result[2] = 0
+    result[3] = -1
+    If !EnterOperation(token)
+        Return result
+    EndIf
+    Actor targetActor = ResolveOwnershipRequest(token)
+    If targetActor == None || !OwnershipRequestCurrent(token, targetActor) || !OperationCurrent(token) || !targetActor.Is3DLoaded()
+        Return result
+    EndIf
+    String[] bones = GetPhysicsBones()
+    result[2] = bones.Length
+    Int index = 0
+    If preparation == 1
+        While index < bones.Length
+            If !OwnershipRequestCurrent(token, targetActor) || !OperationCurrent(token)
+                Return result
+            EndIf
+            CBPCPluginScript.StopPhysics(targetActor, bones[index])
+            index += 1
+        EndWhile
+        If !OwnershipRequestCurrent(token, targetActor) || !OperationCurrent(token) || !targetActor.Is3DLoaded()
+            Return result
+        EndIf
+        DynamicHDT.TogglePhysics(targetActor, bones, false)
+        Utility.Wait(0.25)
+    EndIf
+    If !OwnershipRequestCurrent(token, targetActor) || !OperationCurrent(token) || !targetActor.Is3DLoaded()
+        Return result
+    EndIf
+    index = 0
+    If useCBPC
+        ; Sampled before the disable so a still-dynamic bone is visible.
+        result[1] = CountDynamicBones(DynamicHDT.TogglePhysics(targetActor, bones, false))
+        Utility.Wait(0.25)
+        While index < bones.Length
+            If !OwnershipRequestCurrent(token, targetActor) || !OperationCurrent(token)
+                Return result
+            EndIf
+            CBPCPluginScript.StartPhysics(targetActor, bones[index])
+            index += 1
+        EndWhile
+    Else
+        While index < bones.Length
+            If !OwnershipRequestCurrent(token, targetActor) || !OperationCurrent(token)
+                Return result
+            EndIf
+            CBPCPluginScript.StopPhysics(targetActor, bones[index])
+            index += 1
+        EndWhile
+        Utility.Wait(0.25)
+        If !OwnershipRequestCurrent(token, targetActor) || !OperationCurrent(token) || !targetActor.Is3DLoaded()
+            Return result
+        EndIf
+        DynamicHDT.TogglePhysics(targetActor, bones, true)
+        If !OwnershipRequestCurrent(token, targetActor) || !OperationCurrent(token) || !targetActor.Is3DLoaded()
+            Return result
+        EndIf
+        result[3] = CountDynamicBones(DynamicHDT.TogglePhysics(targetActor, bones, true))
+    EndIf
+    If OwnershipRequestCurrent(token, targetActor) && OperationCurrent(token) && targetActor.Is3DLoaded()
         result[0] = 1
     EndIf
     Return result

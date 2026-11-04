@@ -8,6 +8,11 @@ bool ActorRequestLedger::Valid(const ActorRequest& request, std::int64_t now)
         now >= 0 && now < request.expiresAtMs;
 }
 
+bool ActorRequestLedger::HoldsEngineLease(ActorRequestKind kind)
+{
+    return kind == ActorRequestKind::position || kind == ActorRequestKind::ownership;
+}
+
 bool ActorRequestLedger::Prepare(const std::string& token, ActorRequest request, std::int64_t now)
 {
     std::scoped_lock lock(lock_);
@@ -16,8 +21,11 @@ bool ActorRequestLedger::Prepare(const std::string& token, ActorRequest request,
     // Even a cancelled/expired stack must return before the same actor/kind
     // can queue again. An actor being re-added cannot bypass this bound.
     for (const auto& item : requests_) {
-        if (item.second.lease.Ticket().formID == request.lease.Ticket().formID &&
-            item.second.kind == request.kind) return false;
+        if (item.second.lease.Ticket().formID != request.lease.Ticket().formID) continue;
+        if (item.second.kind == request.kind) return false;
+        // Position and ownership both mutate physics through the same engine
+        // gate, so the actor may hold at most one of them at a time.
+        if (HoldsEngineLease(item.second.kind) && HoldsEngineLease(request.kind)) return false;
     }
     requests_.emplace(token, std::move(request));
     return true;
@@ -66,7 +74,7 @@ std::vector<std::string> ActorRequestLedger::Cancel(ActorWorkTicket ticket)
         auto& request = item.second;
         if (request.lease.Ticket() == ticket) {
             request.cancelled = true;
-            if (request.kind == ActorRequestKind::position) mutations.push_back(item.first);
+            if (HoldsEngineLease(request.kind)) mutations.push_back(item.first);
         }
     }
     return mutations;

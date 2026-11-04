@@ -1,5 +1,9 @@
 #include "PhysicsOwnershipAdapter.h"
+
+#include "controllers/ActorRequestLedger.h"
+#include "controllers/ManagedActorRegistry.h"
 #include "PapyrusGateway.h"
+#include "SPSAPI.h"
 #include "controllers/PapyrusOperationGate.h"
 
 #include <SKSE/SKSE.h>
@@ -12,6 +16,9 @@ namespace SPS::Runtime {
 namespace {
 
 Controllers::PapyrusOperationGate operationGate;
+// Actor-scoped ownership tokens. Separate from ActorBridgeAdapter's ledger so
+// removing an NPC's arousal work cannot silently release an ownership lease.
+Controllers::ActorRequestLedger ownershipRequests{ 8 };
 std::atomic<int> bridgeVersion{ 0 };
 std::atomic<bool> versionPending{ false };
 std::atomic<std::int64_t> versionStartedMs{ 0 };
@@ -58,6 +65,38 @@ bool ResetBarrierPassed(RE::StaticFunctionTag*, RE::BSFixedString token)
     return operationGate.BarrierPassed(token.c_str());
 }
 
+namespace {
+
+// Actor-scoped ownership guards. The player never resolves through these, so a
+// failed NPC lookup can only return null, never the player.
+bool ActorAvailable(RE::Actor* actor)
+{
+    return actor && actor->GetFormID() != SPS::API::kPlayerFormID &&
+        !actor->IsChild() && !actor->IsDead() && !actor->IsDeleted() &&
+        !actor->IsDisabled() && actor->Is3DLoaded() && actor->Get3D() &&
+        !ExecutionPaused();
+}
+
+}
+
+bool OwnershipRequestCurrent(RE::StaticFunctionTag*, RE::BSFixedString token, RE::Actor* actor)
+{
+    if (!ActorAvailable(actor)) return false;
+    return ownershipRequests.Current(token.c_str(),
+        Controllers::ActorRequestKind::ownership, actor->GetFormID(),
+        actor->GetHandle().native_handle(), NowMs(),
+        reinterpret_cast<std::uintptr_t>(actor->Get3D()));
+}
+
+RE::Actor* ResolveOwnershipRequest(RE::StaticFunctionTag*, RE::BSFixedString token)
+{
+    const auto request = ownershipRequests.Read(token.c_str(),
+        Controllers::ActorRequestKind::ownership, NowMs());
+    if (!request) return nullptr;
+    const auto actor = RE::Actor::LookupByHandle(request->handle);
+    return ActorAvailable(actor.get()) ? actor.get() : nullptr;
+}
+
 class BridgeVersionCallback final : public RE::BSScript::IStackCallbackFunctor {
 public:
     explicit BridgeVersionCallback(std::uint64_t generation) : generation_(generation) {}
@@ -76,11 +115,12 @@ private:
 
 // The bridge returns Int[4]:
 //   [0] 1 = operation still valid and the player 3D was present,
-//   [1] managed bones that were dynamic at sampling time (-1 = unsampled),
-//   [2] managed bone array length, [3] reserved.
-// Verified against Faster HDT-SMP src/dhdtPapyrusFunctions.cpp: the per-bone
-// value is the state recorded before the change. Only [1] is evidence, and only
-// for a disable. A false entry is "kinematic or not found" and proves nothing.
+//   [1] managed bones that were dynamic at a disable sample (-1 = unsampled),
+//   [2] managed bone array length,
+//   [3] managed bones dynamic on the post-enable sample (-1 = not an SMP handoff).
+// Verified against Faster HDT-SMP src/dhdtPapyrusFunctions.cpp: each entry is the
+// bone's state before that call, and a bone already in the requested state is
+// left unchanged. Only a true entry proves the bone is dynamic.
 OwnershipReadback ReadBridgeReadback(const RE::BSScript::Variable& value)
 {
     OwnershipReadback readback{};
@@ -98,6 +138,7 @@ OwnershipReadback ReadBridgeReadback(const RE::BSScript::Variable& value)
     readback.acknowledged = at(0) != 0;
     readback.dynamicBonesBefore = size > 1 ? at(1) : -1;
     readback.boneCount = size > 2 ? at(2) : 0;
+    readback.dynamicBonesAfter = size > 3 ? at(3) : -1;
     return readback;
 }
 
@@ -125,6 +166,10 @@ bool RegisterPhysicsBridge(RE::BSScript::IVirtualMachine* vm)
     vm->RegisterFunction("OperationCurrent", "SPS_FSMPBridge", OperationCurrent);
     vm->RegisterFunction("QueueResetBarrier", "SPS_FSMPBridge", QueueResetBarrier);
     vm->RegisterFunction("ResetBarrierPassed", "SPS_FSMPBridge", ResetBarrierPassed);
+    vm->RegisterFunction("OwnershipRequestCurrent", "SPS_FSMPBridge",
+        OwnershipRequestCurrent);
+    vm->RegisterFunction("ResolveOwnershipRequest", "SPS_FSMPBridge",
+        ResolveOwnershipRequest);
     return true;
 }
 
@@ -137,6 +182,7 @@ bool PhysicsOperationBusy() { return operationGate.Busy(); }
 void ResetPhysicsOperations()
 {
     operationGate.ResetSession();
+    ownershipRequests.ResetSession();
     ++versionGeneration;
     versionPending.store(false);
     versionRetryAfterMs.store(0);
@@ -182,5 +228,51 @@ OwnershipDispatchResult SetPlayerPhysicsOwner(
         return OwnershipDispatchResult::queued;
     operationGate.Complete(token);
     return OwnershipDispatchResult::failed;
+}
+
+OwnershipDispatchResult SetActorPhysicsOwner(
+    Controllers::ActorWorkLease lease, RE::Actor* actor, bool useCBPC,
+    int preparation, bool fsmpActorApiAvailable, std::int64_t allowedAfterMs,
+    std::int64_t nowMs, OwnershipCompletion completion)
+{
+    // The player has its own path with SOS bend and soft-pose steps; sharing it
+    // here would apply player settings to an NPC.
+    if (!actor || actor == RE::PlayerCharacter::GetSingleton() || !lease.Valid() ||
+        actor->GetFormID() != lease.Ticket().formID || !fsmpActorApiAvailable ||
+        !completion || !OrderedFsmpBridgeAvailable())
+        return OwnershipDispatchResult::failed;
+    const auto handle = actor->GetHandle();
+    const auto token = NewOperationToken();
+    const auto identity = reinterpret_cast<std::uintptr_t>(actor->Get3D());
+    // Ownership work is serialized with every other engine mutation, so it must
+    // take the same ledger slot as the player path rather than a parallel gate.
+    if (!ownershipRequests.Prepare(token, { lease, handle.native_handle(),
+            Controllers::ActorRequestKind::ownership, nowMs + 10000, false, identity }, nowMs))
+        return OwnershipDispatchResult::failed;
+    if (!operationGate.Prepare(token)) {
+        ownershipRequests.Discard(token);
+        return OwnershipDispatchResult::failed;
+    }
+    RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{
+        new OwnerCompletionCallback(token, std::move(completion))
+    };
+    if (DispatchStaticWithCallback("SPS_FSMPBridge", "SetActorOwnerV3",
+            allowedAfterMs, nowMs, std::move(callback),
+            RE::BSFixedString(token), useCBPC, preparation)) {
+        (void)ownershipRequests.Finish(token, nowMs);
+        return OwnershipDispatchResult::queued;
+    }
+    ownershipRequests.Discard(token);
+    operationGate.Complete(token);
+    return OwnershipDispatchResult::failed;
+}
+
+void CancelActorOwnership(Controllers::ActorWorkTicket ticket)
+{
+    // The ledger invalidates the guard immediately; the operation gate keeps
+    // the lease until the dispatched stack really returns.
+    for (const auto& token : ownershipRequests.Cancel(ticket)) {
+        operationGate.Cancel(token);
+    }
 }
 }

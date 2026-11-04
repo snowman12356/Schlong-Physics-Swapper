@@ -135,7 +135,8 @@ OwnershipCompletion PhysicsOwnershipController::Finish(
         // so requiring the cached CBPC owner prevents a false alarm on every
         // normal handoff.
         evidence.dynamicBonesBefore > 0 && targetCBPC &&
-            state_.known.load() && state_.usingCBPC.load()
+            state_.known.load() && state_.usingCBPC.load(),
+        evidence.dynamicBonesAfter
     };
     state_.pending.store(false);
     state_.pendingPurpose.store(0);

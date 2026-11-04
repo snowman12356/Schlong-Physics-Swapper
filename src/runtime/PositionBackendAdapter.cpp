@@ -2,23 +2,52 @@
 
 #include "Compatibility.h"
 #include "PapyrusGateway.h"
+#include "SosPoseAngle.h"
+#include "controllers/PoseTargets.h"
 
-#include <fmt/format.h>
-
-#include <algorithm>
-#include <cmath>
 #include <filesystem>
 
 namespace SPS::Runtime {
+namespace {
+
+// Schlongs of Skyrim AE 4.0.0 removed SOSAE_SKSE.SetSchlongBend. The script that
+// ships with SPS still calls it, so a native bend request can no longer be
+// dispatched and must not be attempted: a failed Papyrus stack would be reported
+// as a failed angle instead of an unsupported one.
+//
+// The graph events and AnimObjects that the same update uses for its own keys
+// are unaffected, which is what the event fallback below relies on.
+constexpr bool kSosAeNativeBendRemoved = true;
+
+bool HasPositionBridge()
+{
+    return PositionBridgeScriptPresent();
+}
+
+// TNG and legacy SOS expose bend purely as graph events. SOS AE 4.0.0 still
+// binds SOSBend0-9 in its behaviour graph, so the event contract remains valid
+// for it even though the native call is gone.
+bool EventChannelAvailable(bool tngBackend)
+{
+    if (tngBackend) {
+        return HasPositionBridge();
+    }
+    return TngLoaded() || LegacySosLoaded() || SosAeNativeLoaded();
+}
+
+}
 
 int AnimationEventBend(int bend, bool tngBackend)
 {
-    bend = std::clamp(bend, 0, 20);
-    if (tngBackend) {
-        return std::clamp(
-            static_cast<int>(std::lround(bend * 18.0 / 20.0)) - 9, -9, 9);
-    }
-    return std::clamp(static_cast<int>(std::lround(bend * 9.0 / 20.0)), 0, 9);
+    // SOSBend-9 .. SOSBend9. Bend 0 clamps to SOSBend-9, the lowest angle.
+    // SOSFlaccid is not this index: playing it on a rise snaps through the
+    // middle of the blend and then falls before the climb.
+    return SPS::Core::PoseTargets::EventIndex(bend, tngBackend);
+}
+
+const char* SosBendEventName(int bend, bool tngBackend)
+{
+    return SPS::Core::PoseTargets::EventName(bend, tngBackend);
 }
 
 bool SendPositionEvent(
@@ -28,33 +57,34 @@ bool SendPositionEvent(
     std::int64_t allowedAfterMs,
     std::int64_t nowMs)
 {
-    if (!actor || actor != RE::PlayerCharacter::GetSingleton() ||
-        !PapyrusReady(allowedAfterMs, nowMs)) {
+    if (!actor || actor != RE::PlayerCharacter::GetSingleton()) {
         return false;
     }
     if (tngBackend) {
-        if (!std::filesystem::exists("Data/Scripts/SPS_PositionBridge.pex")) {
+        if (!PapyrusReady(allowedAfterMs, nowMs) || !HasPositionBridge()) {
             return false;
         }
         return DispatchStatic(
             "SPS_PositionBridge", "SendPlayerAnimationEvent",
             allowedAfterMs, nowMs, eventName);
     }
-    return actor->NotifyAnimationGraph(eventName);
-}
-
-bool SetNativeBend(
-    RE::Actor* actor,
-    int bend,
-    std::int64_t allowedAfterMs,
-    std::int64_t nowMs)
-{
-    return actor && actor == RE::PlayerCharacter::GetSingleton() &&
-        SosAeNativeLoaded() &&
-        std::filesystem::exists("Data/Scripts/SPS_PositionBridge.pex") &&
-        DispatchStatic(
-            "SPS_PositionBridge", "SetPlayerSchlongBend",
-            allowedAfterMs, nowMs, std::clamp(bend, 0, 20));
+    // Native graph dispatch for SOS: no Papyrus round trip, so the angle can be
+    // re-asserted from a polling tick without consuming the dispatch budget.
+    //
+    // NotifyAnimationGraph is the primary route because it is free. It is not
+    // guaranteed to accept an event on every SOS AE build, though, so the proven
+    // Papyrus route is used when it refuses. Without this fallback a refused
+    // native call was indistinguishable from "no backend at all", and the angle
+    // silently never moved while the physics swap kept working.
+    if (actor->NotifyAnimationGraph(eventName)) {
+        return true;
+    }
+    if (!PapyrusReady(allowedAfterMs, nowMs) || !HasPositionBridge()) {
+        return false;
+    }
+    return DispatchStatic(
+        "SPS_PositionBridge", "SendPlayerAnimationEvent",
+        allowedAfterMs, nowMs, eventName);
 }
 
 PositionDispatchResult ApplyPosition(
@@ -67,28 +97,49 @@ PositionDispatchResult ApplyPosition(
     std::int64_t allowedAfterMs,
     std::int64_t nowMs)
 {
+    // animate/animateChanges smooth graph transitions between stages. The pose
+    // angle is continuous and written per tick, so it needs no staging.
+    (void)animate;
+    (void)animateChanges;
     const bool tngBackend = TngLoaded();
-    const bool nativeBackend = SosAeNativeLoaded();
-    const bool eventBackend = tngBackend || LegacySosLoaded() || nativeBackend;
-    const bool useGraph = eventBackend && (!nativeBackend ||
-        (bendMethod != 0 && animate && animateChanges));
-    const bool useNative = nativeBackend &&
-        (bendMethod != 1 || (bendMethod == 1 && !animateChanges));
+    const bool eventChannel = EventChannelAvailable(tngBackend);
 
-    if (!useGraph && !useNative) {
-        return { true, false, -1 };
+    // The pose angle is opt-in only. It used to be the automatic choice whenever
+    // SOS AE was present, but every SOS and TNG bend clip binds GenBase, so the
+    // animation graph rewrites that bone every frame and a direct write from a
+    // task is overwritten before it is ever drawn. That is why the automatic
+    // angle visibly did nothing.
+    //
+    // The channel that does move the assembly is the graph event, because CBPC
+    // owns Gen01-Gen06 and follows the event target. That is the default for
+    // every backend, including SOS AE 4.0.0, whose graph still binds SOSBend0-9
+    // even though its native bend call was removed.
+    const bool poseWanted = bendMethod == kBendMethodPose;
+    const bool posed = poseWanted && actor &&
+        SosPose::Apply(actor, bend, SosPose::ConfiguredDegrees());
+    if (posed) {
+        return { true, true, 0 };
+    }
+    // Reached when the pose was wanted but could not be applied: no actor, no 3D
+    // yet, or the base bone is absent because SOS has not attached. The caller
+    // is never told a pose was applied; fall through to the graph instead.
+
+    if (!eventChannel) {
+        return poseWanted ? PositionDispatchResult{ false, false, -1 }
+                          : PositionDispatchResult{ true, false, -1 };
     }
 
-    const int eventBend = AnimationEventBend(bend, tngBackend);
-    const bool graphAccepted = useGraph && SendPositionEvent(
+    // The soft pose is sent as a bend stage too. SOSFlaccid is a separate clip,
+    // not the bottom of the curve: under CBPC (or kinematic bones) it shows a
+    // raised pose, which is the snap at the start of a rise. Bend 0 resolves to
+    // SOSBend-9, the real lowest position; a configured FlaccidBend resolves to
+    // its own stage.
+    (void)flaccid;
+    const bool accepted = SendPositionEvent(
         actor,
-        flaccid ? RE::BSFixedString("SOSFlaccid") :
-                  RE::BSFixedString(fmt::format("SOSBend{}", eventBend)),
+        RE::BSFixedString(SosBendEventName(bend, tngBackend)),
         tngBackend, allowedAfterMs, nowMs);
-    const bool nativeAccepted = useNative &&
-        SetNativeBend(actor, bend, allowedAfterMs, nowMs);
-    const int method = useGraph && useNative ? 2 : (useGraph ? 1 : 0);
-    return { graphAccepted || nativeAccepted, nativeAccepted, method };
+    return { accepted, false, 1 };
 }
 
 }

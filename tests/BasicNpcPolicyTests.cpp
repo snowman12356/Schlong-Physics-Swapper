@@ -22,6 +22,53 @@ int RunBasicNpcPolicyTests()
     expect(!BasicSosEvent(-1) && !BasicSosEvent(std::numeric_limits<float>::quiet_NaN()) &&
         !BasicSosEvent(std::numeric_limits<float>::infinity()), "unknown arousal never becomes a soft command");
 
+    // Managed NPC: its own threshold and configured bend drive the pose, rather
+    // than the ordinary-SOS fallback mapping above.
+    ManagedPoseProfile managed;
+    managed.threshold = 60.0F;
+    managed.erectBend = 14;
+    expect(ManagedSosEvent(0, managed, false) == "SOSBend-9" &&
+        ManagedSosEvent(59.9F, managed, false) == "SOSBend-9",
+        "managed NPC below threshold uses SOSBend-9, the lowest angle");
+    expect(ManagedSosEvent(60, managed, false) == "SOSBend4" &&
+        ManagedSosEvent(100, managed, false) == "SOSBend4",
+        "managed NPC at or above threshold uses its configured erect bend");
+    managed.threshold = 30.0F;
+    expect(ManagedSosEvent(35, managed, false) == "SOSBend4",
+        "managed threshold is independent of the player's arousal mapping");
+    managed.erectBend = 0;
+    expect(ManagedSosEvent(100, managed, false) == "SOSBend-9",
+        "a zero erect bend keeps SOSBend-9 instead of inventing an angle");
+    expect(!ManagedSosEvent(-1, managed, false) &&
+        !ManagedSosEvent(std::numeric_limits<float>::quiet_NaN(), managed, false),
+        "unknown managed arousal never becomes a pose command");
+
+    // The pose channel shares the threshold rule but returns the bend itself, so
+    // it must agree with the event path about when the NPC is erect.
+    managed.erectBend = 14;
+    managed.threshold = 60.0F;
+    expect(ManagedPoseBend(0, managed) == 0 && ManagedPoseBend(59.9F, managed) == 0,
+        "managed NPC below threshold holds the neutral pose reference");
+    expect(ManagedPoseBend(60, managed) == 14 && ManagedPoseBend(100, managed) == 14,
+        "managed NPC at or above threshold uses its configured erect bend");
+    expect(ManagedPoseBend(-1, managed) == -1 &&
+        ManagedPoseBend(std::numeric_limits<float>::quiet_NaN(), managed) == -1,
+        "unknown managed arousal never becomes a pose angle");
+    managed.erectBend = 0;
+    expect(ManagedPoseBend(100, managed) == 0,
+        "a zero erect bend holds neutral instead of inventing an angle");
+    managed.erectBend = 40;
+    expect(ManagedPoseBend(100, managed) == 20,
+        "an out-of-range erect bend is clamped to the SOS range");
+    // The two channels must not disagree about being erect.
+    managed.erectBend = 14;
+    managed.threshold = 45.0F;
+    expect((ManagedPoseBend(44, managed) == 0) ==
+            (ManagedSosEvent(44, managed, false) == "SOSBend-9") &&
+        (ManagedPoseBend(46, managed) > 0) ==
+            (ManagedSosEvent(46, managed, false) != "SOSBend-9"),
+        "pose and event channels agree on the managed threshold");
+
     BasicNpcPolicy policy;
     const auto decide = [&](std::int64_t now, float value = 60) {
         return policy.Decide(value, now, now, true, false, true);

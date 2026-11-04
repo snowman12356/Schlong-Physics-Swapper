@@ -71,6 +71,21 @@ int RunActorRequestLedgerTests()
         !ledger.Current("read", Kind::arousal, actorID, handle, 1000),
         "wrong action, FormID, live handle and expired request all fail the guard");
 
+    // Ownership is an engine mutation, so it shares the actor's single mutation
+    // slot with position work and can never authorize player-only dispatch.
+    ActorRequestLedger ownershipLedger{ 3 };
+    expect(ownershipLedger.Prepare("own", { lease, handle, Kind::ownership, 1000 }, 100),
+        "managed actor can prepare an ownership handoff");
+    expect(!ownershipLedger.Prepare("own-position", { lease, handle, Kind::position, 1000 }, 100),
+        "ownership and position work cannot both hold the actor's mutation slot");
+    expect(ownershipLedger.Current("own", Kind::ownership, actorID, handle, 200) &&
+        !ownershipLedger.Current("own", Kind::position, actorID, handle, 200),
+        "ownership guard does not authorize a position dispatch");
+    expect(ownershipLedger.Finish("own", 200).has_value(),
+        "ownership completion is delivered to the waiting caller");
+    expect(ownershipLedger.Prepare("own-position", { lease, handle, Kind::position, 1000 }, 300),
+        "position work resumes once ownership retires");
+
     PapyrusOperationGate gate;
     expect(gate.Prepare("position") && gate.Enter("position"), "NPC mutation acquires the existing engine gate");
     const auto cancelled = ledger.Cancel(*loaded);

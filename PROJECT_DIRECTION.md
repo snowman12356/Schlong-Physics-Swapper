@@ -52,6 +52,113 @@ requiring users to repair the state manually.
 
 ## Current development status
 
+**User-reported pass (2026-11-04, 20:33-20:41 session):** after installing the
+audit-fix build the user reported "it works". The matching log was written to
+the normal SKSE log path by the new wide-path logger (2.3.0.0 loaded at
+20:33:41). It records 5 `Rise primed on SOSBend-9` lines, 2 completed gradual
+rises, 2 descents released at SOSBend-9, every SMP proof at 6/6, and no SPS
+error codes. That covers the rise snap, even-step rise/fall and SOSFlaccid
+removal on this setup. Per-check observations (addon on/off, changed Rise/Fall
+times, soft resting look) were not itemised, and the non-ASCII log path case
+remains untested.
+
+**Audit fixes 1-3 (built and installed 2026-11-04):**
+installed into the dedicated test mod with Skyrim closed. 13 package files
+were verified and 7 changed (DLL, manifest, five PEX); INI, `meta.ini`, XMLs and
+CBPC files were unchanged. Rollback: `out/backups/testmod-before-auditfix-20261104-203115`. a
+read-only audit of SPS found three code issues, now fixed natively. (1) Startup
+crash risk: CommonLib's `SKSE::Init` log setup and SPS's own spdlog file sink
+both converted the Documents log path with `path::string()`, which throws for
+characters outside the system code page, inside plugin load. CommonLib's
+logger is now disabled (`InitInfo{ .log = false }`), and SPS opens its log
+through a wide-path `std::ofstream` with an `ostream_sink` (null sink if the
+file cannot open). The file name and location are unchanged. (2) The experimental pose-angle
+state map was unlocked while reachable from Papyrus threads, and its natives
+wrote bone transforms from script threads. The map is now locked, and the natives
+queue the write on the game thread through the actor handle (they still return
+false when the base bone is missing). (3) FSMP's DLL version was re-read from
+disk on every call, and legacy SOS/SOFTBODY/Aroused-Redux plugin and script
+file checks hit the filesystem per call. Module versions are now cached per
+loaded module, and those checks are cached after `kDataLoaded`. No settings,
+scripts, bridge versions or saved data changed: safe for existing saves. The
+native build had 0 warnings, all three suites passed, all six scripts compiled
+0/0, and package validation and guards passed. ZIP SHA-256
+`BBD44F2201F3DF9F0730692F48B179BAAEECA0ABC23A701011CC5AB5A01C3715`, DLL SHA-256
+`1532B213412652049B16BDF7E00F673ED228C3B37FC59E2D19227B9CA27CBF71`. Includes all
+round-2 angle changes. Unverified: the non-ASCII path case was not reproduced;
+the fix follows the source.
+
+**Rise snap and even-step ramp (built and installed 2026-11-04, not checked in
+game):** installed into the dedicated test mod with Skyrim closed. 13 package
+files were verified and 8 changed (DLL, manifest, README, five PEX); INI,
+`meta.ini`, XMLs and CBPC files were unchanged. Rollback:
+`out/backups/testmod-before-round2-20261104-194435`. the user's test of the paired redeploy showed, with SPS Retractable
+Addon disabled, "snaps to 9, snaps to -9, then smoothly -9 to 9", and with it
+enabled, "snaps to 0, smoothly to -9, then -9 to 9". The log shows CBPC holding
+the bones for about 2.2 s before the ramp's first event, while the graph was
+still on `SOSFlaccid` from the soft path. The extra CBPC confirmation
+transaction (queued at +750 ms) blocked the 400 ms settle. Changes, native only:
+(1) `PrimeLowestStageForRise` sends `SOSBend-9` before any SMP-to-CBPC switch
+when a timed rise will follow; (2) the CBPC confirmation is deferred until after
+the ramp, and the SMP-off maintenance probe pauses while a ramp runs; (3) graph
+backends now walk the 19 bound positions in 18 even steps
+(`PoseTargets::StepRampBend`), so Rise time / Fall time are the exact -9-to-9
+travel times; (4) the ramp's 15 s cap now matches the 30 s sliders/INI clamp.
+(5) At the user's request SPS no longer sends `SOSFlaccid` to the player:
+the soft pose is sent as a bend stage (bend 0 = `SOSBend-9`, or the configured
+FlaccidBend stage), and angle resets no longer ask `SPS_FSMPBridge` for its
+`SOSFlaccid` step (only the experimental pose method still uses it). Basic and
+managed NPC events are unchanged (the basic path keeps the verified legacy OSL
+mapping). No INI keys, defaults, scripts, bridge versions or saved data changed:
+safe for existing saves. The native build had 0 warnings, the three suites passed with new
+even-step/round-trip tests, all six scripts compiled 0/0, and package validation
+and guards passed. ZIP SHA-256
+`4BDA1A679DCD84A340320EA2945FC338E3A9DFFE51130005ED9E7A73617F45EC`, DLL SHA-256
+`7D6DFDA633F61D057EFE42ED6B9F4C29A4E879C3C47F3200291388AA60A839B9`. Unverified:
+whether `SOSBend-9` sent while SMP still owns the bones is visible as a small
+twitch, and whether the snap is gone with and without the addon.
+
+**Handover review and paired redeploy (2026-11-04, not checked in game):** a new
+agent took over. `Build-Release.ps1` rebuilt 2.3.0.0 as one paired set: six
+Papyrus scripts with 0 errors/warnings, the native build, all three test suites,
+package validation and package guards passed. ZIP SHA-256
+`9BA148F5DB1ABDD20FD716DB9F280EA2987C20542EA23E7D178629DE7BB83A83`, DLL SHA-256
+`AAC4B0D5A3497E633B473244B2F5ED4499A582C709A633DA0E2472D3C6168DC2` (unchanged
+from the 2026-11-02 deploy). Before this, four installed PEX files did not match
+the repository build; the test mod now holds the paired DLL, five core PEX/PSC
+pairs, `SPS_PoseAngle` and the manifest. INI, `meta.ini`, XMLs and CBPC files
+were untouched. Rollback: `out/backups/testmod-before-paired-2.3.0.0-20261104-184119`;
+the earlier 2.3.0.0 ZIP is in `out/backups/release-2.3.0.0-before-paired-20261104-184032`.
+The 2026-11-02 log from the reported "rise snaps halfway, drops, then climbs"
+session shows that on every 0-to-100 jump SPS started a CBPC handoff, and
+16 ms later SPS Retractable Addon requested SMP through the API. The superseded
+transaction had already disabled SMP, so the bones followed the current
+animation pose (kinematic, no CBPC yet) until the SMP handoff completed about
+2.7 s later. After the addon released, the ramp climbed from SOSBend-9. This
+matches the symptom but is not confirmed in game; the 2026-11-02 ramp fixes
+A/B/C do not address this race. Next gate: the in-game rise test with and
+without the addon enabled.
+
+**SMP handoff proof (deployed 2026-11-02, not checked in game):** bridge version 9.
+After an SMP enable, the bridge calls Faster HDT-SMP `TogglePhysics(..., true)`
+a second time and stores that count in `result[3]` (`-1` when the path did not
+sample). FSMP records the live state and leaves a bone that is already dynamic
+unchanged, so a true entry is proof that bone is dynamic. The log says
+`SMP proof: N/N managed bones were dynamic after the handoff` only when N
+equals the managed bone count. A smaller count is `SMP not proven`, and a
+missing sample is not proof. CBPC `StopPhysics` still returns nothing, so the
+log never says CBPC was observed to release. The SOSBend-9 line only says the
+handoff was requested. DLL and `SPS_FSMPBridge.pex` must stay paired; a version
+8 script is rejected. Deployed to the MO2 test mod with the bend-curve DLL.
+The existing INI, `meta.ini` and physics XML were left in place. Not checked in game.
+
+**Bend curve (deployed 2026-11-02, not checked in game):** SOSBend-9 is the lowest
+angle. A rise starts on that event and walks upward. A fall keeps CBPC until
+SOSBend-9 is sent, then hands the bones to SMP. Release build of the plugin
+compiled, and the actor-registry tests passed, including the new curve checks.
+Deployed to `D:\Modding\mods\Schlong Physics Swapper` with the version 9 bridge.
+Not checked in game.
+
 **SMP drift read-back (implemented 2026-10-31, not installed):** the ownership
 bridge advances to version 7 and returns `Int[4]` instead of a bare boolean
 acknowledgement. SPS previously discarded Faster HDT-SMP's `TogglePhysics`

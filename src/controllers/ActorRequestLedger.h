@@ -10,7 +10,7 @@
 
 namespace SPS::Controllers {
 
-enum class ActorRequestKind { arousal, arousalWrite, position, scene };
+enum class ActorRequestKind { arousal, arousalWrite, position, scene, ownership };
 
 struct ActorRequest {
     ActorWorkLease lease;
@@ -38,6 +38,8 @@ public:
     [[nodiscard]] std::size_t Size() const;
 private:
     [[nodiscard]] static bool Valid(const ActorRequest& request, std::int64_t now);
+    // Position and ownership both mutate physics under the shared engine gate.
+    [[nodiscard]] static bool HoldsEngineLease(ActorRequestKind kind);
     const std::size_t capacity_;
     mutable std::mutex lock_;
     std::unordered_map<std::string, ActorRequest> requests_;

@@ -30,5 +30,11 @@ bool LegacySosLoaded();
 bool SoftbodyLoaded();
 bool PositionBackendAvailable();
 std::string PositionBackendName();
+// True when Data/Scripts/SPS_PositionBridge.pex exists. Cached once frozen.
+bool PositionBridgeScriptPresent();
+// Called at kDataLoaded. The load order and Data files cannot change for the
+// rest of the process, so plugin/file checks are computed once from then on
+// instead of hitting the (MO2 virtual) filesystem on every call.
+void FreezeCompatibilityCache();
 
 }

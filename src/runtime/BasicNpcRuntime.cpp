@@ -1,4 +1,5 @@
 #include "BasicNpcRuntime.h"
+#include "ManagedNpcRuntime.h"
 #include "ActorBridgeAdapter.h"
 #include "Compatibility.h"
 #include "PapyrusGateway.h"
@@ -30,6 +31,9 @@ bool Eligible(RE::Actor* actor, RE::PlayerCharacter* player)
     if (!actor || !player || !player->Is3DLoaded() || actor->GetFormID() == SPS::API::kPlayerFormID ||
         actor->IsChild() || actor->IsDead() || actor->IsDeleted() || actor->IsDisabled() ||
         !actor->Is3DLoaded()) return false;
+    // An enrolled NPC belongs to full management. Both paths must never issue
+    // competing commands to the same actor.
+    if (IsManagedNpc(actor->GetFormID())) return false;
     const auto* race = actor->GetRace();
     auto* root = actor->Get3D();
     if (!race || !race->HasKeywordString("ActorTypeNPC") || !root) return false;
@@ -48,6 +52,7 @@ void Remove(ActorWorkTicket ticket)
     // releases an executing shared engine stack ahead of its real completion.
     pool.Remove(ticket);
     CancelActorBridgeRequests(ticket);
+    CancelActorOwnership(ticket);
     std::scoped_lock lock(statusLock);
     std::erase_if(eventLeases, [ticket](const auto& lease) { return lease.Ticket() == ticket; });
 }

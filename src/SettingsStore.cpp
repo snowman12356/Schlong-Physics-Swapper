@@ -14,6 +14,7 @@ Settings ReadSettings(CSimpleIniA& ini)
     settings.enabled = ini.GetBoolValue("General", "Enabled", true);
     settings.basicNpcEnabled = ini.GetBoolValue("NPCs", "BasicSOSEnabled", false);
     settings.basicNpcProviderSosDisabled = ini.GetBoolValue("NPCs", "ProviderSOSDisabledConfirmed", false);
+    settings.managedNpcEnabled = ini.GetBoolValue("NPCs", "ManagedNPCEnabled", false);
     settings.threshold = std::clamp(static_cast<float>(ini.GetDoubleValue("General", "ArousalThreshold", 60)), 0.0F, 100.0F);
     settings.hysteresis = std::clamp(static_cast<float>(ini.GetDoubleValue("General", "Hysteresis", 5)), 0.0F, 25.0F);
     settings.mode = std::clamp(static_cast<int>(ini.GetLongValue("General", "Mode", 0)), 0, 2);
@@ -32,13 +33,16 @@ Settings ReadSettings(CSimpleIniA& ini)
     settings.resetSMPAfterLoad = ini.GetBoolValue("Reliability", "ResetSMPAfterLoad", true);
     settings.loadResetDelayMs = std::clamp(static_cast<int>(ini.GetLongValue("Reliability", "SMPResetDelayMilliseconds", 10000)), 1000, 60000);
     settings.positionControl = ini.GetBoolValue("Position", "Enabled", true);
-    settings.bendMethod = std::clamp(static_cast<int>(ini.GetLongValue("Position", "Method", 2)), 0, 2);
+    settings.bendMethod = std::clamp(static_cast<int>(ini.GetLongValue("Position", "Method", 2)), 0, 3);
+    settings.poseAngleDegrees = std::clamp(static_cast<float>(ini.GetDoubleValue("Position", "PoseAngleDegrees", 45)), 0.0F, 90.0F);
     settings.animatePosition = ini.GetBoolValue("Position", "AnimateChanges", true);
     settings.gradualErection = ini.GetBoolValue("Position", "GradualErection", true);
     settings.arousalBasedErection = ini.GetBoolValue("NaturalBehaviour", "ArousalBasedErection", false);
     settings.erectionStartArousal = std::clamp(static_cast<float>(ini.GetDoubleValue("NaturalBehaviour", "ErectionStartArousal", 20)), 0.0F, 99.0F);
-    settings.erectionDurationMs = std::clamp(static_cast<int>(ini.GetLongValue("Position", "ErectionDurationMilliseconds", 3000)), 500, 10000);
-    settings.softeningDurationMs = std::clamp(static_cast<int>(ini.GetLongValue("Position", "SofteningDurationMilliseconds", 5000)), 500, 15000);
+    // 30 s allows a full 20-stage walk at a slow, visible pace. The old 10 s
+    // ceiling made the smoothest setting people actually wanted impossible.
+    settings.erectionDurationMs = std::clamp(static_cast<int>(ini.GetLongValue("Position", "ErectionDurationMilliseconds", 3000)), 500, 30000);
+    settings.softeningDurationMs = std::clamp(static_cast<int>(ini.GetLongValue("Position", "SofteningDurationMilliseconds", 5000)), 500, 30000);
     settings.randomErections = ini.GetBoolValue("NaturalBehaviour", "RandomErections", false);
     settings.randomErectionMinMinutes = std::clamp(static_cast<int>(ini.GetLongValue("NaturalBehaviour", "RandomMinimumMinutes", 15)), 1, 180);
     settings.randomErectionMaxMinutes = std::clamp(static_cast<int>(ini.GetLongValue("NaturalBehaviour", "RandomMaximumMinutes", 45)), settings.randomErectionMinMinutes, 360);
@@ -83,61 +87,124 @@ SettingsLoadResult LoadSettings(
     const auto& selectedPath = result.migratedLegacy ? legacyPath : currentPath;
     ini.LoadFile(selectedPath.string().c_str());
     result.settings = ReadSettings(ini);
+    // The marker is a one-shot: after this load the current file is written, and
+    // it must not keep asking to import the legacy file again. Otherwise every
+    // later launch would overwrite whatever the player has since configured.
+    result.dropLegacyMarker = preferLegacy;
     return result;
 }
 
-bool SaveSettings(const std::filesystem::path& path, const Settings& settings)
+// Every setting is written on save, so a file that has been through the menu
+// still contains everything a user might want to edit by hand. Values are
+// written with comments only where the key is new: SimpleIni keeps whatever the
+// existing file says for a key it already knows about.
+//
+// The table below is the single list of section/key pairs. Recording them as
+// they are applied means the shipped template can be checked against this
+// build without a second hand-maintained list drifting out of date.
+std::vector<std::string> recordedKeys;
+std::once_flag recordedKeysOnce;
+
+void RememberKey(const char* section, const char* key)
+{
+    recordedKeys.push_back(std::string(section) + "|" + key);
+}
+
+void ApplySettingsToIni(CSimpleIniA& ini, const Settings& settings)
+{
+    const auto setBool = [&ini](const char* section, const char* key, bool value, const char* comment = nullptr) {
+        RememberKey(section, key);
+        ini.SetBoolValue(section, key, value, comment);
+    };
+    const auto setLong = [&ini](const char* section, const char* key, long value, const char* comment = nullptr) {
+        RememberKey(section, key);
+        ini.SetLongValue(section, key, value, comment);
+    };
+    const auto setDouble = [&ini](const char* section, const char* key, double value, const char* comment = nullptr) {
+        RememberKey(section, key);
+        ini.SetDoubleValue(section, key, value, comment);
+    };
+
+    setBool("General", "Enabled", settings.enabled);
+    setDouble("General", "ArousalThreshold", settings.threshold);
+    setDouble("General", "Hysteresis", settings.hysteresis);
+    setLong("General", "Mode", settings.mode);
+    setLong("General", "ErectBend", settings.erectBend);
+    setLong("General", "PollMilliseconds", settings.pollMs);
+    setBool("NPCs", "BasicSOSEnabled", settings.basicNpcEnabled);
+    setBool("NPCs", "ProviderSOSDisabledConfirmed", settings.basicNpcProviderSosDisabled);
+    setBool("NPCs", "ManagedNPCEnabled", settings.managedNpcEnabled);
+    setBool("Compatibility", "SexLabPPlusOverride", settings.sexLabOverride);
+    setBool("Compatibility", "SexLabRoleSwitching", settings.sexLabRoleSwitching);
+    setLong("Compatibility", "SexLabBottomBehavior", settings.sexLabBottomBehavior);
+    setLong("Compatibility", "SexLabUnknownRole", settings.sexLabUnknownRole);
+    setLong("Compatibility", "SexLabEndDelayMilliseconds", settings.sceneEndDelayMs);
+    setBool("Compatibility", "OStimOverride", settings.ostimOverride);
+    setBool("Compatibility", "OStimRoleSwitching", settings.ostimRoleSwitching);
+    setLong("Reliability", "SwitchCooldownMilliseconds", settings.switchCooldownMs);
+    setBool("Reliability", "ResetSMPAfterLoad", settings.resetSMPAfterLoad);
+    setLong("Reliability", "SMPResetDelayMilliseconds", settings.loadResetDelayMs);
+    setBool("Reliability", "RepairAfterEquipmentChange", settings.equipmentChangeRecovery);
+    setBool("Position", "Enabled", settings.positionControl);
+    setBool("Position", "FlaccidAngleControl", settings.flaccidAngleControl);
+    setLong("Position", "FlaccidBend", settings.flaccidBend);
+    setLong("Position", "Method", settings.bendMethod);
+    setDouble("Position", "PoseAngleDegrees", settings.poseAngleDegrees);
+    setBool("Position", "AnimateChanges", settings.animatePosition);
+    setBool("Position", "GradualErection", settings.gradualErection);
+    setLong("Position", "ErectionDurationMilliseconds", settings.erectionDurationMs);
+    setLong("Position", "SofteningDurationMilliseconds", settings.softeningDurationMs);
+    setBool("Position", "BounceGuard", settings.bounceGuard);
+    setBool("Position", "UseSeparateSexLabBend", settings.useSexLabBend);
+    setLong("Position", "SexLabBend", settings.sexLabBend);
+    setLong("Position", "SettleDelayMilliseconds", settings.settleDelayMs);
+    setLong("Position", "MaxAutomaticFailures", settings.maxBendFailures);
+    setBool("NaturalBehaviour", "ArousalBasedErection", settings.arousalBasedErection);
+    setDouble("NaturalBehaviour", "ErectionStartArousal", settings.erectionStartArousal);
+    setBool("NaturalBehaviour", "RandomErections", settings.randomErections);
+    setLong("NaturalBehaviour", "RandomMinimumMinutes", settings.randomErectionMinMinutes);
+    setLong("NaturalBehaviour", "RandomMaximumMinutes", settings.randomErectionMaxMinutes);
+    setLong("NaturalBehaviour", "RandomDurationSeconds", settings.randomErectionDurationSeconds);
+    setBool("NaturalBehaviour", "RandomSafeMomentsOnly", settings.randomErectionSafeMoments);
+    setBool("NaturalBehaviour", "SpontaneousRefractory", settings.spontaneousRefractory);
+    setLong("NaturalBehaviour", "RefractoryMinutes", settings.refractoryMinutes);
+    setBool("NaturalBehaviour", "MorningErections", settings.morningErections);
+    setLong("NaturalBehaviour", "MorningDurationSeconds", settings.morningErectionDurationSeconds);
+    setBool("Debug", "VerboseLogging", settings.verboseLogging);
+}
+
+std::vector<std::string> SettingsKeyNames()
+{
+    std::call_once(recordedKeysOnce, [] {
+        CSimpleIniA scratch;
+        scratch.SetUnicode();
+        ApplySettingsToIni(scratch, Settings{});
+    });
+    return recordedKeys;
+}
+
+bool SaveSettings(const std::filesystem::path& path, const Settings& settings, bool clearLegacyMarker)
 {
     CSimpleIniA ini;
     ini.SetUnicode();
-    ini.SetBoolValue("General", "Enabled", settings.enabled);
-    ini.SetBoolValue("NPCs", "BasicSOSEnabled", settings.basicNpcEnabled);
-    ini.SetBoolValue("NPCs", "ProviderSOSDisabledConfirmed", settings.basicNpcProviderSosDisabled);
-    ini.SetDoubleValue("General", "ArousalThreshold", settings.threshold);
-    ini.SetDoubleValue("General", "Hysteresis", settings.hysteresis);
-    ini.SetLongValue("General", "Mode", settings.mode);
-    ini.SetLongValue("General", "ErectBend", settings.erectBend);
-    ini.SetLongValue("General", "PollMilliseconds", settings.pollMs);
-    ini.SetBoolValue("Compatibility", "SexLabPPlusOverride", settings.sexLabOverride);
-    ini.SetBoolValue("Compatibility", "SexLabRoleSwitching", settings.sexLabRoleSwitching);
-    ini.SetLongValue("Compatibility", "SexLabBottomBehavior", settings.sexLabBottomBehavior);
-    ini.SetLongValue("Compatibility", "SexLabUnknownRole", settings.sexLabUnknownRole);
-    ini.SetLongValue("Compatibility", "SexLabEndDelayMilliseconds", settings.sceneEndDelayMs);
-    ini.SetBoolValue("Compatibility", "OStimOverride", settings.ostimOverride);
-    ini.SetBoolValue("Compatibility", "OStimRoleSwitching", settings.ostimRoleSwitching);
-    ini.SetLongValue("Reliability", "SwitchCooldownMilliseconds", settings.switchCooldownMs);
-    ini.SetBoolValue("Reliability", "ResetSMPAfterLoad", settings.resetSMPAfterLoad);
-    ini.SetLongValue("Reliability", "SMPResetDelayMilliseconds", settings.loadResetDelayMs);
-    ini.SetBoolValue("Position", "Enabled", settings.positionControl);
-    ini.SetBoolValue("Position", "FlaccidAngleControl", settings.flaccidAngleControl);
-    ini.SetLongValue("Position", "FlaccidBend", settings.flaccidBend);
-    ini.SetLongValue("Position", "Method", settings.bendMethod);
-    ini.SetBoolValue("Position", "AnimateChanges", settings.animatePosition);
-    ini.SetBoolValue("Position", "GradualErection", settings.gradualErection);
-    ini.SetBoolValue("NaturalBehaviour", "ArousalBasedErection", settings.arousalBasedErection);
-    ini.SetDoubleValue("NaturalBehaviour", "ErectionStartArousal", settings.erectionStartArousal);
-    ini.SetLongValue("Position", "ErectionDurationMilliseconds", settings.erectionDurationMs);
-    ini.SetLongValue("Position", "SofteningDurationMilliseconds", settings.softeningDurationMs);
-    ini.SetBoolValue("NaturalBehaviour", "RandomErections", settings.randomErections);
-    ini.SetLongValue("NaturalBehaviour", "RandomMinimumMinutes", settings.randomErectionMinMinutes);
-    ini.SetLongValue("NaturalBehaviour", "RandomMaximumMinutes", settings.randomErectionMaxMinutes);
-    ini.SetLongValue("NaturalBehaviour", "RandomDurationSeconds", settings.randomErectionDurationSeconds);
-    ini.SetBoolValue("NaturalBehaviour", "RandomSafeMomentsOnly", settings.randomErectionSafeMoments);
-    ini.SetBoolValue("NaturalBehaviour", "SpontaneousRefractory", settings.spontaneousRefractory);
-    ini.SetLongValue("NaturalBehaviour", "RefractoryMinutes", settings.refractoryMinutes);
-    ini.SetBoolValue("NaturalBehaviour", "MorningErections", settings.morningErections);
-    ini.SetLongValue("NaturalBehaviour", "MorningDurationSeconds", settings.morningErectionDurationSeconds);
-    ini.SetBoolValue("Reliability", "RepairAfterEquipmentChange", settings.equipmentChangeRecovery);
-    ini.SetBoolValue("Position", "BounceGuard", settings.bounceGuard);
-    ini.SetBoolValue("Position", "UseSeparateSexLabBend", settings.useSexLabBend);
-    ini.SetLongValue("Position", "SexLabBend", settings.sexLabBend);
-    ini.SetLongValue("Position", "SettleDelayMilliseconds", settings.settleDelayMs);
-    ini.SetLongValue("Position", "MaxAutomaticFailures", settings.maxBendFailures);
-    ini.SetBoolValue("Debug", "VerboseLogging", settings.verboseLogging);
-
+    ini.SetSpaces(false);
     const auto parent = path.parent_path();
     if (!parent.empty()) {
         std::filesystem::create_directories(parent);
+    }
+    // Load the existing file first so the comments and section order that the
+    // user is reading survive a save from the in-game menu. SimpleIni keeps a
+    // key's comment when it updates an existing value, but drops it for a key
+    // it has never seen, so this is the difference between "the menu edited two
+    // numbers" and "the menu flattened the whole file".
+    if (std::filesystem::exists(path)) {
+        ini.LoadFile(path.string().c_str());
+    }
+    // Re-apply the values after loading, since the file on disk is authoritative
+    // for nothing here: this save is explicitly writing the caller's settings.
+    ApplySettingsToIni(ini, settings);
+    if (clearLegacyMarker) {
+        ini.Delete("Migration", "PreferLegacyIfPresent");
     }
     return ini.SaveFile(path.string().c_str()) >= SI_OK;
 }

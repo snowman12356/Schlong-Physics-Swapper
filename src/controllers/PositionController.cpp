@@ -93,6 +93,7 @@ std::uint64_t PositionController::BeginAnimation(
     state_.relaxing.store(relaxing);
     const auto generation = state_.animationGeneration.load();
     state_.animationTargetBend.store(targetBend);
+    state_.animationCompleted.store(false);
     state_.animationLastQueuedBend.store(-1);
     state_.animationStartMs.store(now);
     state_.animating.store(true);
@@ -118,6 +119,13 @@ void PositionController::FailAnimationStep(std::int64_t retryDueMs)
     state_.retryDueMs.store(retryDueMs);
 }
 
+void PositionController::SetAnimationTargetBend(int bend)
+{
+    // Used by a failed ramp step to record how far it got, so the retry resumes
+    // from there rather than from the original target and dipping again.
+    state_.animationTargetBend.store(std::clamp(bend, 0, 20));
+}
+
 void PositionController::AcceptAnimationStep(
     int bend, int method, std::int64_t now)
 {
@@ -135,6 +143,7 @@ void PositionController::CompleteAnimation(int targetBend)
 {
     state_.animating.store(false);
     state_.appliedBend.store(targetBend);
+    state_.animationCompleted.store(true);
 }
 
 void PositionController::CompleteRelaxationFallback(

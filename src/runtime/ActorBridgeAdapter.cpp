@@ -40,7 +40,7 @@ struct VersionProbe {
     }
 };
 VersionProbe arousalVersion{ 3 };
-VersionProbe positionVersion{ 3 };
+VersionProbe positionVersion{ 4 };
 VersionProbe ostimVersion{ 2 };
 
 class VersionCallback final : public RE::BSScript::IStackCallbackFunctor {
@@ -353,10 +353,14 @@ bool QueueActorPosition(Controllers::ActorWorkLease lease, RE::Actor* actor,
     std::string eventName, std::optional<int> nativeBend,
     std::int64_t allowedAfterMs, ActorPositionCompletion completion)
 {
+    // nativeBend is intentionally ignored: SOS AE 4.0.0 removed the native angle
+    // call, and SPS now owns the angle through SosPoseAngle. The parameter is
+    // kept so existing callers (basic and managed NPC paths) compile unchanged
+    // and so the legacy request shape stays visible in the call sites.
+    (void)nativeBend;
     if (!completion || !TargetReady(lease, actor, allowedAfterMs) || !PositionEvent(eventName) ||
-        (eventName.empty() && !nativeBend) ||
-        (nativeBend && (*nativeBend < 0 || *nativeBend > 20 || !SosAeNativeLoaded())) ||
-        (!eventName.empty() && !PositionBackendAvailable()) ||
+        eventName.empty() ||
+        !PositionBackendAvailable() ||
         !OrderedFsmpBridgeAvailable() ||
         !BridgeReady("SPS_PositionBridge", positionVersion, allowedAfterMs)) return false;
     const auto now = NowMs();
@@ -373,7 +377,7 @@ bool QueueActorPosition(Controllers::ActorWorkLease lease, RE::Actor* actor,
     };
     if (DispatchStaticWithCallback("SPS_PositionBridge", "ApplyActorPosition", allowedAfterMs, now,
             std::move(callback), RE::BSFixedString(token), RE::BSFixedString(eventName),
-            nativeBend.has_value(), nativeBend.value_or(0))) return true;
+            false)) return true;
     requests.Discard(token);
     CompletePhysicsOperation(token);
     return false;

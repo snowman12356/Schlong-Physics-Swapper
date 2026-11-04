@@ -4,6 +4,8 @@
 #include <SKSEMenuFramework.h>
 #include <fmt/format.h>
 #include <spdlog/sinks/basic_file_sink.h>
+#include <spdlog/sinks/null_sink.h>
+#include <spdlog/sinks/ostream_sink.h>
 #include <Windows.h>
 #include "PPAInterface.h"
 #include "PhysicsDecision.h"
@@ -23,9 +25,13 @@
 #include "runtime/Compatibility.h"
 #include "runtime/ActorBridgeAdapter.h"
 #include "runtime/BasicNpcRuntime.h"
+#include "runtime/ManagedNpcRuntime.h"
 #include "runtime/PapyrusGateway.h"
 #include "runtime/PhysicsOwnershipAdapter.h"
 #include "runtime/PositionBackendAdapter.h"
+#include "runtime/SosPoseAngle.h"
+#include "controllers/PoseTargets.h"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -37,8 +43,10 @@
 #include <fstream>
 #include <mutex>
 #include <optional>
+#include <shellapi.h>
 #include <random>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -49,7 +57,7 @@ namespace Mod {
 namespace fs = std::filesystem;
 
 constexpr auto kName = "Schlong Physics Swapper";
-constexpr auto kVersion = "2.1.0.3";
+constexpr auto kVersion = "2.3.0.0";
 constexpr auto kIni = "Data/SKSE/Plugins/SchlongPhysicsSwapper.ini";
 constexpr auto kLegacyIni = "Data/SKSE/Plugins/UBEPhysicsSwitch.ini";
 constexpr auto kReport = "Data/SKSE/Plugins/SchlongPhysicsSwapper_Diagnostics.txt";
@@ -70,7 +78,6 @@ using SPS::Runtime::SoftbodyLoaded;
 using SPS::Runtime::SosAeNativeLoaded;
 using SPS::Runtime::SosAeNativeModuleName;
 using SPS::Runtime::TngLoaded;
-
 Settings settings;
 bool settingsLoaded{ false };  // protected by settingsLock
 Diagnostics diagnostics;
@@ -122,7 +129,7 @@ void QuerySexLabRole();
 void QueryOStimRole();
 void RefreshDiagnostics();
 void RefreshPlayerBoneDiagnostics();
-void Save();
+void Save(bool clearLegacyMarker);
 bool PapyrusReadyForDispatch();
 const char* PapyrusStatusText();
 bool SexLabHasPriority(const Settings& copy);
@@ -604,8 +611,18 @@ bool Call(const char* script, const char* function, Args... values) {
 }
 
 bool CallSosAeBend(RE::Actor* actor, int bend) {
-    return SPS::Runtime::SetNativeBend(
-        actor, bend, papyrusDispatchAllowedAfterMs.load(), NowMs());
+    // SOS AE 4.0.0 removed SOSAE_SKSE.SetSchlongBend. The angle now comes from
+    // SosPoseAngle, which writes the base of the assembly directly and needs no
+    // SOS native, so this is a pose write rather than a Papyrus dispatch.
+    return SPS::Runtime::SosPose::Apply(actor, bend,
+        SPS::Runtime::SosPose::ConfiguredDegrees());
+}
+
+// True when something can actually produce a chosen soft angle. The SOS native
+// used to be the only source; the SPS pose angle replaces it and works with any
+// skeleton that has the base bone, with or without SOS AE installed.
+bool SoftAngleControlAvailable(int bendMethod) {
+    return bendMethod != SPS::Runtime::kBendMethodEvents || SosAeNativeLoaded();
 }
 
 bool ConfirmCurrentPhysicsOwner(std::string_view reason) {
@@ -634,20 +651,22 @@ void Load() {
         result.settings.basicNpcProviderSosDisabled);
     spdlog::set_level(settings.verboseLogging ? spdlog::level::debug : spdlog::level::info);
     if (result.shouldWriteCurrent) {
-        Save();
+        // Onboarding or migration writes the current file and consumes the
+        // one-shot import marker so the next launch reads the current file.
+        Save(result.dropLegacyMarker);
     }
     if (result.migratedLegacy) {
         Record("Existing UBE Physics Switch settings migrated to Schlong Physics Swapper");
     }
 }
 
-void Save() {
+void Save(bool clearLegacyMarker) {
     Settings copy;
     {
         std::scoped_lock lock(settingsLock);
         copy = settings;
     }
-    if (!SPS::Core::SaveSettings(kIni, copy)) {
+    if (!SPS::Core::SaveSettings(kIni, copy, clearLegacyMarker)) {
         logger::error("Failed to save SPS settings to {}", kIni);
     }
 }
@@ -832,7 +851,7 @@ int DesiredBend(const Settings& copy) {
     const float start = std::clamp(copy.erectionStartArousal, 0.0F, 99.0F);
     const float fullyErect = std::max(start + 1.0F, copy.threshold);
     const float progress = std::clamp((arousalController.Value() - start) / (fullyErect - start), 0.0F, 1.0F);
-    const int softBend = copy.flaccidAngleControl && SosAeNativeLoaded() ? copy.flaccidBend : 0;
+    const int softBend = copy.flaccidAngleControl && SoftAngleControlAvailable(copy.bendMethod) ? copy.flaccidBend : 0;
     return std::clamp(static_cast<int>(std::lround(
         softBend + (copy.erectBend - softBend) * progress)), 0, 20);
 }
@@ -890,6 +909,18 @@ bool ApplyBend(RE::Actor* actor, int bend, bool flaccid = false, bool animate = 
     if (dispatch.nativeAccepted) {
         playerContext.physics.sosConnected.store(true);
     }
+    // A pose write succeeds or fails immediately, so it needs no retry ledger.
+    // Only dispatched (event) angles are tracked; a failed pose falls through to
+    // the graph inside the adapter and is reported on that path instead.
+    if (dispatch.method == 0) {
+        playerContext.position.appliedBend.store(bend);
+        playerContext.position.lastMethod.store(0);
+        const auto clearedPoseError = ClearResolvedPositionError();
+        if (clearedPoseError) {
+            Record("SOS angle control recovered");
+        }
+        return dispatch.accepted;
+    }
     const auto now = NowMs();
     const auto result = positionController.CompleteDispatch(
         bend, dispatch.method, dispatch.accepted, automatic,
@@ -914,20 +945,38 @@ void CancelErectionAnimation() {
 void StartBendAnimation(int startBend, int targetBend, int durationMs, bool relaxing) {
     startBend = std::clamp(startBend, 0, 20);
     targetBend = std::clamp(targetBend, 0, 20);
-    durationMs = std::clamp(durationMs, 500, 15000);
+    // Matches the Rise/Fall time sliders and the INI clamp (0.5-30 s). The old
+    // 15 s cap silently ignored the upper half of both sliders.
+    durationMs = std::clamp(durationMs, 500, 30000);
     const auto generation = positionController.BeginAnimation(targetBend, relaxing, NowMs());
     Settings copy;
     { std::scoped_lock lock(settingsLock); copy = settings; }
-    const bool nativeBackend = SosAeNativeLoaded();
+    // Any backend whose behaviour graph binds SOSBend0-9 can drive the gradual
+    // ramp through events, and the graph is also what CBPC follows. Only the
+    // opt-in pose mode writes a bone directly; it is excluded here because the
+    // animation graph and CBPC both rewrite GenBase/Gen01 every frame, so a
+    // direct write from the ramp thread is overwritten before it is drawn.
     const bool tngBackend = TngLoaded();
-    const bool useGraphEvents = (tngBackend || LegacySosLoaded()) &&
-        (!nativeBackend || copy.bendMethod == 1);
+    const bool poseBackend = copy.bendMethod == SPS::Runtime::kBendMethodPose;
+    const bool useGraphEvents = !poseBackend &&
+        (tngBackend || LegacySosLoaded() || SosAeNativeLoaded());
+    const bool nativeBackend = poseBackend || (!useGraphEvents && SosAeNativeLoaded());
     if (!nativeBackend && !useGraphEvents) {
         positionController.FailAnimationStart();
         return;
     }
 
-    erectionAnimationThread = std::jthread([generation, startBend, targetBend, durationMs, useGraphEvents, tngBackend, relaxing](std::stop_token token) {
+    // A descent has to walk 20 -> 1 while CBPC still owns the bones, and only
+    // hand over to SMP once the lowest step has been sent. Ownership is
+    // therefore pinned for the duration and released by the completion path
+    // below. Releasing first would let FSMP settle the assembly into its own
+    // resting pose before the angle had a chance to lower.
+    if (relaxing) {
+        playerContext.position.relaxing.store(true);
+    }
+
+    const bool softAngleSupported = SoftAngleControlAvailable(copy.bendMethod);
+    erectionAnimationThread = std::jthread([generation, startBend, targetBend, durationMs, useGraphEvents, tngBackend, relaxing, softAngleSupported](std::stop_token token) {
         while (!token.stop_requested() && playerContext.position.animating.load() &&
             generation == playerContext.position.animationGeneration.load()) {
             if (SPS::Runtime::ExecutionPaused()) {
@@ -936,22 +985,49 @@ void StartBendAnimation(int startBend, int targetBend, int durationMs, bool rela
             }
             const auto elapsed = std::max<std::int64_t>(0, NowMs() - playerContext.position.animationStartMs.load());
             const float t = std::clamp(static_cast<float>(elapsed) / static_cast<float>(durationMs), 0.0F, 1.0F);
+            // Graph backends walk the visible stages in even steps, so the
+            // configured time is the exact travel time from the first stage to
+            // the last. The eased 0-20 curve spent its first and last sixth on
+            // the end stages and finished the visible climb at about 84%.
             const float eased = t * t * (3.0F - 2.0F * t);
-            const int bend = std::clamp(static_cast<int>(std::lround(
-                startBend + (targetBend - startBend) * eased)), 0, 20);
-            const int eventBend = AnimationEventBend(bend, tngBackend);
-            const int queueKey = useGraphEvents ? eventBend : bend;
+            const int bend = useGraphEvents
+                ? SPS::Core::PoseTargets::StepRampBend(startBend, targetBend, t, tngBackend)
+                : std::clamp(static_cast<int>(std::lround(
+                    startBend + (targetBend - startBend) * eased)), 0, 20);
+            // The queue key is the event that will be sent, shifted off the -1
+            // sentinel. SOSBend-9 is index -9, so its key is 1. Bend 0 and bend
+            // 1 share that event and must not be dispatched twice.
+            const int queueKey = useGraphEvents
+                ? AnimationEventBend(bend, tngBackend) + 10
+                : bend;
             const int previousQueueKey = playerContext.position.animationLastQueuedBend.exchange(queueKey);
-            if (queueKey != previousQueueKey) {
+            // t >= 1.0F forces the final step out even when it maps to a stage
+            // that was already sent. That is what guarantees the target value
+            // lands and the handoff sees a completed ramp; dedupe alone can
+            // leave the last decimal of the curve unsent.
+            if (queueKey != previousQueueKey || t >= 1.0F) {
                 if (auto* tasks = SKSE::GetTaskInterface()) {
-                    tasks->AddTask([generation, bend, eventBend, targetBend, useGraphEvents, tngBackend, relaxing] {
+                    tasks->AddTask([generation, bend, targetBend, useGraphEvents, tngBackend, relaxing, softAngleSupported] {
                         if (!playerContext.position.animating.load() || generation != playerContext.position.animationGeneration.load()) return;
                         if (SPS::Runtime::ExecutionPaused() || ownershipController.Read().pending) {
                             playerContext.position.animationLastQueuedBend.store(-1);
                             return;
                         }
                         if (!playerContext.physics.known.load() || !playerContext.physics.usingCBPC.load()) {
-                            CancelErectionAnimation();
+                            // A descent releases CBPC only once SOSBend-9 has been
+                            // reached. A single tick that does not read as CBPC
+                            // must not cancel a rise; that restart is the snap
+                            // down and the second climb.
+                            const bool atRelease = relaxing && SPS::Core::PoseTargets::IsCbpcReleaseIndex(
+                                AnimationEventBend(bend, tngBackend));
+                            if (atRelease) {
+                                positionController.CompleteAnimation(targetBend);
+                                Evaluate(true);
+                            } else if (!relaxing) {
+                                playerContext.position.animationLastQueuedBend.store(-1);
+                            } else {
+                                CancelErectionAnimation();
+                            }
                             return;
                         }
                         auto* player = RE::PlayerCharacter::GetSingleton();
@@ -961,18 +1037,24 @@ void StartBendAnimation(int startBend, int targetBend, int durationMs, bool rela
                         }
                         const bool ok = useGraphEvents
                             ? SendPositionEvent(static_cast<RE::Actor*>(player),
-                                RE::BSFixedString(fmt::format("SOSBend{}", eventBend)), tngBackend)
+                                RE::BSFixedString(SPS::Runtime::SosBendEventName(bend, tngBackend)),
+                                tngBackend)
                             : CallSosAeBend(static_cast<RE::Actor*>(player), bend);
                         if (!ok) {
-                            // Some SOS AE builds stop accepting native bend values just
-                            // above their visible flaccid limit. During relaxation that
-                            // means the animation has already gone as low as this backend
-                            // can display. Finish the owner handoff instead of cancelling
-                            // and restarting the same 5 -> 0 animation every poll.
+                            // Some SOS AE builds stop accepting native bend values
+                            // just above their visible flaccid limit. During
+                            // relaxation that means the animation has already gone
+                            // as low as this backend can display. Finish the owner
+                            // handoff instead of cancelling and restarting the same
+                            // 5 -> 0 animation every poll.
                             if (relaxing) {
-                                const bool flaccidEventAccepted =
+                                // Release on the lowest pose. SOSFlaccid is a
+                                // different clip and would play after the handoff
+                                // point.
+                                const bool bottomAccepted =
                                     SendPositionEvent(static_cast<RE::Actor*>(player),
-                                        RE::BSFixedString("SOSFlaccid"), tngBackend);
+                                        RE::BSFixedString(SPS::Core::PoseTargets::EventName(0, tngBackend)),
+                                        tngBackend);
                                 const auto completedAt = NowMs();
                                 // Keep the transition marked as relaxing until
                                 // SMP actually accepts ownership. Otherwise the
@@ -981,17 +1063,23 @@ void StartBendAnimation(int startBend, int targetBend, int durationMs, bool rela
                                 // erect angle immediately before the soft
                                 // handoff.
                                 positionController.CompleteRelaxationFallback(
-                                    targetBend, flaccidEventAccepted, completedAt);
-                                if (flaccidEventAccepted) {
+                                    targetBend, bottomAccepted, completedAt);
+                                if (bottomAccepted) {
                                     playerContext.recovery.ignoreNodeEventsUntilMs.store(completedAt + 2000);
                                 }
-                                Record(flaccidEventAccepted
-                                    ? "SOS accepted its flaccid event; normal soft physics resumed"
-                                    : "SOS reached its lowest available angle; normal soft physics resumed");
+                                Record(bottomAccepted
+                                    ? "Reached SOSBend-9; SMP handoff requested"
+                                    : "SOS reached its lowest available angle; SMP handoff requested");
                                 SetOwner(false, true);
                                 return;
                             }
                             positionController.FailAnimationStep(NowMs() + 1500);
+                            // Park the ramp at the height it actually reached so the
+                            // retry continues from there. Leaving the original target
+                            // in place made the resumed ramp start from the observed
+                            // value towards the full height and dip again on the next
+                            // failure: a sawtooth.
+                            positionController.SetAnimationTargetBend(bend);
                             Record("Gradual erection is waiting for SOS; the normal angle was queued instead");
                             return;
                         }
@@ -1002,26 +1090,47 @@ void StartBendAnimation(int startBend, int targetBend, int durationMs, bool rela
                         ClearResolvedPositionError();
                         playerContext.recovery.ignoreNodeEventsUntilMs.store(acceptedAt + 2000);
                         // Animation-event backends expose discrete visible SOS
-                        // positions (signed -9..9 in TNG, 0..9 in legacy SOS).
-                        // Finish the handoff as soon as the visible stage reaches
-                        // the target instead of holding CBPC for the remainder
-                        // of the internal 0-20 easing curve.
-                        const int targetEventBend = AnimationEventBend(targetBend, tngBackend);
-                        const bool reachedVisibleTarget = useGraphEvents ?
-                            eventBend == targetEventBend : bend == targetBend;
-                        if (reachedVisibleTarget) {
-                            positionController.CompleteAnimation(targetBend);
-                            // SOS AE can rebuild or finish its graph transition
-                            // just after the gradual native updates complete.
-                            // Replay the final value once through compatibility
-                            // mode so the visible angle cannot remain at zero.
-                            if (!relaxing && SosAeNativeLoaded())
-                                playerContext.position.confirmationDueMs.store(NowMs() + 500);
-                            ++playerContext.position.repairs;
-                            Record(relaxing
-                                ? "Erection lowered gradually; normal soft physics resumed"
-                                : fmt::format("Gradual erection completed: {}/20", targetBend));
-                            if (relaxing) Evaluate(true);
+                        // positions. Finish the handoff as soon as the event
+                        // actually sent is the one the target resolves to,
+                        // instead of holding CBPC for the remainder of the
+                        // internal 0-20 easing curve - no reachable target may
+                        // be left unable to complete, or the handoff back to SMP
+                        // is never issued and the assembly stays floppy.
+                        // SOSBend-9 is the bottom. A fall does not finish on an earlier
+                        // event, and it does not continue into the SOSFlaccid clip.
+                        const bool atCbpcRelease = useGraphEvents
+                            ? SPS::Core::PoseTargets::IsCbpcReleaseIndex(
+                                AnimationEventBend(bend, tngBackend))
+                            : bend <= 1;
+                        const bool reachedVisibleTarget = relaxing
+                            ? atCbpcRelease
+                            : (useGraphEvents
+                                ? std::string_view(SPS::Runtime::SosBendEventName(bend, tngBackend)) ==
+                                      std::string_view(SPS::Runtime::SosBendEventName(targetBend, tngBackend))
+                                : bend == targetBend);
+                        if (!reachedVisibleTarget) return;
+                        // A retry that lands on an already-dispatched stage still
+                        // has to report the bend it reached, but the completion
+                        // path must run only once per ramp: repeating it rewrites
+                        // appliedBend at this same height every tick and reissues
+                        // the SMP handoff, which is the visible dip.
+                        if (playerContext.position.animationCompleted.load()) return;
+                        positionController.CompleteAnimation(targetBend);
+                        // SOS AE can rebuild or finish its graph transition
+                        // just after the gradual native updates complete.
+                        // Replay the final value once through compatibility
+                        // mode so the visible angle cannot remain at zero.
+                        if (!relaxing && softAngleSupported)
+                            playerContext.position.confirmationDueMs.store(NowMs() + 500);
+                        ++playerContext.position.repairs;
+                        Record(relaxing
+                            ? "Erection lowered to SOSBend-9; SMP handoff requested"
+                            : fmt::format("Gradual erection completed: {}/20", targetBend));
+                        // SOSBend-9 was just sent while CBPC still owned the bones.
+                        // Hand them to SMP now. Another descent from here would
+                        // play a further clip under CBPC after the release point.
+                        if (relaxing) {
+                            SetOwner(false, true);
                         }
                     });
                 }
@@ -1037,12 +1146,21 @@ void StartBendAnimation(int startBend, int targetBend, int durationMs, bool rela
 }
 
 void StartGradualErection(int targetBend, int durationMs) {
-    StartBendAnimation(0, targetBend, durationMs, false);
+    // appliedBend -1 and 0 both start on SOSBend-9, the lowest pose. They must
+    // not start on SOSFlaccid: that clip snaps through the middle, falls, then
+    // the rest of the rise climbs again.
+    const int current = playerContext.position.appliedBend.load();
+    const int from = std::clamp(current < 0 ? 0 : current, 0, targetBend);
+    StartBendAnimation(from, targetBend, durationMs, false);
 }
 
 void StartGradualRelaxation(const Settings& copy) {
     const int startBend = playerContext.position.appliedBend.load() >= 0 ? playerContext.position.appliedBend.load() : copy.erectBend;
-    const int targetBend = copy.flaccidAngleControl && SosAeNativeLoaded() ? copy.flaccidBend : 0;
+    int targetBend = copy.flaccidAngleControl && SoftAngleControlAvailable(copy.bendMethod) ? copy.flaccidBend : 0;
+    // SOSBend-9 is the lowest angle. CBPC is released there, so a higher
+    // configured soft bend cannot end the fall early.
+    if (SPS::Core::PoseTargets::EventIndex(targetBend, TngLoaded()) > -9)
+        targetBend = 0;
     if (playerContext.position.animating.load() && playerContext.position.relaxing.load() &&
         playerContext.position.animationTargetBend.load() == targetBend) return;
     // From this point onward the requested state is soft. Any delayed erect
@@ -1096,9 +1214,9 @@ void ApplyRequestedSoftBend(bool force = false, bool animate = false) {
     { std::scoped_lock lock(settingsLock); copy = settings; }
     if (!copy.positionControl || PPAOwnsPosition()) return;
 
-    // Only SOS AE exposes a safe native bend call that can be combined with
-    // SOSFlaccid. Legacy SOS and TNG still receive their normal flaccid event.
-    const bool customSoftAngle = copy.flaccidAngleControl && SosAeNativeLoaded();
+    // The soft pose is a bend stage: 0 sends SOSBend-9 (the lowest position),
+    // a supported FlaccidBend sends its own stage. SOSFlaccid is never sent.
+    const bool customSoftAngle = copy.flaccidAngleControl && SoftAngleControlAvailable(copy.bendMethod);
     const int desired = customSoftAngle ? copy.flaccidBend : 0;
     playerContext.position.requestedBend.store(desired);
     if (!force && playerContext.position.appliedBend.load() == desired) return;
@@ -1184,7 +1302,7 @@ void ScheduleLoadSMPReset() {
 void ScheduleSoftAngleRefresh(int delayMs) {
     Settings copy;
     { std::scoped_lock lock(settingsLock); copy = settings; }
-    if (!copy.enabled || !copy.positionControl || !SosAeNativeLoaded() ||
+    if (!copy.enabled || !copy.positionControl || !SoftAngleControlAvailable(copy.bendMethod) ||
         !playerContext.physics.known.load() || playerContext.physics.usingCBPC.load() || PPAOwnsPosition()) {
         playerContext.recovery.softAngleRefreshDueMs.store(0);
         return;
@@ -1318,6 +1436,27 @@ void RunSoftHandoffSMPReset() {
     Record("Soft SMP pose rebuild and ownership restoration queued");
 }
 
+void ReportSmpHandoffProof(const SPS::Controllers::OwnershipCompletion& completion)
+{
+    if (completion.targetCBPC || !completion.success) return;
+    using SPS::Controllers::ClassifySmpHandoff;
+    using SPS::Controllers::SmpHandoffProof;
+    const auto proof = ClassifySmpHandoff(completion.dynamicBonesAfter, completion.boneCount);
+    if (proof == SmpHandoffProof::certain) {
+        Record(fmt::format(
+            "SMP proof: {}/{} managed bones were dynamic after the handoff",
+            completion.dynamicBonesAfter, completion.boneCount));
+        return;
+    }
+    if (proof == SmpHandoffProof::notProven) {
+        Record(fmt::format(
+            "SMP not proven: {}/{} managed bones were dynamic after the handoff",
+            completion.dynamicBonesAfter, completion.boneCount), true);
+        return;
+    }
+    Record("SMP not proven: the handoff returned no bone sample", true);
+}
+
 void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& completion) {
     if (!completion.matched) return;
 
@@ -1396,6 +1535,7 @@ void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& comp
     }
 
     ClearResolvedOwnerError();
+    ReportSmpHandoffProof(completion);
     using Purpose = SPS::Controllers::OwnershipPurpose;
     if (completion.purpose == Purpose::resetLoad || completion.purpose == Purpose::resetSoft ||
         completion.purpose == Purpose::resetAngle || completion.purpose == Purpose::resetMesh ||
@@ -1473,22 +1613,36 @@ void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& comp
         playerContext.recovery.softConfirmationDueMs.store(cbpc ? 0 : now + 750);
     }
     playerContext.recovery.softConfirmationUntilMs.store(cbpc ? 0 : now + 15000);
-    playerContext.recovery.cbpcConfirmationDueMs.store(cbpc ? now + 750 : 0);
-    playerContext.recovery.cbpcConfirmationUntilMs.store(cbpc ? now + 15000 : 0);
+    // The CBPC confirmation is its own ownership transaction. Queued at +750 ms
+    // it was still pending when the 400 ms settle came due on the next tick,
+    // so the gradual rise waited about 2 s for it with CBPC holding the old
+    // pose. During a timed rise, confirm after the ramp instead.
+    std::int64_t cbpcConfirmDelayMs = 750;
+    if (cbpc && copy.positionControl && copy.gradualErection &&
+        (!copy.arousalBasedErection || RandomErectionActive())) {
+        cbpcConfirmDelayMs = SPS::Core::PoseTargets::SwitchSettleMs(copy.settleDelayMs) +
+            std::clamp(copy.erectionDurationMs, 500, 30000) + 750;
+    }
+    playerContext.recovery.cbpcConfirmationDueMs.store(cbpc ? now + cbpcConfirmDelayMs : 0);
+    playerContext.recovery.cbpcConfirmationUntilMs.store(cbpc ? now + cbpcConfirmDelayMs + 15000 : 0);
     if (copy.positionControl) {
         if (cbpc) {
+            // CBPC must own Gen01-Gen06 before the angle is written, otherwise
+            // the bend is applied to nodes nothing is simulating yet and the
+            // assembly falls back to its flaccid pose. The ordered handoff stops
+            // SMP and calls StartPhysics per bone, but CBPC binds those bones on
+            // its own update, which is after the Papyrus stack has returned.
+            // Committing the owner is therefore not the same as CBPC being
+            // attached, and the first angle write waits for that gap to close.
+            const auto settleMs = SPS::Core::PoseTargets::SwitchSettleMs(copy.settleDelayMs);
             playerContext.position.requestedBend.store(DesiredBend(copy));
-            playerContext.position.settleDueMs.store(now + copy.settleDelayMs);
             const bool timedGradual = copy.gradualErection &&
                 (!copy.arousalBasedErection || RandomErectionActive());
+            // Always deferred through settleDueMs. Starting the ramp or the
+            // first angle write here would bypass the attach wait above.
+            playerContext.position.settleDueMs.store(now + settleMs);
             playerContext.position.confirmationDueMs.store(
-                timedGradual ? 0 : now + copy.settleDelayMs + 1500);
-            if (copy.settleDelayMs == 0) {
-                if (timedGradual && !AnySceneHasPriority(copy) && !PPAOwnsPosition())
-                    StartGradualErection(DesiredBend(copy), copy.erectionDurationMs);
-                else
-                    ApplyRequestedBend(true, true, true);
-            }
+                timedGradual ? 0 : now + settleMs + 1500);
         } else {
             playerContext.position.settleDueMs.store(0);
             playerContext.position.confirmationDueMs.store(0);
@@ -1545,10 +1699,17 @@ bool QueueOwnershipHandoff(
     const int preparation = purpose == Purpose::maintainCBPC ? 3 :
         (purpose == Purpose::resetSoft ? 4 :
             (reset ? 1 : (purpose == Purpose::reconnectMesh ? 2 : 0)));
+    // softBend >= 0 makes SPS_FSMPBridge send SOSFlaccid before its reset.
+    // That clip is not the lowest pose, so it is no longer requested on the
+    // graph path: the soft stage (SOSBend-9 or FlaccidBend) is sent natively by
+    // ApplyRequestedSoftBend when the reset completes. Only the experimental
+    // pose-angle method still uses the bridge's soft-angle step.
     int softBend = -1;
-    if (purpose == Purpose::resetAngle && SosAeNativeLoaded()) {
+    if (purpose == Purpose::resetAngle) {
         std::scoped_lock lock(settingsLock);
-        softBend = settings.flaccidAngleControl ? settings.flaccidBend : 0;
+        if (settings.bendMethod == SPS::Runtime::kBendMethodPose &&
+            SoftAngleControlAvailable(settings.bendMethod))
+            softBend = settings.flaccidAngleControl ? settings.flaccidBend : 0;
     }
     const auto dispatched = SPS::Runtime::SetPlayerPhysicsOwner(
         static_cast<RE::Actor*>(player), cbpc, preparation, softBend,
@@ -1560,6 +1721,7 @@ bool QueueOwnershipHandoff(
                     evidence.success = readback.acknowledged;
                     evidence.dynamicBonesBefore = readback.dynamicBonesBefore;
                     evidence.boneCount = readback.boneCount;
+                    evidence.dynamicBonesAfter = readback.dynamicBonesAfter;
                     HandleOwnershipCompletion(
                         ownershipController.Complete(generation, evidence, NowMs()));
                 });
@@ -1571,6 +1733,31 @@ bool QueueOwnershipHandoff(
     }
 
     return true;
+}
+
+// The soft path used to leave the graph on SOSFlaccid, and a configured
+// FlaccidBend or another mod can still leave it on a higher stage. Whatever takes the bones at the
+// start of an SMP -> CBPC switch (CBPC itself, or the kinematic gap of a
+// superseded handoff) follows that pose until the ramp's first event, which is
+// the snap up then snap down seen at the start of a rise. Put the graph on the
+// ramp's own first stage, SOSBend-9, before the switch is dispatched. The ramp
+// then starts from the pose the bones already have.
+void PrimeLowestStageForRise(const Settings& copy) {
+    const bool timedGradual = copy.gradualErection &&
+        (!copy.arousalBasedErection || RandomErectionActive());
+    if (!copy.positionControl || !timedGradual || copy.bendMethod == SPS::Runtime::kBendMethodPose ||
+        PPAOwnsPosition() || AnySceneHasPriority(copy)) return;
+    const bool tngBackend = TngLoaded();
+    if (!tngBackend && !LegacySosLoaded() && !SosAeNativeLoaded()) return;
+    if (auto* tasks = SKSE::GetTaskInterface()) {
+        tasks->AddTask([tngBackend] {
+            auto* player = RE::PlayerCharacter::GetSingleton();
+            if (!player || !player->Is3DLoaded()) return;
+            const bool sent = SendPositionEvent(static_cast<RE::Actor*>(player),
+                RE::BSFixedString(SPS::Core::PoseTargets::EventName(0, tngBackend)), tngBackend);
+            if (sent) Record("Rise primed on SOSBend-9 before the CBPC handoff");
+        });
+    }
 }
 
 bool SetOwner(bool cbpc, bool force) {
@@ -1614,6 +1801,9 @@ bool SetOwner(bool cbpc, bool force) {
 
     const bool softTransitionPending = !cbpc && playerContext.position.relaxing.load();
     CancelErectionAnimation();
+    const bool enteringCBPC = cbpc &&
+        !(playerContext.physics.known.load() && playerContext.physics.usingCBPC.load());
+    if (enteringCBPC) PrimeLowestStageForRise(copy);
     return QueueOwnershipHandoff(
         cbpc, SPS::Controllers::OwnershipPurpose::switchOwner,
         softTransitionPending);
@@ -1762,7 +1952,10 @@ void Evaluate(bool force) {
     if (normalControl && !cbpc && playerContext.physics.known.load() && playerContext.physics.usingCBPC.load() &&
         !playerContext.position.relaxing.load() && copy.gradualErection && copy.positionControl &&
         (playerContext.position.appliedBend.load() < 0 ||
-            playerContext.position.appliedBend.load() > (copy.flaccidAngleControl && SosAeNativeLoaded() ? copy.flaccidBend : 0)) &&
+            SPS::Core::PoseTargets::EventIndex(playerContext.position.appliedBend.load(), TngLoaded()) >
+                SPS::Core::PoseTargets::EventIndex(
+                    copy.flaccidAngleControl && SoftAngleControlAvailable(copy.bendMethod) ? copy.flaccidBend : 0,
+                    TngLoaded())) &&
         !PPAOwnsPosition()) {
         StartGradualRelaxation(copy);
         return;
@@ -1989,7 +2182,16 @@ void Tick() {
     // CBPC starts through Papyrus and may finish after the first bend request.
     // Confirm the final value once, after it has settled, without replaying an
     // animation or creating the old continuous repair loop.
-    if (!ownershipController.Read().pending && positionController.ClaimConfirmation(
+    //
+    // Never do this while a ramp is running, and never while one has failed and
+    // is waiting to retry. ApplyRequestedBend overwrites animationTargetBend with
+    // the value it is about to apply, so confirming mid-ramp both truncated the
+    // rise and left the ramp aiming at whatever height it had already reached:
+    // that is the visible rise, snap back, then slow climb again.
+    const bool rampOwnsAngle = playerContext.position.animating.load() ||
+        playerContext.position.retryDueMs.load() != 0;
+    if (!rampOwnsAngle &&
+        !ownershipController.Read().pending && positionController.ClaimConfirmation(
             now, playerContext.physics.usingCBPC.load(), targetStillWantsCBPC)) {
         ApplyRequestedBend(true, true, true);
     }
@@ -2001,7 +2203,8 @@ void Tick() {
     // angle while the current control source still actually wants CBPC.
     if (!settledNow && !ownershipController.Read().pending &&
         playerContext.physics.usingCBPC.load() && targetStillWantsCBPC &&
-        copy.positionControl && !playerContext.position.relaxing.load()) {
+        copy.positionControl && !playerContext.position.relaxing.load() &&
+        !playerContext.position.animating.load()) {
         const int desired = DesiredBend(copy);
         const auto retryDue = playerContext.position.retryDueMs.load();
         if (playerContext.position.appliedBend.load() != desired && playerContext.position.settleDueMs.load() == 0 &&
@@ -2079,8 +2282,13 @@ void Tick() {
     // FSMP can restore XML dynamics without an event SPS receives. Keep its
     // six managed bones off while the current policy still requests CBPC.
     // Do this last so real handoffs, resets and equipment repair take priority.
+    // Not during a ramp: a pending maintenance transaction makes the ramp skip
+    // and resend its current stage, which breaks the even step timing. The
+    // probe resumes on the first tick after the ramp ends.
     if (ownershipController.CanMaintainCBPC(
-            targetStillWantsCBPC, playerContext.position.relaxing.load(), now)) {
+            targetStillWantsCBPC,
+            playerContext.position.relaxing.load() || playerContext.position.animating.load(),
+            now)) {
         QueueOwnershipHandoff(true, SPS::Controllers::OwnershipPurpose::maintainCBPC);
     }
 }
@@ -2095,7 +2303,9 @@ void StartPolling() {
             {
                 std::scoped_lock lock(settingsLock);
                 pollMs = settings.pollMs;
-                basicEnabled = settings.enabled && settings.basicNpcEnabled && settings.basicNpcProviderSosDisabled;
+                basicEnabled = settings.enabled &&
+                    ((settings.basicNpcEnabled && settings.basicNpcProviderSosDisabled) ||
+                        settings.managedNpcEnabled);
             }
             const int wait = basicEnabled ? std::min(pollMs, 250) : pollMs;
             std::this_thread::sleep_for(std::chrono::milliseconds(wait));
@@ -2116,6 +2326,8 @@ void StartPolling() {
                             position.relaxing || pendingQuickAction.load() >= 0 || activeManualPhysicsTest.load() >= 0;
                         SPS::Runtime::TickBasicNpcs(current.enabled && current.basicNpcEnabled,
                             current.basicNpcProviderSosDisabled, papyrusDispatchAllowedAfterMs.load(), playerBusy);
+                        SPS::Runtime::TickManagedNpcs(current.enabled && current.managedNpcEnabled,
+                            current, papyrusDispatchAllowedAfterMs.load(), playerBusy);
                     });
                 }
             }
@@ -2156,6 +2368,26 @@ void StatusLine(const char* label, const char* status, int level) {
     ImGuiMCP::TextColored(color, "%s", status);
 }
 
+// Settings live in SKSE\Plugins\SchlongPhysicsSwapper.ini. Most of them are not
+// exposed here on purpose: the menu only carries the choices people actually
+// change, and the rest have sane defaults that can be edited in the file.
+void ReloadSettingsFromDisk() {
+    const auto result = SPS::Core::LoadSettings(kIni, kLegacyIni);
+    {
+        std::scoped_lock lock(settingsLock);
+        settings = result.settings;
+    }
+    settingsLoaded = true;
+    SPS::Runtime::ConfigureBasicNpcCommands(result.settings.enabled && result.settings.basicNpcEnabled &&
+        result.settings.basicNpcProviderSosDisabled);
+    Record("Settings reloaded from SchlongPhysicsSwapper.ini");
+}
+
+void OpenSettingsFile() {
+    const auto path = std::filesystem::absolute(kIni);
+    ShellExecuteW(nullptr, L"open", L"notepad.exe", path.wstring().c_str(), nullptr, SW_SHOWNORMAL);
+}
+
 void PageHeading(const char* title, const char* description) {
     ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "%s", title);
     if (description && description[0] != '\0')
@@ -2164,7 +2396,25 @@ void PageHeading(const char* title, const char* description) {
 }
 
 void SectionHeading(const char* title) {
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "%s", title);
+    // SeparatorText gives each group a titled rule, which reads as structure
+    // rather than another line of coloured text competing with the controls.
+    ImGuiMCP::Spacing();
+    ImGuiMCP::SeparatorText(title);
+}
+
+// One-line explanation under a control. Kept short on purpose: a wall of text
+// under every slider is what made the old pages hard to scan.
+void Hint(const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    ImGuiMCP::TextDisabledV(fmt, args);
+    va_end(args);
+}
+
+// A setting that only matters once the feature above it is on. Disabling
+// rather than hiding keeps the layout stable so nothing appears to jump.
+void BeginDependent(bool enabled) {
+    ImGuiMCP::BeginDisabled(!enabled);
 }
 
 void UseRecommendedSettings(Settings& value) {
@@ -2184,6 +2434,7 @@ void UseRecommendedSettings(Settings& value) {
     value.flaccidAngleControl = false;
     value.flaccidBend = 0;
     value.bendMethod = 2;
+    value.poseAngleDegrees = 45.0F;
     value.animatePosition = true;
     value.gradualErection = true;
     value.arousalBasedErection = false;
@@ -2209,11 +2460,14 @@ void SaveSettingsAndApply(const Settings& copy, const Settings& previous) {
     const bool basicChanged = copy.enabled != previous.enabled ||
         copy.basicNpcEnabled != previous.basicNpcEnabled ||
         copy.basicNpcProviderSosDisabled != previous.basicNpcProviderSosDisabled;
+    const bool managedChanged = copy.enabled != previous.enabled ||
+        copy.managedNpcEnabled != previous.managedNpcEnabled;
     const bool softPositionChanged = copy.flaccidAngleControl != previous.flaccidAngleControl ||
         copy.flaccidBend != previous.flaccidBend;
     const bool positionChanged = copy.erectBend != previous.erectBend || softPositionChanged ||
         copy.sexLabBend != previous.sexLabBend || copy.useSexLabBend != previous.useSexLabBend ||
         copy.positionControl != previous.positionControl || copy.bendMethod != previous.bendMethod ||
+        copy.poseAngleDegrees != previous.poseAngleDegrees ||
         copy.animatePosition != previous.animatePosition || copy.gradualErection != previous.gradualErection ||
         copy.arousalBasedErection != previous.arousalBasedErection ||
         copy.erectionStartArousal != previous.erectionStartArousal ||
@@ -2229,8 +2483,12 @@ void SaveSettingsAndApply(const Settings& copy, const Settings& previous) {
         copy.morningErections != previous.morningErections ||
         copy.morningErectionDurationSeconds != previous.morningErectionDurationSeconds;
     { std::scoped_lock lock(settingsLock); settings = copy; }
+    // The pose natives receive -1 from Papyrus to mean "use the INI value", so
+    // the module needs the current setting rather than a compiled constant.
+    SPS::Runtime::SosPose::SetConfiguredDegrees(copy.poseAngleDegrees);
     if (basicChanged) SPS::Runtime::ConfigureBasicNpcCommands(copy.enabled && copy.basicNpcEnabled &&
         copy.basicNpcProviderSosDisabled);
+    if (managedChanged) SPS::Runtime::ConfigureManagedNpcCommands(copy.enabled && copy.managedNpcEnabled);
     if (!copy.equipmentChangeRecovery) {
         playerContext.recovery.nodeRefreshDueMs.store(0);
         playerContext.recovery.nodeRefreshFollowupDueMs.store(0);
@@ -2246,7 +2504,7 @@ void SaveSettingsAndApply(const Settings& copy, const Settings& previous) {
         pendingQuickActionUntilMs.store(0);
     }
     spdlog::set_level(copy.verboseLogging ? spdlog::level::debug : spdlog::level::info);
-    Save();
+    Save(false);
     if (positionChanged) {
         CancelErectionAnimation();
         ResetPositionRecovery();
@@ -2265,9 +2523,10 @@ void SaveSettingsAndApply(const Settings& copy, const Settings& previous) {
         playerContext.spontaneous.morningActive.store(false);
     }
     if (auto* tasks = SKSE::GetTaskInterface()) {
-        tasks->AddTask([positionChanged, softPositionChanged, basicChanged,
+        tasks->AddTask([positionChanged, softPositionChanged, basicChanged, managedChanged,
             enabled = copy.enabled, positionEnabled = copy.positionControl] {
             if (basicChanged) SPS::Runtime::ResetBasicNpcs();
+            if (managedChanged) SPS::Runtime::ResetManagedNpcs();
             if (positionChanged && positionEnabled) {
                 if (playerContext.physics.known.load() && playerContext.physics.usingCBPC.load()) ApplyRequestedBend(true, true, false);
                 else if (playerContext.physics.known.load() && softPositionChanged) ScheduleSoftAngleRefresh();
@@ -2327,71 +2586,63 @@ void __stdcall RenderMain() {
 
     if (copy.mode == 0) {
         if (ImGuiMCP::SliderFloat("Become erect at arousal", &copy.threshold, 0, 100, "%.0f")) {
+            // Only keep the hidden rising start consistent when the feature is
+            // actually in use; otherwise a threshold change would silently
+            // rewrite a value the user cannot see.
             if (copy.arousalBasedErection && copy.threshold <= copy.erectionStartArousal)
                 copy.erectionStartArousal = std::max(0.0F, copy.threshold - 1.0F);
             changed = true;
         }
-        if (copy.arousalBasedErection)
-            ImGuiMCP::TextWrapped("The angle begins rising at %.0f arousal and reaches the selected erect angle at %.0f.",
+        if (copy.arousalBasedErection) {
+            if (ImGuiMCP::SliderFloat("Rising starts at arousal", &copy.erectionStartArousal, 0.0F, 99.0F, "%.0f")) {
+                if (copy.erectionStartArousal >= copy.threshold)
+                    copy.threshold = std::min(100.0F, copy.erectionStartArousal + 1.0F);
+                changed = true;
+            }
+            Hint("The angle rises between %.0f and %.0f arousal, so it follows the value instead of jumping.",
                 copy.erectionStartArousal, copy.threshold);
-        else
-            ImGuiMCP::TextWrapped("SPS becomes erect at %.0f arousal and returns to soft below %.0f.",
+        } else {
+            Hint("Erect at %.0f arousal, soft again below %.0f.",
                 copy.threshold, std::max(0.0F, copy.threshold - copy.hysteresis));
+        }
+        changed |= ImGuiMCP::SliderFloat("Soft return gap", &copy.hysteresis, 0, 25, "%.0f arousal");
+        Hint("Arousal must fall below %.0f before SPS returns to soft. Widen this if the angle flickers.",
+            std::max(0.0F, copy.threshold - copy.hysteresis));
     } else if (copy.mode == 1) {
-        ImGuiMCP::TextWrapped("SPS will keep the player soft with SMP. An arousal mod is not required.");
+        Hint("Keeps the player soft with SMP. An arousal mod is not required.");
     } else {
-        ImGuiMCP::TextWrapped("SPS will keep the player erect with CBPC. An arousal mod is not required.");
+        Hint("Keeps the player erect with CBPC. An arousal mod is not required.");
     }
-    ImGuiMCP::TextWrapped("The soft and erect positions below define the two states SPS switches between.");
 
     ImGuiMCP::Separator();
-    SectionHeading("POSITION");
-    if (!copy.positionControl)
-        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F),
-            "Angle control is disabled in Advanced settings. Physics switching still works.");
-
-    ImGuiMCP::Text("Soft");
-    const bool softAngleAvailable = SosAeNativeLoaded();
-    ImGuiMCP::BeginDisabled(!copy.positionControl || !softAngleAvailable);
-    changed |= ImGuiMCP::Checkbox("Use a custom soft angle", &copy.flaccidAngleControl);
-    ImGuiMCP::BeginDisabled(!copy.flaccidAngleControl);
-    changed |= ImGuiMCP::SliderInt("Soft angle", &copy.flaccidBend, 0, 20);
-    ImGuiMCP::EndDisabled();
-    ImGuiMCP::EndDisabled();
-    if (softAngleAvailable)
-        ImGuiMCP::TextWrapped("0 is the normal hanging position. SPS refreshes SMP after you finish moving the slider.");
-    else
-        ImGuiMCP::TextWrapped("Custom soft angles need SOS AE-NG. Legacy SOS and TNG keep their normal floppy pose.");
-    ImGuiMCP::BeginDisabled(!copy.positionControl || !copy.flaccidAngleControl ||
-        !softAngleAvailable || !ownership.known || ownership.usingCBPC);
-    if (ImGuiMCP::Button("Refresh soft angle now")) {
-        ResetPositionRecovery();
-        playerContext.position.appliedBend.store(-1);
-        if (auto* tasks = SKSE::GetTaskInterface())
-            tasks->AddTask([] { ScheduleSoftAngleRefresh(0); });
+    SectionHeading("AROUSAL TEST");
+    // Manual arousal writes used to live on the NPCs page. It is a test control
+    // for the player, so it belongs beside the player's own settings.
+    const bool oslReady = OslArousedLoaded() && !SloArousedLoaded() && !ClassicArousedLoaded();
+    ImGuiMCP::BeginDisabled(!oslReady);
+    static float playerArousalSlider{ 0.0F };
+    static bool playerArousalEditing{ false };
+    if (!playerArousalEditing && arousalController.Valid()) playerArousalSlider = arousalController.Value();
+    if (ImGuiMCP::SliderFloat("Player OSL arousal", &playerArousalSlider, 0.0F, 100.0F, "%.0f"))
+        playerArousalEditing = true;
+    if (ImGuiMCP::IsItemDeactivatedAfterEdit()) {
+        RequestPlayerOslArousalWrite(playerArousalSlider);
+        playerArousalEditing = false;
     }
     ImGuiMCP::EndDisabled();
-
-    ImGuiMCP::Text("Erect");
-    ImGuiMCP::BeginDisabled(!copy.positionControl);
-    changed |= ImGuiMCP::SliderInt("Erect angle", &copy.erectBend, 0, 20);
-    ImGuiMCP::EndDisabled();
-    ImGuiMCP::TextWrapped("0 points straight out. 20 is the highest position.");
-    ImGuiMCP::BeginDisabled(!copy.positionControl || !ownership.known || !ownership.usingCBPC);
-    if (ImGuiMCP::Button("Apply erect angle now")) {
-        ResetPositionRecovery();
-        playerContext.position.appliedBend.store(-1);
-        if (auto* tasks = SKSE::GetTaskInterface())
-            tasks->AddTask([] { ApplyRequestedBend(true, true, false); });
-    }
-    ImGuiMCP::EndDisabled();
+    Hint(oslReady ? "Writes the real OSL Aroused value when released; OSL can change it again afterwards."
+                  : "Current OSL Aroused is required for this test control.");
 
     ImGuiMCP::Separator();
-    SectionHeading("QUICK ACTIONS");
+    SectionHeading("SETTINGS FILE");
+    if (ImGuiMCP::Button("Open settings file")) OpenSettingsFile();
+    ImGuiMCP::SameLine();
+    if (ImGuiMCP::Button("Reload settings")) ReloadSettingsFromDisk();
+    Hint("Most settings are only in the file. Reload applies your edits without restarting.");
     if (ImGuiMCP::Button("Refresh status"))
         if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { QueryArousal(true); QuerySexLab(); QuerySexLabRole(); QueryOStimRole(); Evaluate(); });
     if (ImGuiMCP::CollapsingHeader("Reset options")) {
-        ImGuiMCP::TextWrapped("This restores the recommended SPS settings. It does not uninstall anything or change other mods.");
+        Hint("Restores the recommended SPS settings. This changes nothing outside SPS.");
         if (ImGuiMCP::Button("Restore recommended settings")) { UseRecommendedSettings(copy); changed = true; }
     }
     if (changed) SaveSettingsAndApply(copy, previous);
@@ -2404,96 +2655,117 @@ void __stdcall RenderLooks() {
     const auto ownership = ownershipController.Read();
     bool changed = false;
 
-    PageHeading("APPEARANCE", "Control how SPS transitions between the soft and erect positions selected on Home.");
-    SectionHeading("TRANSITION");
-    ImGuiMCP::BeginDisabled(copy.mode != 0);
-    const bool arousalRiseChanged = ImGuiMCP::Checkbox(
-        "Rise gradually as arousal increases", &copy.arousalBasedErection);
-    changed |= arousalRiseChanged;
-    ImGuiMCP::BeginDisabled(!copy.arousalBasedErection);
-    if (ImGuiMCP::SliderFloat("Arousal where rising starts", &copy.erectionStartArousal,
-        0.0F, 99.0F, "%.0f")) {
-        if (copy.erectionStartArousal >= copy.threshold)
-            copy.threshold = std::min(100.0F, copy.erectionStartArousal + 1.0F);
-        changed = true;
+    PageHeading("APPEARANCE", "The soft and erect angles, and how SPS moves between them.");
+
+    // Angle first: it is the visible setting. Transition speed only shapes how
+    // fast the two angles are reached, so it reads better underneath the poses.
+    SectionHeading("POSITIONS");
+    const bool softAngleAvailable = SoftAngleControlAvailable(copy.bendMethod);
+    if (!copy.positionControl) {
+        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F),
+            "Angle control is turned off below. Physics switching still works.");
+    }
+
+    ImGuiMCP::BeginDisabled(!copy.positionControl);
+    changed |= ImGuiMCP::SliderInt("Erect angle", &copy.erectBend, 0, 20);
+    Hint("0 points straight out. 20 is the highest position this skeleton offers.");
+
+    // One slider instead of a checkbox plus a slider: 0 already means "leave
+    // the skeleton's own floppy pose alone", so there is nothing extra to hold.
+    // The flag is only written on an actual edit, so it never lands in the INI
+    // as a change the user did not make.
+    if (softAngleAvailable) {
+        int softAngle = copy.flaccidBend;
+        if (ImGuiMCP::SliderInt("Soft angle", &softAngle, 0, 20,
+            softAngle == 0 ? "0 (normal hanging position)" : "%d")) {
+            copy.flaccidBend = softAngle;
+            copy.flaccidAngleControl = softAngle > 0;
+            changed = true;
+        }
     }
     ImGuiMCP::EndDisabled();
-    ImGuiMCP::EndDisabled();
-    if (copy.arousalBasedErection)
-        ImGuiMCP::TextWrapped("The angle follows arousal from %.0f to %.0f instead of jumping straight to fully erect.",
-            copy.erectionStartArousal, copy.threshold);
+    if (!softAngleAvailable)
+        Hint("Custom soft angles need SOS AE or the SPS pose angle. Legacy SOS and TNG keep their own floppy pose.");
 
-    changed |= ImGuiMCP::Checkbox("Use a smooth timed rise when switching", &copy.gradualErection);
-    ImGuiMCP::BeginDisabled(!copy.gradualErection);
+    ImGuiMCP::Separator();
+    SectionHeading("TIMING");
     float erectionSeconds = copy.erectionDurationMs / 1000.0F;
-    if (ImGuiMCP::SliderFloat("Timed rise length", &erectionSeconds, 0.5F, 10.0F, "%.1f seconds")) {
+    if (ImGuiMCP::SliderFloat("Rise time", &erectionSeconds, 0.5F, 30.0F, "%.1f seconds")) {
         copy.erectionDurationMs = static_cast<int>(std::lround(erectionSeconds * 1000.0F));
+        // Any duration is a valid timed rise, so the old separate toggle is
+        // redundant: the slider itself expresses "how fast".
+        copy.gradualErection = true;
         changed = true;
     }
     float softeningSeconds = copy.softeningDurationMs / 1000.0F;
-    if (ImGuiMCP::SliderFloat("Time to soften again", &softeningSeconds, 0.5F, 15.0F, "%.1f seconds")) {
+    if (ImGuiMCP::SliderFloat("Fall time", &softeningSeconds, 0.5F, 30.0F, "%.1f seconds")) {
         copy.softeningDurationMs = static_cast<int>(std::lround(softeningSeconds * 1000.0F));
+        copy.gradualErection = true;
         changed = true;
     }
-    ImGuiMCP::EndDisabled();
-    if (copy.arousalBasedErection)
-        ImGuiMCP::TextWrapped("The timed rise is still used for random erections. Normal arousal changes follow the live arousal value.");
-    ImGuiMCP::TextWrapped("Erect physics stays stable with a little natural movement. Soft physics provides the looser sway.");
+    // The graph binds 19 positions (SOSBend-9 to SOSBend9), so a full climb is
+    // 18 even steps. The honest readout is how long each step holds.
+    Hint("Rise and fall times are the full -9 to 9 travel time, in 18 even steps: "
+         "about %.2f s per step up, %.2f s per step down.",
+        (copy.erectionDurationMs / 1000.0F) / 18.0F, (copy.softeningDurationMs / 1000.0F) / 18.0F);
 
-    ImGuiMCP::Separator();
-    if (ImGuiMCP::CollapsingHeader("Spontaneous erections (optional)")) {
-        ImGuiMCP::TextWrapped("These options only run in Automatic mode and never override an active scene.");
-        ImGuiMCP::BeginDisabled(copy.mode != 0);
-        changed |= ImGuiMCP::Checkbox("Allow random erections", &copy.randomErections);
-        ImGuiMCP::BeginDisabled(!copy.randomErections);
-        if (ImGuiMCP::SliderInt("Shortest interval (minutes)",
-            &copy.randomErectionMinMinutes, 1, 120)) {
-            copy.randomErectionMaxMinutes = std::max(copy.randomErectionMinMinutes,
-                copy.randomErectionMaxMinutes);
-            changed = true;
-        }
-        if (ImGuiMCP::SliderInt("Longest interval (minutes)",
-            &copy.randomErectionMaxMinutes, 1, 240)) {
-            copy.randomErectionMinMinutes = std::min(copy.randomErectionMinMinutes,
-                copy.randomErectionMaxMinutes);
-            changed = true;
-        }
-        changed |= ImGuiMCP::SliderInt("Duration (seconds)",
-            &copy.randomErectionDurationSeconds, 5, 600);
-        changed |= ImGuiMCP::Checkbox("Wait for a suitable moment",
-            &copy.randomErectionSafeMoments);
-        ImGuiMCP::EndDisabled();
-
-        changed |= ImGuiMCP::Checkbox("Use a recovery break", &copy.spontaneousRefractory);
-        ImGuiMCP::BeginDisabled(!copy.spontaneousRefractory);
-        changed |= ImGuiMCP::SliderInt("Recovery time (minutes)", &copy.refractoryMinutes, 1, 60);
-        ImGuiMCP::EndDisabled();
-        changed |= ImGuiMCP::Checkbox("Allow morning erections after resting", &copy.morningErections);
-        ImGuiMCP::BeginDisabled(!copy.morningErections);
-        changed |= ImGuiMCP::SliderInt("Morning duration (seconds)",
-            &copy.morningErectionDurationSeconds, 10, 600);
-        ImGuiMCP::EndDisabled();
-        ImGuiMCP::EndDisabled();
-
-        ImGuiMCP::TextWrapped("Suitable moments exclude combat, dialogue, loading screens, paused menus and similar interruptions. Recovery prevents spontaneous erections from happening back to back.");
-        if (RandomErectionActive())
-            StatusLine("Current status", playerContext.spontaneous.morningActive.load() ? "Morning erection active" : "Random erection active", 2);
-        else if (copy.randomErections)
-            StatusLine("Current status", "Waiting for a random interval", 1);
-
-        const bool randomTestBlocked = !copy.randomErections || copy.mode != 0 ||
-            AnySceneHasPriority(copy) || ActiveAPIRequest().has_value() || ownership.usingCBPC;
-        ImGuiMCP::BeginDisabled(randomTestBlocked);
-        if (ImGuiMCP::Button("Test now")) {
-            playerContext.spontaneous.randomNextMs.store(0);
-            playerContext.spontaneous.randomUntilMs.store(NowMs() +
-                static_cast<std::int64_t>(copy.randomErectionDurationSeconds) * 1000);
-            playerContext.spontaneous.randomManualTest.store(true);
-            if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { Evaluate(true); });
-            Record("Random erection test started");
-        }
-        ImGuiMCP::EndDisabled();
+    ImGuiMCP::BeginDisabled(!ownership.known || !ownership.usingCBPC);
+    if (ImGuiMCP::Button("Preview rise and fall")) {
+        const int target = copy.erectBend;
+        const int riseMs = copy.erectionDurationMs;
+        if (auto* tasks = SKSE::GetTaskInterface())
+            tasks->AddTask([target, riseMs] {
+                playerContext.position.appliedBend.store(-1);
+                StartBendAnimation(0, target, riseMs, false);
+            });
+        Record("Previewing the angle timing");
     }
+    ImGuiMCP::SameLine();
+    ImGuiMCP::BeginDisabled(!copy.positionControl || !ownership.known);
+    if (ImGuiMCP::Button("Reapply angle")) {
+        ResetPositionRecovery();
+        playerContext.position.appliedBend.store(-1);
+        if (auto* tasks = SKSE::GetTaskInterface())
+            tasks->AddTask([] { ApplyRequestedBend(true, true, false); });
+    }
+    ImGuiMCP::EndDisabled();
+    ImGuiMCP::EndDisabled();
+    Hint("Preview plays one ramp and back. Reapply is only needed if the physics looks stale.");
+
+    if (ImGuiMCP::CollapsingHeader("Advanced")) {
+        // Everything here has a working default. It is collapsed rather than
+        // removed so a genuine problem can still be diagnosed in game, while
+        // the everyday view stays short.
+        changed |= ImGuiMCP::Checkbox("Let SPS control the angle", &copy.positionControl);
+        BeginDependent(copy.positionControl);
+        const char* bendMethods[]{ "SOS / TNG animation stages", "Choose automatically (recommended)" };
+        // 0 = animation stages (ten discrete steps), 1 = automatic. Both map onto
+        // bendMethod 3 (pose) for automatic, which is the continuous channel.
+        int methodChoice = copy.bendMethod == SPS::Runtime::kBendMethodEvents ? 0 : 1;
+        if (ImGuiMCP::Combo("Method", &methodChoice, bendMethods, 2)) {
+            copy.bendMethod = methodChoice == 0
+                ? SPS::Runtime::kBendMethodEvents
+                : SPS::Runtime::kBendMethodPose;
+            changed = true;
+        }
+        if (copy.bendMethod != SPS::Runtime::kBendMethodEvents) {
+            ImGuiMCP::TextDisabled("SPS holds a continuous angle every frame.");
+        } else {
+            ImGuiMCP::TextDisabled("SOS/TNG stages: 10 visible steps, no in-between angle.");
+        }
+        changed |= ImGuiMCP::Checkbox("Smooth angle changes", &copy.animatePosition);
+        changed |= ImGuiMCP::Checkbox("Stop repeated bouncing", &copy.bounceGuard);
+        changed |= ImGuiMCP::Checkbox("Rise gradually with arousal", &copy.arousalBasedErection);
+        changed |= ImGuiMCP::Checkbox("Allow random erections", &copy.randomErections);
+        BeginDependent(copy.randomErections);
+        changed |= ImGuiMCP::SliderInt("Shortest interval (minutes)", &copy.randomErectionMinMinutes, 1, 120);
+        changed |= ImGuiMCP::SliderInt("Longest interval (minutes)", &copy.randomErectionMaxMinutes, 1, 240);
+        changed |= ImGuiMCP::SliderInt("Duration (seconds)", &copy.randomErectionDurationSeconds, 5, 600);
+        ImGuiMCP::EndDisabled();
+        ImGuiMCP::EndDisabled();
+        Hint("Timing, poll rate and failure thresholds are in the settings file.");
+    }
+
     if (changed) SaveSettingsAndApply(copy, previous);
 }
 
@@ -2509,7 +2781,7 @@ void __stdcall RenderScenes() {
     const bool ostimLoaded = d.ostimPluginLoaded;
     const bool ppaLoaded = ::GetModuleHandleW(L"AccuratePenetration.dll") != nullptr;
 
-    PageHeading("SCENES", "Choose how SPS behaves during SexLab or OStim scenes. These settings do not affect normal gameplay.");
+    PageHeading("SCENES", "How SPS behaves during SexLab or OStim scenes. Nothing here affects normal gameplay.");
 
     SectionHeading("SCENE FRAMEWORKS");
     changed |= ImGuiMCP::Checkbox("Manage SexLab scenes", &copy.sexLabOverride);
@@ -2538,13 +2810,6 @@ void __stdcall RenderScenes() {
     };
     changed |= ImGuiMCP::Combo("When receiving / bottom", &copy.sexLabBottomBehavior, bottomBehaviors, 4);
     ImGuiMCP::EndDisabled();
-    ImGuiMCP::BeginDisabled(!copy.sexLabOverride && !copy.ostimOverride);
-    float returnDelaySeconds = copy.sceneEndDelayMs / 1000.0F;
-    if (ImGuiMCP::SliderFloat("Wait before returning to normal", &returnDelaySeconds, 0.0F, 10.0F, "%.1f seconds")) {
-        copy.sceneEndDelayMs = static_cast<int>(std::lround(returnDelaySeconds * 1000.0F));
-        changed = true;
-    }
-    ImGuiMCP::EndDisabled();
     ImGuiMCP::TextWrapped("Recommended: receiving keeps the state from before the scene, while penetrating uses erect physics. OStim support is experimental.");
 
     ImGuiMCP::Separator();
@@ -2557,12 +2822,6 @@ void __stdcall RenderScenes() {
     ImGuiMCP::EndDisabled();
     if (ppaLoaded)
         ImGuiMCP::TextWrapped("PPA controls the live angle during its scenes. SPS only decides whether physics should be soft or erect.");
-
-    if (ImGuiMCP::CollapsingHeader("Unrecognised scene roles")) {
-        const char* unknownRoles[]{ "Keep the current state (recommended)", "Use soft physics", "Use erect physics" };
-        changed |= ImGuiMCP::Combo("If SPS cannot identify the role", &copy.sexLabUnknownRole, unknownRoles, 3);
-        ImGuiMCP::TextWrapped("Keeping the current state avoids a sudden visible change when a scene does not report a clear role.");
-    }
 
     ImGuiMCP::Separator();
     if (ImGuiMCP::CollapsingHeader("Scene status and compatibility")) {
@@ -2589,8 +2848,8 @@ void __stdcall RenderNPCs() {
     { std::scoped_lock lock(settingsLock); copy = settings; }
     const Settings previous = copy;
     bool changed = false;
-    PageHeading("NPCs - BASIC TEST", "Ordinary arousal-based SOS poses for up to eight nearby NPCs using OSL Aroused.");
-    ImGuiMCP::TextWrapped("Disable OSL Aroused's Enable SOS option before using this. SPS does not change that setting for you.");
+    PageHeading("NPCs", "Pose nearby NPCs from their arousal, and optionally give one NPC full SPS physics control.");
+    Hint("Basic NPC poses need OSL Aroused's own SOS option turned off. SPS does not change that for you.");
     changed |= ImGuiMCP::Checkbox("I disabled OSL's SOS control", &copy.basicNpcProviderSosDisabled);
     if (!copy.basicNpcProviderSosDisabled && copy.basicNpcEnabled) { copy.basicNpcEnabled = false; changed = true; }
     ImGuiMCP::BeginDisabled(!copy.basicNpcProviderSosDisabled);
@@ -2612,27 +2871,16 @@ void __stdcall RenderNPCs() {
 
     ImGuiMCP::Separator();
     SectionHeading("OSL AROUSAL TEST VALUES");
-    ImGuiMCP::TextWrapped("These sliders write the real OSL Aroused value when released. They are test controls, not SPS-only overrides, and OSL can change the values again afterward.");
+    ImGuiMCP::TextWrapped("These sliders write the real OSL Aroused value when released. They are test controls, not SPS-only overrides, and OSL can change the values again afterward. The player's own value is on the Home page.");
     const bool oslReady = OslArousedLoaded() && !SloArousedLoaded() && !ClassicArousedLoaded();
     ImGuiMCP::BeginDisabled(!oslReady);
     struct SliderState { float value{ 0.0F }; bool editing{ false }; };
-    static SliderState playerSlider;
     static std::unordered_map<std::uint32_t, SliderState> npcSliders;
     std::erase_if(npcSliders, [&npc](const auto& item) {
         return std::none_of(npc.actors.begin(), npc.actors.end(),
             [formID = item.first](const auto& actor) { return actor.formID == formID; });
     });
-    if (!oslReady) {
-        playerSlider.editing = false;
-        npcSliders.clear();
-    }
-    if (!playerSlider.editing && arousalController.Valid()) playerSlider.value = arousalController.Value();
-    if (ImGuiMCP::SliderFloat("Player OSL arousal", &playerSlider.value, 0.0F, 100.0F, "%.0f"))
-        playerSlider.editing = true;
-    if (ImGuiMCP::IsItemDeactivatedAfterEdit()) {
-        RequestPlayerOslArousalWrite(playerSlider.value);
-        playerSlider.editing = false;
-    }
+    if (!oslReady) npcSliders.clear();
     for (const auto& actor : npc.actors) {
         auto& slider = npcSliders[actor.formID];
         if (!slider.editing && actor.arousal) slider.value = *actor.arousal;
@@ -2659,89 +2907,48 @@ void __stdcall RenderNPCs() {
     ImGuiMCP::EndDisabled();
     if (!oslReady) ImGuiMCP::TextWrapped("Current OSL Aroused is required, without another arousal provider taking priority.");
     else if (npc.actors.empty()) ImGuiMCP::TextWrapped("No eligible nearby NPC is currently tracked. NPC sliders appear here after discovery.");
-    if (changed) SaveSettingsAndApply(copy, previous);
-}
-
-void __stdcall RenderAdvanced() {
-    Settings copy;
-    { std::scoped_lock lock(settingsLock); copy = settings; }
-    const Settings previous = copy;
-    const auto position = positionController.Read();
-    bool changed = false;
-
-    PageHeading("ADVANCED", "Reliability and compatibility controls. The recommended values should suit most setups.");
-
-    SectionHeading("AUTOMATIC RECOVERY");
-    changed |= ImGuiMCP::Checkbox("Refresh player physics after loading", &copy.resetSMPAfterLoad);
-    ImGuiMCP::BeginDisabled(!copy.resetSMPAfterLoad);
-    float loadResetSeconds = copy.loadResetDelayMs / 1000.0F;
-    if (ImGuiMCP::SliderFloat("Delay after loading", &loadResetSeconds, 1.0F, 30.0F, "%.0f seconds")) {
-        copy.loadResetDelayMs = static_cast<int>(std::lround(loadResetSeconds * 1000.0F));
-        changed = true;
-    }
-    ImGuiMCP::EndDisabled();
-    ImGuiMCP::TextWrapped("SPS resets the player's SMP once, then restores the correct soft or erect state.");
-    changed |= ImGuiMCP::Checkbox("Refresh after changing armour or schlong",
-        &copy.equipmentChangeRecovery);
-    ImGuiMCP::TextWrapped("Recommended. These player-only refreshes restore the selected physics and angle after the mesh changes.");
-
-    if (ImGuiMCP::CollapsingHeader("Automatic switching timing (advanced)")) {
-        ImGuiMCP::BeginDisabled(copy.mode != 0);
-        changed |= ImGuiMCP::SliderFloat("Soft return gap", &copy.hysteresis, 0, 25, "%.0f arousal");
-        ImGuiMCP::TextWrapped("After becoming erect, SPS waits until arousal falls below %.0f before returning to soft. This prevents rapid switching.", std::max(0.0F, copy.threshold - copy.hysteresis));
-        float pollSeconds = copy.pollMs / 1000.0F;
-        if (ImGuiMCP::SliderFloat("How often SPS checks", &pollSeconds, 0.25F, 5.0F, "%.2f seconds")) {
-            copy.pollMs = static_cast<int>(std::lround(pollSeconds * 1000.0F));
-            changed = true;
-        }
-        float cooldownSeconds = copy.switchCooldownMs / 1000.0F;
-        if (ImGuiMCP::SliderFloat("Minimum time between changes", &cooldownSeconds, 0.0F, 5.0F, "%.2f seconds")) {
-            copy.switchCooldownMs = static_cast<int>(std::lround(cooldownSeconds * 1000.0F));
-            changed = true;
-        }
-        ImGuiMCP::EndDisabled();
-        if (copy.mode != 0)
-            ImGuiMCP::TextWrapped("These values are only used in Automatic mode.");
-    }
 
     ImGuiMCP::Separator();
-    SectionHeading("ANGLE CONTROL");
-    changed |= ImGuiMCP::Checkbox("Let SPS control the angle", &copy.positionControl);
-    ImGuiMCP::TextWrapped("Turn this off only if another mod should own the angle. Soft/erect physics switching will continue to work.");
-    ImGuiMCP::BeginDisabled(!copy.positionControl);
-    const char* bendMethods[]{ "SOS AE direct control", "SOS / TNG animation stages", "Choose automatically (recommended)" };
-    changed |= ImGuiMCP::Combo("How SPS sets the angle", &copy.bendMethod, bendMethods, 3);
-    changed |= ImGuiMCP::Checkbox("Smooth angle changes", &copy.animatePosition);
-    changed |= ImGuiMCP::Checkbox("Stop repeated bouncing", &copy.bounceGuard);
-    ImGuiMCP::EndDisabled();
+    SectionHeading("MANAGED NPC (FULL PHYSICS)");
+    ImGuiMCP::TextWrapped("One NPC can be enrolled in full SPS control: its own arousal, its own soft/erect decisions, and SMP or CBPC ownership. This is separate from the basic behavior above. A managed NPC leaves the basic list so the two never issue competing commands.");
+    changed |= ImGuiMCP::Checkbox("Enable managed NPC", &copy.managedNpcEnabled);
+    if (!copy.enabled) ImGuiMCP::TextWrapped("SPS is disabled on the Home page, so managed NPC control is also off.");
+    ImGuiMCP::TextWrapped("Look at an NPC and use Add. This build has no saved membership yet: closing the game forgets the list.");
 
-    if (position.automaticSuspended) {
-        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F),
-            "Automatic angle recovery paused after repeated failures.");
-        if (ImGuiMCP::Button("Try angle recovery again")) {
-            ResetPositionRecovery();
-            playerContext.position.appliedBend.store(-1);
+    const auto managed = SPS::Runtime::ReadManagedNpcStatus();
+    ImGuiMCP::TextWrapped("Status: %s (limit %zu)", managed.state.c_str(), managed.capacity);
+    if (!managed.rejection.empty()) ImGuiMCP::TextWrapped("Last refused action: %s", managed.rejection.c_str());
+    for (const auto& actor : managed.actors) {
+        const auto arousalText = actor.arousal ? fmt::format(" (arousal {:.0f})", *actor.arousal) : std::string{};
+        ImGuiMCP::TextWrapped("%s [0x%08X] - %s%s", actor.name.c_str(), actor.formID,
+            actor.state.c_str(), arousalText.c_str());
+    }
+    if (managed.actors.empty()) ImGuiMCP::TextWrapped("No NPC is currently managed.");
+    else ImGuiMCP::TextWrapped("Current managed NPC: %llu physics changes, %llu poses applied, %llu deferred, %llu failed, %llu blocked.",
+        static_cast<unsigned long long>(managed.switched), static_cast<unsigned long long>(managed.applied),
+        static_cast<unsigned long long>(managed.deferred), static_cast<unsigned long long>(managed.failed),
+        static_cast<unsigned long long>(managed.blocked));
+
+    // Every registry access is game-thread-only, so the render callback only
+    // queues an intent and the tick resolves the crosshair and applies it.
+    if (ImGuiMCP::Button("Add NPC in crosshair")) {
+        if (auto* tasks = SKSE::GetTaskInterface()) {
+            tasks->AddTask([] {
+                const auto target = SPS::Runtime::ResolveManagedNpcTarget();
+                if (!target) Record("No NPC in the crosshair to manage", true);
+                else if (!SPS::Runtime::QueueManagedNpcAdd(target))
+                    Record(fmt::format("Could not queue managed NPC {:08X}", target), true);
+            });
         }
     }
-
-    if (ImGuiMCP::CollapsingHeader("Angle recovery timing (advanced)")) {
-        ImGuiMCP::BeginDisabled(!copy.positionControl);
-        float settleSeconds = copy.settleDelayMs / 1000.0F;
-        if (ImGuiMCP::SliderFloat("Wait before setting the angle", &settleSeconds, 0.0F, 5.0F, "%.2f seconds")) {
-            copy.settleDelayMs = static_cast<int>(std::lround(settleSeconds * 1000.0F));
-            changed = true;
+    ImGuiMCP::SameLine();
+    if (ImGuiMCP::Button("Remove all managed NPCs")) {
+        for (const auto& actor : managed.actors) {
+            const auto formID = actor.formID;
+            if (auto* tasks = SKSE::GetTaskInterface())
+                tasks->AddTask([formID] { SPS::Runtime::QueueManagedNpcRemove(formID); });
         }
-        changed |= ImGuiMCP::SliderInt("Failures before repairs pause", &copy.maxBendFailures, 1, 10);
-        ImGuiMCP::EndDisabled();
-        ImGuiMCP::TextWrapped("Only change these if the angle repeatedly fails or bounces.");
     }
-
-    ImGuiMCP::Separator();
-    if (ImGuiMCP::CollapsingHeader("Reset advanced settings")) {
-        ImGuiMCP::TextWrapped("This restores every SPS recommendation, including the settings on the other pages.");
-        if (ImGuiMCP::Button("Restore all recommended settings")) { UseRecommendedSettings(copy); changed = true; }
-    }
-
     if (changed) SaveSettingsAndApply(copy, previous);
 }
 
@@ -3025,7 +3232,33 @@ void __stdcall RenderDebug() {
         ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.45F, 0.35F, 1.0F),
             "Most recent problem: %s", currentActivity.lastError.c_str());
     ImGuiMCP::Separator();
+    if (ImGuiMCP::CollapsingHeader("Recovery")) {
+        // Recovery used to be a whole page. Every option here has a working
+        // default, so it belongs with the rest of the "something is wrong"
+        // tools rather than in the everyday menu.
+        Settings recovery;
+        { std::scoped_lock lock(settingsLock); recovery = settings; }
+        bool recoveryChanged = false;
+        recoveryChanged |= ImGuiMCP::Checkbox("Refresh physics after loading", &recovery.resetSMPAfterLoad);
+        recoveryChanged |= ImGuiMCP::Checkbox("Refresh after changing armour or schlong",
+            &recovery.equipmentChangeRecovery);
+        Hint("Both are recommended. Turning them off leaves the last state in place.");
+        if (position.automaticSuspended) {
+            ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F),
+                "Angle recovery paused after repeated failures.");
+            if (ImGuiMCP::Button("Try angle recovery again")) {
+                ResetPositionRecovery();
+                playerContext.position.appliedBend.store(-1);
+            }
+        }
+        if (recoveryChanged) {
+            const Settings previous = debugSettings;
+            debugSettings = recovery;
+            SaveSettingsAndApply(debugSettings, previous);
+        }
+    }
 
+    ImGuiMCP::Separator();
     SectionHeading("TEST AND REPAIR");
     if (ImGuiMCP::Button("Test soft (10 seconds)"))
         if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { TestPhysicsState(false); });
@@ -3177,7 +3410,6 @@ void RegisterMenu() {
     SKSEMenuFramework::AddSectionItem("Appearance", RenderLooks);
     SKSEMenuFramework::AddSectionItem("Scenes", RenderScenes);
     SKSEMenuFramework::AddSectionItem("NPCs", RenderNPCs);
-    SKSEMenuFramework::AddSectionItem("Advanced", RenderAdvanced);
     SKSEMenuFramework::AddSectionItem("Troubleshooting", RenderDebug);
 }
 
@@ -3293,11 +3525,13 @@ class NpcLoadedSink final : public RE::BSTEventSink<RE::TESObjectLoadedEvent> {
 public:
     RE::BSEventNotifyControl ProcessEvent(const RE::TESObjectLoadedEvent* event,
         RE::BSTEventSource<RE::TESObjectLoadedEvent>*) override {
-        if (event) SPS::Runtime::InvalidateBasicNpc(event->formID);
+        if (event) {
+            SPS::Runtime::InvalidateBasicNpc(event->formID);
+            SPS::Runtime::InvalidateManagedNpc(event->formID);
+        }
         return RE::BSEventNotifyControl::kContinue;
     }
 };
-
 class NiNodeSink final : public RE::BSTEventSink<SKSE::NiNodeUpdateEvent> {
 public:
     RE::BSEventNotifyControl ProcessEvent(const SKSE::NiNodeUpdateEvent* event, RE::BSTEventSource<SKSE::NiNodeUpdateEvent>*) override {
@@ -3367,6 +3601,7 @@ public:
 
 void ResetTransientTimers() {
     SPS::Runtime::ResetBasicNpcs();
+    SPS::Runtime::ResetManagedNpcs();
     SPS::Runtime::ResetActorBridgeRequests();
     SPS::Runtime::ResetPhysicsOperations();
     ownershipController.ResetPending();
@@ -3415,6 +3650,8 @@ void OnMessage(SKSE::MessagingInterface::Message* message) {
         return;
     }
     if (message->type == SKSE::MessagingInterface::kDataLoaded) {
+        // The load order and Data files are final from here on.
+        SPS::Runtime::FreezeCompatibilityCache();
         Load();
         RegisterMenu();
         RegisterPPAAPI();
@@ -3523,16 +3760,30 @@ SchlongPhysicsSwapper_GetAPI_V2() {
 SKSEPluginLoad(const SKSE::LoadInterface* skse) {
     Mod::runtimeVersion = skse->RuntimeVersion().string(".");
     Mod::skseVersion = REL::Version::unpack(skse->SKSEVersion()).string(".");
-    SKSE::Init(skse);
+    // CommonLib's own log setup and spdlog's file sink both take the log path as
+    // a narrow string (path::string()). That throws for a Documents path the
+    // system code page cannot represent, which would crash Skyrim during plugin
+    // load. SPS replaces the default logger anyway, so CommonLib's is disabled
+    // and SPS opens the file itself through a wide path.
+    SKSE::Init(skse, SKSE::InitInfo{ .log = false });
+    static std::ofstream logStream;
     if (auto dir = SKSE::log::log_directory()) {
-        auto sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>((*dir / "SchlongPhysicsSwapper.log").string(), true);
-        spdlog::set_default_logger(std::make_shared<spdlog::logger>("global", std::move(sink)));
-        spdlog::set_level(spdlog::level::info);
-        spdlog::flush_on(spdlog::level::info);
+        std::error_code ec;
+        std::filesystem::create_directories(*dir, ec);
+        logStream.open(*dir / L"SchlongPhysicsSwapper.log",
+            std::ios::out | std::ios::trunc | std::ios::binary);
     }
+    std::shared_ptr<spdlog::sinks::sink> sink = logStream.is_open()
+        ? std::shared_ptr<spdlog::sinks::sink>(
+            std::make_shared<spdlog::sinks::ostream_sink_mt>(logStream, true))
+        : std::shared_ptr<spdlog::sinks::sink>(std::make_shared<spdlog::sinks::null_sink_mt>());
+    spdlog::set_default_logger(std::make_shared<spdlog::logger>("global", std::move(sink)));
+    spdlog::set_level(spdlog::level::info);
+    spdlog::flush_on(spdlog::level::info);
     Mod::ConfigureControllers();
     if (!SKSE::GetPapyrusInterface()->Register([](RE::BSScript::IVirtualMachine* vm) {
-            return SPS::Runtime::RegisterPhysicsBridge(vm) && SPS::Runtime::RegisterActorBridgeGuards(vm);
+            return SPS::Runtime::RegisterPhysicsBridge(vm) && SPS::Runtime::RegisterActorBridgeGuards(vm) &&
+                SPS::Runtime::SosPose::RegisterPoseAngleNatives(vm);
         })) {
         logger::critical("SPS physics bridge registration failed");
         return false;

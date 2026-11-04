@@ -10,6 +10,8 @@
 #include <limits>
 #include "diagnostics/ActivityLog.h"
 
+#include <SimpleIni.h>
+
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -30,8 +32,15 @@ void Expect(bool condition, std::string_view name)
 
 }
 
-int main()
+int main(int argc, char** argv)
 {
+    // Locate resources relative to the executable, because the tests are also
+    // run directly from the build output folder where the working directory is
+    // the shell's, not the binary's.
+    const auto exeDir = argc > 0 && argv[0]
+        ? std::filesystem::absolute(argv[0]).parent_path()
+        : std::filesystem::current_path();
+
     SPS::Core::Settings settings;
     SPS::Core::NormalDecisionState state;
 
@@ -175,11 +184,107 @@ int main()
     const auto migrated = SPS::Core::LoadSettings(currentIni, legacyIni);
     Expect(migrated.settings == saved, "legacy settings load preserves values");
     Expect(migrated.migratedLegacy && migrated.shouldWriteCurrent, "legacy settings request one-time migration");
+    Expect(!migrated.dropLegacyMarker, "a legacy import does not look for a marker in the old file");
+
+    // The marker must be consumed by the write that follows a migration. If it
+    // survived, every launch would re-import the legacy values and quietly
+    // discard whatever the player configured since.
+    {
+        std::ofstream marked(currentIni);
+        marked << "[Migration]\nPreferLegacyIfPresent=true\n"
+                  "[General]\nErectBend=7\n";
+    }
+    const auto second = SPS::Core::LoadSettings(currentIni, legacyIni);
+    Expect(second.migratedLegacy, "the marker still re-imports while it is present");
+    Expect(second.dropLegacyMarker, "loading asks for the one-shot marker to be removed");
+    SPS::Core::Settings migratedOnce = second.settings;
+    migratedOnce.erectBend = 11;
+    Expect(SPS::Core::SaveSettings(currentIni, migratedOnce, second.dropLegacyMarker),
+        "migration write succeeds");
+    const auto third = SPS::Core::LoadSettings(currentIni, legacyIni);
+    Expect(!third.migratedLegacy, "a migrated install stops importing the legacy file");
+    Expect(third.settings.erectBend == 11, "the player's value survives the second launch");
+
+    // A save from the in-game menu must not flatten a hand-edited file: the
+    // comments are the documentation for the values that the menu hides, so
+    // losing them would make the rest of this file undiscoverable.
+    {
+        std::filesystem::create_directories(testRoot);
+        {
+            std::ofstream handEdited(currentIni);
+            handEdited << "[General]\n"
+                          "; keep this explanation\n"
+                          "ErectBend=9\n"
+                          "ArousalThreshold=55\n"
+                          "[Position]\n"
+                          "; and this one\n"
+                          "ErectionDurationMilliseconds=12000\n";
+        }
+        SPS::Core::Settings menuEdit = SPS::Core::LoadSettings(currentIni, legacyIni).settings;
+        menuEdit.erectBend = 17;
+        Expect(SPS::Core::SaveSettings(currentIni, menuEdit), "menu edit saves over a hand-edited file");
+        std::ifstream reloaded(currentIni);
+        const std::string text((std::istreambuf_iterator<char>(reloaded)),
+            std::istreambuf_iterator<char>());
+        Expect(text.find("; keep this explanation") != std::string::npos,
+            "saving keeps an existing comment on a section the menu edited");
+        Expect(text.find("; and this one") != std::string::npos,
+            "saving keeps comments in sections the menu did not touch");
+        Expect(text.find("ErectBend=17") != std::string::npos,
+            "saving still writes the new value");
+        const auto afterMenu = SPS::Core::LoadSettings(currentIni, legacyIni).settings;
+        Expect(afterMenu.erectionDurationMs == 12000,
+            "hidden settings survive a save that only changed a menu value");
+        Expect(afterMenu == menuEdit, "a menu save round trips the whole settings struct");
+    }
+
+    // The shipped template is the only documentation for the values the menu
+    // hides, so it must document every key this build knows about. The key list
+    // comes from the writer itself, so a new setting cannot be added without
+    // this test pointing at the missing line. The template is whichever one sits
+    // beside the test binary, then the source tree, then the installed game
+    // folder, so the check works from a build, an IDE run and a live install.
+    {
+        std::filesystem::path templatePath;
+        for (const auto& candidate : {
+                exeDir / "SchlongPhysicsSwapper.ini",
+                std::filesystem::current_path() / "SchlongPhysicsSwapper.ini",
+                std::filesystem::path("Data") / "SKSE" / "Plugins" / "SchlongPhysicsSwapper.ini" }) {
+            if (std::filesystem::exists(candidate)) { templatePath = candidate; break; }
+        }
+        Expect(!templatePath.empty(), "shipped INI template is locatable");
+        std::ifstream templateFile(templatePath);
+        Expect(templateFile.good(), "shipped INI template is readable");
+        std::string text((std::istreambuf_iterator<char>(templateFile)),
+            std::istreambuf_iterator<char>());
+
+        // Parse the template the same way the game does, so quoting and comment
+        // handling in the test match the real reader.
+        CSimpleIniA documented;
+        documented.SetUnicode();
+        documented.LoadData(text.c_str());
+
+        int undocumented = 0;
+        for (const auto& name : SPS::Core::SettingsKeyNames()) {
+            const auto split = name.find('|');
+            const auto section = name.substr(0, split);
+            const auto key = name.substr(split + 1);
+            if (!documented.KeyExists(section.c_str(), key.c_str())) {
+                std::cerr << "UNDOCUMENTED " << name << " in " << templatePath.string() << '\n';
+                ++undocumented;
+            }
+        }
+        Expect(undocumented == 0, "every setting is documented in the shipped INI template");
+
+        // The template must also still carry the one-time migration switch,
+        // otherwise existing 1.2.x installations silently lose their settings.
+        Expect(documented.GetBoolValue("Migration", "PreferLegacyIfPresent", false),
+            "shipped template keeps the legacy migration marker");
+    }
 
     std::filesystem::create_directories(testRoot);
     {
-        std::ofstream invalid(currentIni);
-        invalid << "[Migration]\nPreferLegacyIfPresent=false\n"
+        std::ofstream invalid(currentIni);        invalid << "[Migration]\nPreferLegacyIfPresent=false\n"
                    "[General]\nArousalThreshold=999\nHysteresis=-10\nMode=99\nPollMilliseconds=1\n"
                    "[Position]\nErectBend=99\nFlaccidBend=-5\nMaxAutomaticFailures=0\n";
     }
@@ -425,6 +530,34 @@ int main()
         softEvidence.boneCount = 6;
         Expect(!drift.Complete(softDrift.generation, softEvidence, 45300).smpDriftDetected,
             "reported dynamic bones are not drift when the target owner is SMP");
+    }
+
+    {
+        using SPS::Controllers::ClassifySmpHandoff;
+        using SPS::Controllers::SmpHandoffProof;
+        Expect(ClassifySmpHandoff(6, 6) == SmpHandoffProof::certain,
+            "every managed bone dynamic is the only certain SMP handoff");
+        Expect(ClassifySmpHandoff(5, 6) == SmpHandoffProof::notProven,
+            "a partial dynamic count does not prove the remaining bones");
+        Expect(ClassifySmpHandoff(0, 6) == SmpHandoffProof::notProven,
+            "zero dynamic bones is a sample, not proof");
+        Expect(ClassifySmpHandoff(-1, 6) == SmpHandoffProof::unsampled &&
+            ClassifySmpHandoff(6, 0) == SmpHandoffProof::unsampled &&
+            ClassifySmpHandoff(7, 6) == SmpHandoffProof::unsampled,
+            "a missing, empty or oversized sample is never treated as proof");
+
+        SPS::Controllers::PhysicsOwnershipState proofState;
+        SPS::Controllers::PhysicsOwnershipController proof(proofState);
+        const auto begun = proof.Begin(false, Purpose::switchOwner, false, 50000);
+        SPS::Controllers::OwnershipEvidence proofEvidence;
+        proofEvidence.success = true;
+        proofEvidence.dynamicBonesAfter = 6;
+        proofEvidence.boneCount = 6;
+        const auto done = proof.Complete(begun.generation, proofEvidence, 50100);
+        Expect(done.matched && done.success && !done.targetCBPC &&
+            done.dynamicBonesAfter == 6 &&
+            ClassifySmpHandoff(done.dynamicBonesAfter, done.boneCount) == SmpHandoffProof::certain,
+            "an SMP completion keeps the post-enable bone sample");
     }
 
     const auto delayedMaintain = safeguard.Begin(true, Purpose::maintainCBPC, false, 91200);

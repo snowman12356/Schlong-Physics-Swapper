@@ -27,6 +27,8 @@ $requiredFiles = @(
     'Source\Scripts\SPS_ArousalBridge.psc',
     'Scripts\SPS_FSMPBridge.pex',
     'Source\Scripts\SPS_FSMPBridge.psc',
+    'Scripts\SPS_PoseAngle.pex',
+    'Source\Scripts\SPS_PoseAngle.psc',
     'Optional\OStim\Scripts\SPS_OStimBridge.pex',
     'Optional\OSL Legacy\Scripts\OSLAroused_Main.pex',
     'Optional\OSL Legacy\Source\OSL Aroused Compatibility\OSLAroused_Main.psc',

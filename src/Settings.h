@@ -6,6 +6,9 @@ struct Settings {
     bool enabled{ true };
     bool basicNpcEnabled{ false };
     bool basicNpcProviderSosDisabled{ false };
+    // One fully managed NPC, per Stage 3. Separate from the basic bridge flag:
+    // enrolling an NPC transfers responsibility rather than adding behaviour.
+    bool managedNpcEnabled{ false };
     float threshold{ 60.0F };
     float hysteresis{ 5.0F };
     int mode{ 0 };  // 0 automatic, 1 force SMP, 2 force CBPC
@@ -24,7 +27,10 @@ struct Settings {
     bool resetSMPAfterLoad{ true };
     int loadResetDelayMs{ 10000 };
     bool positionControl{ true };
-    int bendMethod{ 2 };  // 0 native, 1 animation event, 2 compatibility
+    int bendMethod{ 2 };  // 0 native, 1 animation event, 2 automatic, 3 SPS pose angle
+    // Degrees at bend 20 for the SPS pose angle. The tilt is applied on top of
+    // the captured base pose, so this only sets how far from neutral it travels.
+    float poseAngleDegrees{ 45.0F };
     bool animatePosition{ true };
     bool gradualErection{ true };
     bool arousalBasedErection{ false };

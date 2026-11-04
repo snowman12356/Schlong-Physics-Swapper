@@ -1,5 +1,6 @@
 #include "BasicNpcPolicy.h"
 #include "PhysicsDecision.h"
+#include "PoseTargets.h"
 
 #include <algorithm>
 
@@ -11,6 +12,31 @@ std::optional<std::string> BasicSosEvent(float arousal)
     if (!reading) return std::nullopt;
     const int bend = static_cast<int>(*reading) / 4 - 14;
     return bend < -9 ? "SOSFlaccid" : "SOSBend" + std::to_string(std::min(bend, 9));
+}
+
+std::optional<std::string> ManagedSosEvent(float arousal, const ManagedPoseProfile& profile,
+    bool tngBackend)
+{
+    const auto reading = Core::ValidArousalReading(arousal);
+    if (!reading) return std::nullopt;
+    // Below the threshold the NPC is soft. At or above it the configured erect
+    // bend applies; zero keeps the ordinary soft pose rather than inventing one.
+    const bool erect = *reading >= profile.threshold && profile.erectBend > 0;
+    const int bend = erect ? std::clamp(profile.erectBend, 0, 20) : 0;
+    // Same curve as the player. SOSBend-9 is the lowest angle, including the
+    // soft pose; SOSFlaccid is not a step on this curve.
+    return std::string(SPS::Core::PoseTargets::EventName(bend, tngBackend));
+}
+
+int ManagedPoseBend(float arousal, const ManagedPoseProfile& profile)
+{
+    const auto reading = Core::ValidArousalReading(arousal);
+    if (!reading) return -1;
+    // Same threshold rule as the event path so the two channels stay in step,
+    // but the result is the bend itself, which the pose channel can express
+    // continuously instead of rounding to one of ten stages.
+    const bool erect = *reading >= profile.threshold && profile.erectBend > 0;
+    return erect ? std::clamp(profile.erectBend, 0, 20) : 0;
 }
 
 void BasicNpcPolicy::ObserveScene(ActorSceneStatus status, std::int64_t sampledAtMs)

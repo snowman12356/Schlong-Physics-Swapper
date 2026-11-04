@@ -24,7 +24,8 @@ $bridges = @(
     'SPS_SexLabBridge',
     'SPS_PositionBridge',
     'SPS_ArousalBridge',
-    'SPS_OStimBridge'
+    'SPS_OStimBridge',
+    'SPS_PoseAngle'
 )
 foreach ($bridge in $bridges) {
     & $compiler "$bridge.psc" "-f=$flags" "-i=$includes" "-o=$outputDirectory" '-op'

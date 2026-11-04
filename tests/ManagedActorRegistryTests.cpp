@@ -142,7 +142,11 @@ int main()
     failures += RunBasicNpcPolicyTests();
     extern int RunBasicNpcPoolTests();
     failures += RunBasicNpcPoolTests();
+    extern int RunPoseAngleTests();
+    failures += RunPoseAngleTests();
+    extern int RunPoseTargetsTests();
+    failures += RunPoseTargetsTests();
     if (failures) return 1;
-    std::cout << "All actor lifetime, request and basic NPC policy tests passed\n";
+    std::cout << "All actor lifetime, request, NPC policy, pose angle and pose target tests passed\n";
     return 0;
 }

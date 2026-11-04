@@ -38,6 +38,9 @@ struct OwnershipEvidence {
     // not found") and is never treated as proof that SMP released a bone.
     int dynamicBonesBefore{ -1 };
     int boneCount{ 0 };
+    // Bones FSMP reported dynamic after an SMP enable. -1 means unsampled.
+    // Equal to boneCount is the only certain proof those bones are dynamic.
+    int dynamicBonesAfter{ -1 };
 };
 
 struct OwnershipCompletion {
@@ -56,7 +59,25 @@ struct OwnershipCompletion {
     // True when a disable was issued while FSMP reported managed bones still
     // dynamic. This is the only passive drift proof SPS has.
     bool smpDriftDetected{ false };
+    int dynamicBonesAfter{ -1 };
 };
+
+// FSMP can prove a bone is dynamic. It cannot prove a bone is kinematic, and
+// CBPC returns nothing. Certainty requires every requested bone to report
+// dynamic on the post-enable sample.
+enum class SmpHandoffProof : int {
+    unsampled = -1,
+    notProven = 0,
+    certain = 1
+};
+
+[[nodiscard]] inline SmpHandoffProof ClassifySmpHandoff(int dynamicAfter, int boneCount)
+{
+    if (dynamicAfter < 0 || boneCount <= 0 || dynamicAfter > boneCount) {
+        return SmpHandoffProof::unsampled;
+    }
+    return dynamicAfter == boneCount ? SmpHandoffProof::certain : SmpHandoffProof::notProven;
+}
 
 struct PhysicsOwnershipSnapshot {
     bool known{ false };

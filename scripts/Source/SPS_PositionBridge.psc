@@ -1,7 +1,7 @@
 Scriptname SPS_PositionBridge Hidden
 
 Int Function GetSPSBridgeVersion() Global
-    Return 3
+    Return 4
 EndFunction
 
 Bool Function ActorRequestCurrent(String token, Actor targetActor) Global Native
@@ -77,7 +77,10 @@ Int Function ApplyBasicActorPosition(String token, String eventName, Bool checkO
     Return 1
 EndFunction
 
-Bool Function ApplyActorPosition(String token, String eventName, Bool useNative, Int bend) Global
+; Sends only the stage event. The angle itself is applied through
+; SPS_PoseAngle, which does not depend on any Schlongs of Skyrim native: SOS AE
+; 4.0.0 removed SOSAE_SKSE.SetSchlongBend.
+Bool Function ApplyActorPosition(String token, String eventName, Bool unusedNative) Global
     If !SPS_FSMPBridge.EnterOperation(token)
         Return False
     EndIf
@@ -87,12 +90,6 @@ Bool Function ApplyActorPosition(String token, String eventName, Bool useNative,
     EndIf
     If eventName != ""
         Debug.SendAnimationEvent(targetActor, eventName)
-    EndIf
-    If !ActorRequestCurrent(token, targetActor) || !SPS_FSMPBridge.OperationCurrent(token)
-        Return False
-    EndIf
-    If useNative
-        SOSAE_SKSE.SetSchlongBend(targetActor, bend)
     EndIf
     Return ActorRequestCurrent(token, targetActor) && SPS_FSMPBridge.OperationCurrent(token)
 EndFunction
@@ -107,12 +104,12 @@ Bool Function SendPlayerAnimationEvent(String eventName) Global
     Return True
 EndFunction
 
-Bool Function SetPlayerSchlongBend(Int bend) Global
+; -1 keeps the angle configured in the INI (Position/PoseAngleDegrees).
+Bool Function SetPlayerPoseAngle(Int bend, Float degreesAtMaxBend) Global
     Actor player = Game.GetPlayer()
     If player == None
         Return False
     EndIf
 
-    SOSAE_SKSE.SetSchlongBend(player, bend)
-    Return True
+    Return SPS_PoseAngle.SetActorPoseAngle(player, bend, degreesAtMaxBend)
 EndFunction

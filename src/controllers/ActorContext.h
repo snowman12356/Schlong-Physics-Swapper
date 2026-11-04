@@ -41,6 +41,9 @@ struct PositionState {
     std::atomic<std::int64_t> animationStartMs{ 0 };
     std::atomic<int> animationTargetBend{ 0 };
     std::atomic<int> animationLastQueuedBend{ -1 };
+    // Whether CompleteAnimation has already reported this ramp as finished, so a
+    // retry that immediately fails again cannot spin the finish and retry paths.
+    std::atomic<bool> animationCompleted{ false };
     std::atomic<std::uint64_t> animationGeneration{ 0 };
     std::atomic<bool> animating{ false };
     std::atomic<bool> relaxing{ false };
