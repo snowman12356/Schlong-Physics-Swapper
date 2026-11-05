@@ -102,6 +102,14 @@ std::atomic<bool> polling{ false };
 std::atomic<bool> tickQueued{ false };
 std::atomic<std::int64_t> diagnosticsRefreshDueMs{ 0 };
 std::atomic<std::int64_t> playerBonesRefreshDueMs{ 0 };
+// The angle the player held when a node refresh reset the applied bend. A
+// morph update (for example an arousal morph addon) raises the same player
+// NiNode event as a real mesh change, and the reconnect that follows used to
+// restart the rise from SOSBend-9 or the fall from the top. Remembering the
+// held angle lets the reconnect continue from it instead of visibly dropping.
+std::atomic<int> heldBendBeforeReconnect{ -1 };
+std::atomic<std::int64_t> heldBendUntilMs{ 0 };
+constexpr std::int64_t kHeldBendWindowMs = 20000;
 std::atomic<std::int64_t> manualPhysicsTestUntilMs{ 0 };
 std::atomic<int> activeManualPhysicsTest{ -1 };  // -1 none, 0 SMP, 1 CBPC
 std::atomic<int> pendingQuickAction{ -1 };       // -1 none, 0 SMP test, 1 CBPC test, 2 repair
@@ -1147,13 +1155,16 @@ void StartGradualErection(int targetBend, int durationMs) {
     // appliedBend -1 and 0 both start on SOSBend-9, the lowest pose. They must
     // not start on SOSFlaccid: that clip snaps through the middle, falls, then
     // the rest of the rise climbs again.
-    const int current = playerContext.position.appliedBend.load();
+    int current = playerContext.position.appliedBend.load();
+    if (current < 0 && NowMs() < heldBendUntilMs.load()) current = heldBendBeforeReconnect.load();
     const int from = std::clamp(current < 0 ? 0 : current, 0, targetBend);
     StartBendAnimation(from, targetBend, durationMs, false);
 }
 
 void StartGradualRelaxation(const Settings& copy) {
-    const int startBend = playerContext.position.appliedBend.load() >= 0 ? playerContext.position.appliedBend.load() : copy.erectBend;
+    int appliedNow = playerContext.position.appliedBend.load();
+    if (appliedNow < 0 && NowMs() < heldBendUntilMs.load()) appliedNow = heldBendBeforeReconnect.load();
+    const int startBend = appliedNow >= 0 ? appliedNow : copy.erectBend;
     int targetBend = copy.flaccidAngleControl && SoftAngleControlAvailable(copy.bendMethod) ? copy.flaccidBend : 0;
     // SOSBend-9 is the lowest angle. CBPC is released there, so a higher
     // configured soft bend cannot end the fall early.
@@ -1653,8 +1664,12 @@ void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& comp
     Record(fmt::format("Physics switched to {} ({}) after the ordered handoff completed",
         cbpc ? "CBPC" : "SMP", cbpc ? "erect" : "soft"));
     const auto currentState = cbpc ? SPS::API::PhysicsState::CBPC : SPS::API::PhysicsState::SMP;
-    if (previousState != currentState)
+    if (previousState != currentState) {
+        // A real owner change is a genuine rise or fall, so the angle held
+        // before an earlier reconnect must not seed it.
+        heldBendUntilMs.store(0);
         NotifyAPIStateChanged(previousState, currentState);
+    }
 }
 
 void FinishOwnershipHandoff(std::uint64_t generation, bool success) {
@@ -2231,6 +2246,10 @@ void Tick() {
                 // mod does not emit an SKSE NiNode update event.
                 CancelErectionAnimation();
                 ResetPositionRecovery();
+                if (const int held = playerContext.position.appliedBend.load(); held >= 0) {
+                    heldBendBeforeReconnect.store(held);
+                    heldBendUntilMs.store(now + kHeldBendWindowMs);
+                }
                 playerContext.position.appliedBend.store(-1);
                 playerContext.position.settleDueMs.store(0);
                 playerContext.position.confirmationDueMs.store(0);
@@ -2860,77 +2879,18 @@ void __stdcall RenderNPCs() {
     { std::scoped_lock lock(settingsLock); copy = settings; }
     const Settings previous = copy;
     bool changed = false;
-    PageHeading("NPCs", "Pose nearby NPCs from their arousal, and optionally give one NPC full SPS physics control.");
-    Hint("Basic NPC poses need OSL Aroused's own SOS option turned off. SPS does not change that for you.");
-    changed |= ImGuiMCP::Checkbox("I disabled OSL's SOS control", &copy.basicNpcProviderSosDisabled);
-    if (!copy.basicNpcProviderSosDisabled && copy.basicNpcEnabled) { copy.basicNpcEnabled = false; changed = true; }
-    ImGuiMCP::BeginDisabled(!copy.basicNpcProviderSosDisabled);
-    changed |= ImGuiMCP::Checkbox("Enable basic NPC behavior", &copy.basicNpcEnabled);
-    ImGuiMCP::EndDisabled();
-    ImGuiMCP::TextWrapped("This test changes soft/erect poses. Full NPC physics switching and selecting managed NPCs are still being developed. It does not add SMP support to a mesh.");
-    ImGuiMCP::TextWrapped("NPC poses wait during scenes or when scene information is unavailable. Turning this off stops further changes and leaves the last pose; restore OSL's SOS control yourself if desired.");
-    if (!copy.enabled) ImGuiMCP::TextWrapped("SPS is disabled on the Home page, so NPC behavior is also off.");
-    const auto npc = SPS::Runtime::ReadBasicNpcStatus();
-    SectionHeading("CURRENT TEST STATUS");
-    ImGuiMCP::TextWrapped("%s", npc.state.c_str());
-    ImGuiMCP::TextWrapped("Nearby NPCs: %u / 8. Waiting for information: %u. In scenes: %u. Pending requests: %u.",
-        npc.tracked, npc.waiting, npc.inScene, npc.pending);
-    ImGuiMCP::TextWrapped("Current NPCs: %llu completed commands, %llu scene deferrals, %llu failed or expired requests.",
-        static_cast<unsigned long long>(npc.completed), static_cast<unsigned long long>(npc.deferred),
-        static_cast<unsigned long long>(npc.failed));
-    ImGuiMCP::TextWrapped("Requests waiting for a bridge or free slot this session: %llu. Completed commands still need a visible in-game check.",
-        static_cast<unsigned long long>(npc.blocked));
+    const ImGuiMCP::ImVec4 green(0.45F, 0.85F, 0.45F, 1.0F);
+    const ImGuiMCP::ImVec4 amber(1.0F, 0.78F, 0.25F, 1.0F);
+    const ImGuiMCP::ImVec4 grey(0.75F, 0.75F, 0.75F, 1.0F);
 
-    ImGuiMCP::Separator();
-    SectionHeading("OSL AROUSAL TEST VALUES");
-    ImGuiMCP::TextWrapped("These sliders write the real OSL Aroused value when released. They are test controls, not SPS-only overrides, and OSL can change the values again afterward. The player's own value is on the Home page.");
-    const bool oslReady = OslArousedLoaded() && !SloArousedLoaded() && !ClassicArousedLoaded();
-    ImGuiMCP::BeginDisabled(!oslReady);
-    struct SliderState { float value{ 0.0F }; bool editing{ false }; };
-    static std::unordered_map<std::uint32_t, SliderState> npcSliders;
-    std::erase_if(npcSliders, [&npc](const auto& item) {
-        return std::none_of(npc.actors.begin(), npc.actors.end(),
-            [formID = item.first](const auto& actor) { return actor.formID == formID; });
-    });
-    if (!oslReady) npcSliders.clear();
-    for (const auto& actor : npc.actors) {
-        auto& slider = npcSliders[actor.formID];
-        if (!slider.editing && actor.arousal) slider.value = *actor.arousal;
-        const auto label = fmt::format("{} [0x{:08X}]###OSL NPC arousal {:08X}",
-            actor.name, actor.formID, actor.formID);
-        if (ImGuiMCP::SliderFloat(label.c_str(), &slider.value, 0.0F, 100.0F, "%.0f"))
-            slider.editing = true;
-        if (ImGuiMCP::IsItemDeactivatedAfterEdit()) {
-            // The basic NPC pool is game-thread-only. This render callback must
-            // not read or write it directly; the request is queued by ID so the
-            // pool can also be rebuilt or reset before the task runs.
-            const auto formID = actor.formID;
-            const auto value = slider.value;
-            if (auto* tasks = SKSE::GetTaskInterface()) {
-                tasks->AddTask([formID, value] {
-                    if (!SPS::Runtime::QueueBasicNpcOslArousalWrite(formID, value,
-                            papyrusDispatchAllowedAfterMs.load()))
-                        Record(fmt::format("Could not queue an OSL arousal write for NPC {:08X}", formID), true);
-                });
-            }
-            slider.editing = false;
-        }
-    }
-    ImGuiMCP::EndDisabled();
-    if (!oslReady) ImGuiMCP::TextWrapped("Current OSL Aroused is required, without another arousal provider taking priority.");
-    else if (npc.actors.empty()) ImGuiMCP::TextWrapped("No eligible nearby NPC is currently tracked. NPC sliders appear here after discovery.");
+    // Window-scoped; reset at the end of this page so other pages keep their size.
+    ImGuiMCP::SetWindowFontScale(1.15F);
 
-    ImGuiMCP::Separator();
-    SectionHeading("MANAGED NPC (FULL PHYSICS)");
-    ImGuiMCP::TextWrapped("One NPC can be enrolled in full SPS control: its own arousal, its own soft/erect decisions, and SMP or CBPC ownership. This is separate from the basic behavior above. A managed NPC leaves the basic list so the two never issue competing commands.");
-    changed |= ImGuiMCP::Checkbox("Enable managed NPC", &copy.managedNpcEnabled);
-    if (!copy.enabled) ImGuiMCP::TextWrapped("SPS is disabled on the Home page, so managed NPC control is also off.");
-    ImGuiMCP::TextWrapped("Pick an NPC from the nearby list below, or look at one and use Add NPC in crosshair. "
-        "In game, looking at a managed NPC shows a short notification. Closing the game forgets the list.");
+    PageHeading("NPCs", "Choose which nearby NPCs SPS controls. Everything else is left to your arousal mod.");
+    if (!copy.enabled)
+        ImGuiMCP::TextColored(amber, "SPS is turned off on the Home page, so NPC control is off.");
 
     const auto managed = SPS::Runtime::ReadManagedNpcStatus();
-    ImGuiMCP::TextWrapped("Status: %s (limit %zu)", managed.state.c_str(), managed.capacity);
-    if (!managed.rejection.empty()) ImGuiMCP::TextWrapped("Last refused action: %s", managed.rejection.c_str());
 
     // Every registry access is game-thread-only, so the render callback only
     // queues an intent by FormID and the tick applies it.
@@ -2946,90 +2906,58 @@ void __stdcall RenderNPCs() {
             tasks->AddTask([formID] { SPS::Runtime::QueueManagedNpcRemove(formID); });
     };
 
-    SectionHeading("MANAGED NOW");
-    if (managed.actors.empty()) ImGuiMCP::TextWrapped("No NPC is currently managed.");
+    // ---- Managed NPCs: the part most people come here for ----
+    SectionHeading("MANAGED NPCS");
+    changed |= ImGuiMCP::Checkbox("Enable managed NPCs", &copy.managedNpcEnabled);
+    ImGuiMCP::TextWrapped("A managed NPC gets full SPS physics: soft or erect depending on its own arousal. "
+        "The list is forgotten when you close the game.");
+    ImGuiMCP::Spacing();
+
+    if (managed.actors.empty()) {
+        ImGuiMCP::TextColored(grey, "No NPC is managed yet. Pick one from the list below, or look at one and press Add NPC in crosshair.");
+    }
+    struct ManagedSliderState { float value{ 0.0F }; bool editing{ false }; };
+    static std::unordered_map<std::uint32_t, ManagedSliderState> managedSliders;
+    std::erase_if(managedSliders, [&managed](const auto& item) {
+        return std::none_of(managed.actors.begin(), managed.actors.end(),
+            [formID = item.first](const auto& actor) { return actor.formID == formID; });
+    });
+    const bool oslReadyManaged = OslArousedLoaded() && !SloArousedLoaded() && !ClassicArousedLoaded();
     for (const auto& actor : managed.actors) {
-        const auto arousalText = actor.arousal ? fmt::format(", arousal {:.0f}", *actor.arousal) : std::string{};
-        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.85F, 0.45F, 1.0F), "%s", actor.name.c_str());
+        ImGuiMCP::TextColored(green, "%s", actor.name.c_str());
         ImGuiMCP::SameLine();
-        ImGuiMCP::TextWrapped("- %s, %s%s", actor.physics.c_str(), actor.state.c_str(), arousalText.c_str());
+        if (actor.arousal)
+            ImGuiMCP::Text("- %s, arousal %.0f", actor.physics.c_str(), *actor.arousal);
+        else
+            ImGuiMCP::Text("- %s, waiting for arousal", actor.physics.c_str());
         ImGuiMCP::SameLine();
         if (ImGuiMCP::Button(fmt::format("Remove###sps-managed-remove-{:08X}", actor.formID).c_str()))
             queueRemove(actor.formID);
-    }
-    if (!managed.actors.empty())
-        ImGuiMCP::TextWrapped("Commands so far: %llu physics changes, %llu poses applied, %llu deferred, %llu failed, %llu blocked. "
-            "These count commands sent; check the NPC in game for visible motion.",
-            static_cast<unsigned long long>(managed.switched), static_cast<unsigned long long>(managed.applied),
-            static_cast<unsigned long long>(managed.deferred), static_cast<unsigned long long>(managed.failed),
-            static_cast<unsigned long long>(managed.blocked));
-
-    SectionHeading("SCHLONG AND SEXLAB");
-    {
-        const bool sosAe = SosAeNativeLoaded();
-        const bool sexLab = PluginLoaded({ "SexLab.esm" });
-        if (!sosAe && !sexLab)
-            ImGuiMCP::TextWrapped("Needs Schlongs of Skyrim AE or SexLab P+ to show this.");
-        else
-            ImGuiMCP::TextWrapped("SOS AE schlong and SexLab sex for the player and managed NPCs. "
-                "'Make futa' uses SexLab's own futa override; SPS remembers it in this save and "
-                "re-applies it if SexLab loses it.");
-        std::vector<std::pair<std::uint32_t, std::string>> people{ { SPS::API::kPlayerFormID, "Player" } };
-        for (const auto& actor : managed.actors) people.emplace_back(actor.formID, actor.name);
-        for (const auto& [formID, name] : people) {
-            const auto identity = SPS::Runtime::ReadActorIdentity(formID);
-            if (!identity || !identity->known) {
-                ImGuiMCP::TextWrapped("%s: reading...", name.c_str());
-                continue;
-            }
-            std::string schlong = !identity->sosRead ? "SOS AE not detected" :
-                identity->addon.empty() ? "no schlong" :
-                fmt::format("{} (size {})", identity->addon, identity->rank);
-            std::string sex = !identity->sexLabRead ? "SexLab not detected" :
-                fmt::format("SexLab: {}{}", SPS::Runtime::SexLabSexName(identity->sex),
-                    identity->sex == 2 && identity->baseSex != 2 ? " (forced)" : "");
-            ImGuiMCP::TextWrapped("%s: %s, %s%s", name.c_str(), schlong.c_str(), sex.c_str(),
-                identity->rememberedFuta ? ", remembered in this save" : "");
-            if (!identity->sexLabRead) continue;
-            const bool forced = identity->rememberedFuta || (identity->sex == 2 && identity->baseSex != 2);
-            if (SPS::Runtime::FutaEligible(*identity) && identity->sex != 2) {
-                ImGuiMCP::SameLine();
-                if (ImGuiMCP::Button(fmt::format("Make futa in SexLab###sps-futa-{:08X}", formID).c_str()))
-                    SPS::Runtime::RequestFuta(formID, true);
-            } else if (forced) {
-                ImGuiMCP::SameLine();
-                if (ImGuiMCP::Button(fmt::format("Undo futa###sps-unfuta-{:08X}", formID).c_str()))
-                    SPS::Runtime::RequestFuta(formID, false);
+        if (oslReadyManaged) {
+            auto& slider = managedSliders[actor.formID];
+            if (!slider.editing && actor.arousal) slider.value = *actor.arousal;
+            const auto label = fmt::format("Set arousal###sps-managed-arousal-{:08X}", actor.formID);
+            if (ImGuiMCP::SliderFloat(label.c_str(), &slider.value, 0.0F, 100.0F, "%.0f"))
+                slider.editing = true;
+            if (ImGuiMCP::IsItemDeactivatedAfterEdit()) {
+                const auto formID = actor.formID;
+                const auto value = slider.value;
+                if (auto* tasks = SKSE::GetTaskInterface()) {
+                    tasks->AddTask([formID, value] {
+                        if (!SPS::Runtime::QueueManagedNpcArousalWrite(formID, value))
+                            Record(fmt::format("Could not queue an OSL arousal write for managed NPC {:08X}", formID), true);
+                    });
+                }
+                slider.editing = false;
             }
         }
     }
+    if (oslReadyManaged && !managed.actors.empty())
+        Hint("Writes OSL's real value when you let go. OSL can change it again afterwards.");
+    if (!managed.rejection.empty())
+        ImGuiMCP::TextColored(amber, "Could not do that: %s", managed.rejection.c_str());
 
-    SectionHeading("NEARBY NPCS");
-    if (!copy.managedNpcEnabled || !copy.enabled)
-        ImGuiMCP::TextWrapped("Turn on Enable managed NPC to see nearby NPCs here.");
-    else if (managed.nearby.empty())
-        ImGuiMCP::TextWrapped("No loaded NPC within range. Move closer to the NPC you want.");
-    const bool atLimit = managed.actors.size() >= managed.capacity;
-    for (const auto& candidate : managed.nearby) {
-        const auto meters = candidate.distance / 70.0F;  // ~70 units per metre
-        ImGuiMCP::TextWrapped("%s (%.0f m)", candidate.name.c_str(), meters);
-        ImGuiMCP::SameLine();
-        if (candidate.managed) {
-            ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.85F, 0.45F, 1.0F), "Managed");
-            continue;
-        }
-        if (!candidate.unavailable.empty()) {
-            ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.75F, 0.75F, 0.75F, 1.0F), "%s", candidate.unavailable.c_str());
-            continue;
-        }
-        ImGuiMCP::BeginDisabled(atLimit);
-        if (ImGuiMCP::Button(fmt::format("Manage###sps-managed-add-{:08X}", candidate.formID).c_str()))
-            queueAdd(candidate.formID);
-        ImGuiMCP::EndDisabled();
-    }
-    if (atLimit && !managed.nearby.empty())
-        ImGuiMCP::TextWrapped("The limit is %zu managed NPC in this build. Remove one to manage another.", managed.capacity);
-
+    ImGuiMCP::Spacing();
     if (ImGuiMCP::Button("Add NPC in crosshair")) {
         if (auto* tasks = SKSE::GetTaskInterface()) {
             tasks->AddTask([] {
@@ -3041,13 +2969,163 @@ void __stdcall RenderNPCs() {
         }
     }
     ImGuiMCP::SameLine();
-    if (ImGuiMCP::Button("Remove all managed NPCs")) {
-        for (const auto& actor : managed.actors) {
-            const auto formID = actor.formID;
-            if (auto* tasks = SKSE::GetTaskInterface())
-                tasks->AddTask([formID] { SPS::Runtime::QueueManagedNpcRemove(formID); });
+    ImGuiMCP::BeginDisabled(managed.actors.empty());
+    if (ImGuiMCP::Button("Remove all")) {
+        for (const auto& actor : managed.actors) queueRemove(actor.formID);
+    }
+    ImGuiMCP::EndDisabled();
+
+    // ---- Nearby list ----
+    SectionHeading("NEARBY NPCS");
+    if (!copy.managedNpcEnabled || !copy.enabled)
+        ImGuiMCP::TextColored(grey, "Turn on Enable managed NPCs to see who is nearby.");
+    else if (managed.nearby.empty())
+        ImGuiMCP::TextColored(grey, "Nobody in range. Move closer to the NPC you want.");
+    const bool atLimit = managed.actors.size() >= managed.capacity;
+    for (const auto& candidate : managed.nearby) {
+        const auto meters = candidate.distance / 70.0F;  // ~70 units per metre
+        ImGuiMCP::Text("%s", candidate.name.c_str());
+        ImGuiMCP::SameLine(300.0F);
+        ImGuiMCP::TextColored(grey, "%.0f m", meters);
+        ImGuiMCP::SameLine(380.0F);
+        if (candidate.managed) {
+            ImGuiMCP::TextColored(green, "Managed");
+            continue;
+        }
+        if (!candidate.unavailable.empty()) {
+            ImGuiMCP::TextColored(grey, "%s", candidate.unavailable.c_str());
+            continue;
+        }
+        ImGuiMCP::BeginDisabled(atLimit);
+        if (ImGuiMCP::Button(fmt::format("Manage###sps-managed-add-{:08X}", candidate.formID).c_str()))
+            queueAdd(candidate.formID);
+        ImGuiMCP::EndDisabled();
+    }
+    if (atLimit && !managed.nearby.empty())
+        ImGuiMCP::TextColored(amber, "Limit reached (%zu). Remove one to manage another.", managed.capacity);
+
+    // ---- Optional and technical sections, closed by default ----
+    ImGuiMCP::Spacing();
+    ImGuiMCP::Separator();
+
+    // Kept outside the collapsible section so the safety rule always applies.
+    if (!copy.basicNpcProviderSosDisabled && copy.basicNpcEnabled) { copy.basicNpcEnabled = false; changed = true; }
+
+    if (ImGuiMCP::CollapsingHeader("Everyone else (basic NPC poses)")) {
+        ImGuiMCP::TextWrapped("Poses other nearby NPCs soft or erect from their arousal, without SMP/CBPC control. "
+            "Turn off Enable SOS in OSL Aroused first so the two do not fight, then tick the box below.");
+        changed |= ImGuiMCP::Checkbox("I turned off OSL's SOS control", &copy.basicNpcProviderSosDisabled);
+        ImGuiMCP::BeginDisabled(!copy.basicNpcProviderSosDisabled);
+        changed |= ImGuiMCP::Checkbox("Pose other NPCs", &copy.basicNpcEnabled);
+        ImGuiMCP::EndDisabled();
+        Hint("NPCs wait during scenes. Turning this off leaves their last pose.");
+
+        const auto npc = SPS::Runtime::ReadBasicNpcStatus();
+        ImGuiMCP::Spacing();
+        ImGuiMCP::Text("%s", npc.state.c_str());
+        Hint("Nearby: %u / 8", npc.tracked);
+
+        ImGuiMCP::Spacing();
+        ImGuiMCP::Text("Set arousal (test)");
+        Hint("Writes OSL's real value when you let go. OSL can change it again afterwards.");
+        const bool oslReady = OslArousedLoaded() && !SloArousedLoaded() && !ClassicArousedLoaded();
+        ImGuiMCP::BeginDisabled(!oslReady);
+        struct SliderState { float value{ 0.0F }; bool editing{ false }; };
+        static std::unordered_map<std::uint32_t, SliderState> npcSliders;
+        std::erase_if(npcSliders, [&npc](const auto& item) {
+            return std::none_of(npc.actors.begin(), npc.actors.end(),
+                [formID = item.first](const auto& actor) { return actor.formID == formID; });
+        });
+        if (!oslReady) npcSliders.clear();
+        for (const auto& actor : npc.actors) {
+            auto& slider = npcSliders[actor.formID];
+            if (!slider.editing && actor.arousal) slider.value = *actor.arousal;
+            const auto label = fmt::format("{}###OSL NPC arousal {:08X}", actor.name, actor.formID);
+            if (ImGuiMCP::SliderFloat(label.c_str(), &slider.value, 0.0F, 100.0F, "%.0f"))
+                slider.editing = true;
+            if (ImGuiMCP::IsItemDeactivatedAfterEdit()) {
+                // The basic NPC pool is game-thread-only. This render callback must
+                // not read or write it directly; the request is queued by ID so the
+                // pool can also be rebuilt or reset before the task runs.
+                const auto formID = actor.formID;
+                const auto value = slider.value;
+                if (auto* tasks = SKSE::GetTaskInterface()) {
+                    tasks->AddTask([formID, value] {
+                        if (!SPS::Runtime::QueueBasicNpcOslArousalWrite(formID, value,
+                                papyrusDispatchAllowedAfterMs.load()))
+                            Record(fmt::format("Could not queue an OSL arousal write for NPC {:08X}", formID), true);
+                    });
+                }
+                slider.editing = false;
+            }
+        }
+        ImGuiMCP::EndDisabled();
+        if (!oslReady) Hint("Needs OSL Aroused, with no other arousal mod taking priority.");
+        else if (npc.actors.empty()) Hint("No eligible NPC nearby yet.");
+    }
+
+    if (ImGuiMCP::CollapsingHeader("Schlong and SexLab")) {
+        const bool sosAe = SosAeNativeLoaded();
+        const bool sexLab = PluginLoaded({ "SexLab.esm" });
+        if (!sosAe && !sexLab)
+            ImGuiMCP::TextColored(grey, "Needs Schlongs of Skyrim AE or SexLab P+ to show this.");
+        else
+            ImGuiMCP::TextWrapped("Shows the schlong and SexLab sex of you and your managed NPCs. "
+                "Make futa uses SexLab's own futa override. SPS remembers it in this save and re-applies it if SexLab forgets.");
+        std::vector<std::pair<std::uint32_t, std::string>> people{ { SPS::API::kPlayerFormID, "Player" } };
+        for (const auto& actor : managed.actors) people.emplace_back(actor.formID, actor.name);
+        for (const auto& [formID, name] : people) {
+            const auto identity = SPS::Runtime::ReadActorIdentity(formID);
+            if (!identity || !identity->known) {
+                ImGuiMCP::Text("%s: reading...", name.c_str());
+                continue;
+            }
+            std::string schlong = !identity->sosRead ? "SOS AE not detected" :
+                identity->addon.empty() ? "no schlong" :
+                fmt::format("{} (size {})", identity->addon, identity->rank);
+            std::string sex = !identity->sexLabRead ? "SexLab not detected" :
+                fmt::format("SexLab: {}{}", SPS::Runtime::SexLabSexName(identity->sex),
+                    identity->sex == 2 && identity->baseSex != 2 ? " (forced)" : "");
+            ImGuiMCP::TextColored(green, "%s", name.c_str());
+            ImGuiMCP::Text("%s, %s%s", schlong.c_str(), sex.c_str(),
+                identity->rememberedFuta ? ", remembered in this save" : "");
+            if (!identity->sexLabRead) continue;
+            const bool forced = identity->rememberedFuta || (identity->sex == 2 && identity->baseSex != 2);
+            if (SPS::Runtime::FutaEligible(*identity) && identity->sex != 2) {
+                if (ImGuiMCP::Button(fmt::format("Make futa in SexLab###sps-futa-{:08X}", formID).c_str()))
+                    SPS::Runtime::RequestFuta(formID, true);
+            } else if (forced) {
+                if (ImGuiMCP::Button(fmt::format("Undo futa###sps-unfuta-{:08X}", formID).c_str()))
+                    SPS::Runtime::RequestFuta(formID, false);
+            } else if (identity->baseSex != 0 && identity->baseSex != 1) {
+                Hint("No futa button: SexLab lists this character as futa or a creature already.");
+            } else if (identity->sosRead && identity->addon.empty()) {
+                Hint("No futa button: give them a schlong in SOS first.");
+            }
+            ImGuiMCP::Spacing();
         }
     }
+
+    if (ImGuiMCP::CollapsingHeader("Technical details")) {
+        const auto npc = SPS::Runtime::ReadBasicNpcStatus();
+        Hint("Managed NPCs");
+        ImGuiMCP::TextWrapped("%s (limit %zu)", managed.state.c_str(), managed.capacity);
+        if (!managed.actors.empty())
+            ImGuiMCP::TextWrapped("Commands sent: %llu physics changes, %llu poses applied, %llu deferred, %llu failed, %llu blocked. "
+                "These count commands, so check the NPC in game for visible motion.",
+                static_cast<unsigned long long>(managed.switched), static_cast<unsigned long long>(managed.applied),
+                static_cast<unsigned long long>(managed.deferred), static_cast<unsigned long long>(managed.failed),
+                static_cast<unsigned long long>(managed.blocked));
+        ImGuiMCP::Spacing();
+        Hint("Basic NPC poses");
+        ImGuiMCP::TextWrapped("Waiting for information: %u. In scenes: %u. Pending requests: %u.",
+            npc.waiting, npc.inScene, npc.pending);
+        ImGuiMCP::TextWrapped("%llu completed, %llu scene deferrals, %llu failed or expired, %llu waiting for a bridge or free slot.",
+            static_cast<unsigned long long>(npc.completed), static_cast<unsigned long long>(npc.deferred),
+            static_cast<unsigned long long>(npc.failed), static_cast<unsigned long long>(npc.blocked));
+    }
+
+    ImGuiMCP::SetWindowFontScale(1.0F);
     if (changed) SaveSettingsAndApply(copy, previous);
 }
 

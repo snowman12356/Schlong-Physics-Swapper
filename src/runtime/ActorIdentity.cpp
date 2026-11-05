@@ -244,7 +244,7 @@ void OnRevert(SKSE::SerializationInterface*)
 
 bool FutaEligible(const ActorIdentity& identity)
 {
-    return identity.known && identity.sexLabRead && identity.baseSex == 1 &&
+    return identity.known && identity.sexLabRead && (identity.baseSex == 0 || identity.baseSex == 1) &&
         (!identity.sosRead || !identity.addon.empty());
 }
 

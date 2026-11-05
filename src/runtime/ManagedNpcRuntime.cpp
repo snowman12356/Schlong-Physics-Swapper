@@ -14,6 +14,7 @@
 #include <SKSE/SKSE.h>
 #include <fmt/format.h>
 #include <algorithm>
+#include <cmath>
 #include <mutex>
 #include <unordered_map>
 
@@ -46,6 +47,15 @@ struct Driver {
     int loggedRequestCBPC{ -1 };
     std::int64_t requestLoggedAt{ -1 };
     std::int64_t blockedLoggedAt{ -1 };
+    // Menu "set arousal" test write. Queued by FormID, sent by Service on the
+    // game thread, retried at most once a second until it lands or expires.
+    std::optional<float> requestedArousalWrite;
+    std::int64_t writeStartedAt{ -1 };
+    std::int64_t writeRetryAt{ 0 };
+    std::int64_t writeExpiresAt{ 0 };
+    // A poll that started before the last write finished may return the old
+    // value; it must not overwrite the freshly written one.
+    std::int64_t lastWriteDoneAt{ -1 };
 };
 std::unordered_map<std::uint64_t, Driver> drivers;
 constexpr std::int64_t kRepeatLogMs = 10000;
@@ -396,6 +406,40 @@ void Service(ActorWorkTicket ticket, ActorContext& context, RE::Actor* actor, co
         // Drop a handoff that never returned instead of waiting forever.
         (void)controller.Expire(now, 15000);
     }
+    if (driver.requestedArousalWrite && now >= driver.writeExpiresAt) {
+        driver.requestedArousalWrite.reset();
+        driver.writeStartedAt = -1;
+        ++driver.failed;
+        SKSE::log::warn("Managed NPC {:08X}: OSL arousal write expired without completing", ticket.formID);
+    }
+    if (driver.requestedArousalWrite && driver.writeStartedAt < 0 && now >= driver.writeRetryAt) {
+        const auto requested = *driver.requestedArousalWrite;
+        driver.writeStartedAt = now;
+        if (!QueueActorArousalWrite(lease, actor, requested, allowedAfterMs,
+            [ticket, started = now, requested](ActorWorkTicket, auto result) {
+                const auto found = drivers.find(Key(ticket));
+                if (found == drivers.end() || !registry.Resolve(ticket)) return;
+                auto& tracked = found->second;
+                if (tracked.writeStartedAt != started) return;
+                tracked.writeStartedAt = -1;
+                if (tracked.requestedArousalWrite &&
+                    std::abs(*tracked.requestedArousalWrite - requested) < 0.01F)
+                    tracked.requestedArousalWrite.reset();
+                if (!result) {
+                    ++tracked.failed;
+                    SKSE::log::warn("Managed NPC {:08X}: OSL arousal write did not complete", ticket.formID);
+                    return;
+                }
+                tracked.arousal = *result;
+                tracked.lastWriteDoneAt = NowMs();
+                tracked.arousalAt = tracked.lastWriteDoneAt;
+                SKSE::log::info("Managed NPC {:08X}: OSL arousal set to {:.1f} (requested {:.1f})",
+                    ticket.formID, *result, requested);
+            })) {
+            driver.writeStartedAt = -1;
+            driver.writeRetryAt = now + 1000;
+        }
+    }
     if (now >= driver.nextPollMs) {
         driver.nextPollMs = now + 1000;
         if (slot.Begin(now)) {
@@ -405,6 +449,7 @@ void Service(ActorWorkTicket ticket, ActorContext& context, RE::Actor* actor, co
                 if (!entry.Finish(started)) return;
                 const auto found = drivers.find(Key(ticket));
                 if (found == drivers.end() || !registry.Resolve(ticket)) return;
+                if (started < found->second.lastWriteDoneAt) return;
                 found->second.arousal = value;
                 found->second.arousalAt = started;
             })) {
@@ -440,7 +485,14 @@ void Service(ActorWorkTicket ticket, ActorContext& context, RE::Actor* actor, co
     }
 
     // A scene owns positioning: never send a background ownership change.
-    if (driver.scene != ActorSceneStatus::clear) return;
+    if (driver.scene != ActorSceneStatus::clear) {
+        // The scene's own animations replace the pose, so the recorded angle is
+        // no longer evidence of the bone. Forget it, otherwise the unchanged
+        // event is never re-sent once the scene ends and the angle is lost.
+        driver.appliedEvent.clear();
+        driver.appliedBend = -1;
+        return;
+    }
     if (!driver.arousal || driver.arousalAt < 0 ||
         now - driver.arousalAt > 3000 || now < driver.arousalAt) return;
     if (controller.Read().pending) return;
@@ -588,6 +640,19 @@ bool QueueManagedNpcAdd(std::uint32_t formID)
     std::scoped_lock lock(statusLock);
     if (std::find(pendingAdds.begin(), pendingAdds.end(), formID) != pendingAdds.end()) return false;
     pendingAdds.push_back(formID);
+    return true;
+}
+
+bool QueueManagedNpcArousalWrite(std::uint32_t formID, float value)
+{
+    const auto requested = Core::ValidArousalReading(value);
+    if (!requested || !OslArousedLoaded()) return false;
+    const auto found = registry.Find(formID);
+    if (!found) return false;
+    auto& driver = DriverFor(found->ticket);
+    driver.requestedArousalWrite = *requested;
+    driver.writeRetryAt = 0;
+    driver.writeExpiresAt = NowMs() + 5000;
     return true;
 }
 

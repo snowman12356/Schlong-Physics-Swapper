@@ -52,8 +52,88 @@ requiring users to repair the state manually.
 
 ## Current development status
 
-**Dead `SetAnimationTargetBend` removed (built 2026-11-05, not installed, not
-checked in game):** requested by the user. The function had one caller, in the
+**OSL arousal revert, root cause found (2026-11-05, no code changed yet):** read
+from `ozooma10/OSLAroused` master (`ArousalSystemOSL.cpp`,
+`ActorStateManager.cpp`, `PapyrusInterface.cpp`; commit hash not captured, so
+confirm the installed OSL version matches). `SetArousal` stores a clamped raw
+value and does not touch `LastCheckTime`. `GetArousal` then lerps from that value
+toward a baseline (`max(libido modifiers, libido)`) by
+`t = 1 - epsilon^gameHoursPassed`, so a set value decays back to the baseline.
+`SetActorArousalLocked(actor, true)` makes `GetArousal` return the stored value
+with no decay, but while locked `SetArousal`/`ModifyArousal` write nothing, so
+the value must be set first and the lock applied after. The lock is persisted by
+OSL in the save (`OSLL`). Also confirmed: OSL's SOS bend is
+`int(arousal)/4 - 14`, below -9 flaccid, capped at 9, skipped in scenes. Not
+verified: epsilon's default, and which OSL commit the installed 2.9.3 is.
+
+**Installed 2026-11-05 21:22 (DLL `A39B6E9D…0314`, with Skyrim closed):** the NPCs
+page redesign, male futa, managed-NPC arousal slider, managed-NPC scene angle fix
+and player held-angle fix below. Nine files were verified identical to the
+package (DLL, manifest, six PEX plus the OStim PEX, and `SPS_SexLabBridge.psc`);
+the INI and `meta.ini` were unchanged. Rollback:
+`out/backups/testmod-before-npcpage-20261105-212223`. None of it is checked in
+game.
+
+**NPCs page redesign (built 2026-11-05, not checked in game):**
+requested by the user (page was cluttered). `RenderNPCs` only; no settings,
+scripts or saved data changed. Layout: text scaled 1.15x for this page (reset at
+the end so other pages keep their size), then MANAGED NPCS (enable box, one line
+per managed NPC with Remove, Add in crosshair, Remove all) and NEARBY NPCS
+(name, distance, Manage). Three closed-by-default sections hold the rest:
+"Everyone else (basic NPC poses)" (OSL SOS box, enable, test arousal sliders),
+"Schlong and SexLab" (now says why there is no futa button: not female in SexLab,
+or no SOS schlong), and "Technical details" (all counters). All
+`SetWindowFontScale`, `SeparatorText` and style exports were confirmed in the
+installed Menu Framework 3.23.0 DLL. Managed NPCs lost their arousal slider
+because they are excluded from the basic list (`BasicNpcRuntime.cpp:36`); each
+managed NPC now has its own "Set arousal" slider (new
+`QueueManagedNpcArousalWrite`, same `QueueActorArousalWrite` bridge as the basic
+sliders; retried once a second, expires after 5 s; a poll that started before the
+write finished cannot overwrite it). The OSL arousal-revert is NOT fixed: OSL's
+header says `GetArousal` updates arousal from time, but its source could not be
+found, so the cause and the meaning of `SetActorArousalLocked` are unverified.
+The futa button only shows for the player or a managed NPC that SexLab lists as
+male or female (base sex 0 or 1) and that has an SOS schlong (`FutaEligible`).
+It previously required female; the user asked for males too. P+
+`sslActorLibrary.TreatAsSex` (lines 203-212) has no sex restriction, so both
+`FutaEligible` and `SPS_SexLabBridge.SetActorFuta` now accept 0 or 1. The Papyrus
+script changed (PEX rebuilt), ABI v4 unchanged. Unverified in game: how SexLab P+
+scenes treat a base-male forced to futa. Native build 0 warnings, suites passed,
+scripts 0/0, package validation passed. ZIP SHA-256
+`B4CB16C903459621A6E6A311140782E1AE78918E005511C9321709C41AFEDEBA`, DLL SHA-256
+`A39B6E9D75D8647A885F0FDE1152AB8C73C59A5F06A8C5D55ECB489005030314`.
+
+Player angle does not hold (same build; user: "no obvious trigger"). Evidence
+from the 21:01-21:08 log: `Player mesh changed; guarded erect-physics reconnect
+queued` repeated every 7-10 s with no equipment change (26 times in the log, plus
+10 `SPS Arousal Morphs requested SMP`/`released` pairs). Each one reset
+`appliedBend` to -1, so the next rise restarted `0 to 18/20 over 4 s`, or a fall
+restarted `18 to 0/20 over 8 s` from the top; that is the visible drop.
+Interpretation (not proven): the user's arousal-morph addon causes player NiNode
+update events, which `NiNodeSink` treats as a mesh rebuild; this is open item 2.
+Change: the held angle is remembered across that reset
+(`heldBendBeforeReconnect`, 20 s window) and seeds `StartGradualErection` /
+`StartGradualRelaxation` when `appliedBend` is -1; it is cleared on a real owner
+change. The reconnect still runs, but should no longer restart the angle from the
+bottom or top. Native only, safe for existing saves, unverified in game. The
+addon's own SMP request/release cycle still primes SOSBend-9 on return to CBPC
+and is not changed here.
+
+Managed NPC angle lost after a scene (same build, user report "angle doesn't
+stay when fully erect"): the 20:23-20:44 log shows Cicero's `SOSBend8` sent once,
+a scene from 20:39:11 to 20:43:13, and no angle sent afterwards. Cause, confirmed
+in source: `Service` returned early during a scene without clearing
+`appliedEvent`/`appliedBend`, so the unchanged event was never re-sent when the
+scene ended. It now clears both while a scene is active, as basic NPCs already do.
+Not confirmed: whether the user meant the player or an NPC; the player's log
+shows bend 18/18 held in CBPC with no animation, so a player case would need a
+different cause. Native only; unverified in game.
+
+**Dead `SetAnimationTargetBend` removed (built, committed as `03afa61` and
+installed 2026-11-05, not checked in game):** installed with Skyrim closed; the
+DLL, manifest and seven PEX files were verified identical to the package, and the
+INI and `meta.ini` were unchanged. Rollback:
+`out/backups/testmod-before-removedeadbend-20261105-174832`. Requested by the user. The function had one caller, in the
 failed-ramp path of `plugin.cpp`, and no effect: `FailAnimationStep` already
 clears `animating`, `BeginAnimation` overwrites `animationTargetBend` on the
 retry, and the only readers of the value are guarded by `animating`. Removed the
@@ -64,7 +144,7 @@ suites passed, all six scripts compiled 0/0, and package validation and guards
 passed. ZIP SHA-256
 `1C1DA3008E2494D1E4C53B9242C3DB794CFF1E3630134DB3DDEE087787CA9123`, DLL SHA-256
 `C7130519B1252CD0C3D956EBDCCBD094E1EC04EB33C69129D45155C889ED5E19`. The installed
-test DLL is still `78368334…`.
+test DLL is now `C7130519…`.
 
 **Scrotum gravity, private override only (2026-11-05, not checked in game):**
 requested by the user, who chose to edit their private

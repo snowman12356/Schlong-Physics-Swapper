@@ -86,7 +86,7 @@ String Function DescribeActor(Int formID, Bool readSos, Bool readSexLab) Global
     Return addon + "|" + rank + "|" + baseSex + "|" + sex
 EndFunction
 
-; futa = True: SexLab treats a female (base sex 1) as futa. futa = False clears
+; futa = True: SexLab treats a male or female (base sex 0 or 1) as futa. futa = False clears
 ; the SexLab override. Both use SexLab P+'s own TreatAsFuta / ClearForcedSex,
 ; stored by SexLab as a faction rank on the actor.
 ; Returns 1 applied, 0 not eligible or SexLab unavailable, -1 actor not found.
@@ -100,7 +100,8 @@ Int Function SetActorFuta(Int formID, Bool futa) Global
         Return 0
     EndIf
     If futa
-        If SexLabRegistry.GetSex(target, True) != 1
+        Int baseSex = SexLabRegistry.GetSex(target, True)
+        If baseSex != 0 && baseSex != 1
             Return 0
         EndIf
         sexLab.TreatAsFuta(target)

@@ -64,6 +64,10 @@ void ConfigureManagedNpcCommands(bool enabled);
 // registry is game-thread-only. A refusal is reported through the status.
 bool QueueManagedNpcAdd(std::uint32_t formID);
 bool QueueManagedNpcRemove(std::uint32_t formID);
+// Game thread. Writes the real OSL arousal value of a managed NPC through the
+// same bridge call as the basic NPC test sliders. False if OSL is absent, the
+// value is invalid or the actor is not managed.
+bool QueueManagedNpcArousalWrite(std::uint32_t formID, float value);
 
 // Thread-safe invalidation, mirroring the basic bridge's event hook.
 void InvalidateManagedNpc(std::uint32_t formID);
