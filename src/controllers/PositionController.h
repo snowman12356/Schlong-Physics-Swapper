@@ -46,9 +46,6 @@ public:
         int targetBend, bool relaxing, std::int64_t now);
     void FailAnimationStart();
     void FailAnimationStep(std::int64_t retryDueMs);
-    // Records the height a failed ramp step reached, so its retry continues from
-    // there instead of from the original target.
-    void SetAnimationTargetBend(int bend);
     void AcceptAnimationStep(int bend, int method, std::int64_t now);
     void CompleteAnimation(int targetBend);
     void CompleteRelaxationFallback(

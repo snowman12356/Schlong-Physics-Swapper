@@ -52,6 +52,37 @@ requiring users to repair the state manually.
 
 ## Current development status
 
+**Dead `SetAnimationTargetBend` removed (built 2026-11-05, not installed, not
+checked in game):** requested by the user. The function had one caller, in the
+failed-ramp path of `plugin.cpp`, and no effect: `FailAnimationStep` already
+clears `animating`, `BeginAnimation` overwrites `animationTargetBend` on the
+retry, and the only readers of the value are guarded by `animating`. Removed the
+declaration, definition and call, plus the comment describing the sawtooth fix;
+the retry behaviour is unchanged. Native only, no settings, scripts or saved data
+touched, so safe for existing saves. The native build had 0 warnings, the three
+suites passed, all six scripts compiled 0/0, and package validation and guards
+passed. ZIP SHA-256
+`1C1DA3008E2494D1E4C53B9242C3DB794CFF1E3630134DB3DDEE087787CA9123`, DLL SHA-256
+`C7130519B1252CD0C3D956EBDCCBD094E1EC04EB33C69129D45155C889ED5E19`. The installed
+test DLL is still `78368334…`.
+
+**Scrotum gravity, private override only (2026-11-05, not checked in game):**
+requested by the user, who chose to edit their private
+`D:\Modding\mods\SOFTBODY True Soft Shaft - SPS`. It wins `MaleGenitals*.xml`
+in MO2 (priority above the SPS test mod), so this is the file that is active.
+The SPS package is unchanged. In all three XMLs, only the scrotum bodies and
+their three constraints changed:
+- `gravity-factor` 0.55/0.58 → 1.0 (FSMP clamps this to 0-1;
+  `hdtSkyrimSystem.cpp:502`);
+- body linear/angular damping ~0.67/0.71 → 0.45/0.50;
+- constraint linear/angular stiffness −35% (1200/400 → 780/260, 900/180 →
+  585/117);
+- downward linear limit y −0.10 → −0.14 and −0.16 → −0.22.
+
+That is 18 lines per file; the XMLs parse, and nothing else changed. A full
+Skyrim restart is required. Rollback:
+`out/backups/softbody-override-before-scrotum-gravity-20261105-174050`.
+
 **Menu framework check and Method combo fix (built and installed 2026-11-05,
 not checked in game):** installed with Skyrim closed. 13 files were verified and
 8 changed; INI, `meta.ini`, XMLs and CBPC files were unchanged. Rollback:

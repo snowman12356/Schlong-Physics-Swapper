@@ -1078,12 +1078,6 @@ void StartBendAnimation(int startBend, int targetBend, int durationMs, bool rela
                                 return;
                             }
                             positionController.FailAnimationStep(NowMs() + 1500);
-                            // Park the ramp at the height it actually reached so the
-                            // retry continues from there. Leaving the original target
-                            // in place made the resumed ramp start from the observed
-                            // value towards the full height and dip again on the next
-                            // failure: a sawtooth.
-                            positionController.SetAnimationTargetBend(bend);
                             Record("Gradual erection is waiting for SOS; the normal angle was queued instead");
                             return;
                         }
