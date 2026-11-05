@@ -12,6 +12,7 @@
 #include "controllers/PhysicsOwnershipController.h"
 
 #include <SKSE/SKSE.h>
+#include <fmt/format.h>
 #include <algorithm>
 #include <mutex>
 #include <unordered_map>
@@ -38,8 +39,26 @@ struct Driver {
     // Last bend written through the pose channel. -1 means nothing applied yet.
     int appliedBend{ -1 };
     std::uint64_t switched{ 0 }, applied{ 0 }, deferred{ 0 }, failed{ 0 }, blocked{ 0 };
+    // Log throttling: changes are always logged; repeats of the same request or
+    // the same blocked reason at most every kRepeatLogMs.
+    ActorSceneStatus loggedScene{ ActorSceneStatus::unknown };
+    bool sceneLogged{ false };
+    int loggedRequestCBPC{ -1 };
+    std::int64_t requestLoggedAt{ -1 };
+    std::int64_t blockedLoggedAt{ -1 };
 };
 std::unordered_map<std::uint64_t, Driver> drivers;
+constexpr std::int64_t kRepeatLogMs = 10000;
+std::string lastLoggedState;
+
+const char* SceneName(ActorSceneStatus scene)
+{
+    switch (scene) {
+    case ActorSceneStatus::clear: return "no scene";
+    case ActorSceneStatus::active: return "in a scene";
+    default: return "scene unknown";
+    }
+}
 
 std::mutex statusLock;
 ManagedNpcStatus status;
@@ -58,6 +77,41 @@ std::unordered_map<std::uint64_t, Slot> arousalSlots;
 std::unordered_map<std::uint64_t, Slot> sceneSlots;
 
 std::uint64_t Key(ActorWorkTicket ticket) { return (ticket.generation << 32) ^ ticket.formID; }
+
+// Nearby list for the menu. Game-thread only; refreshed at most once a second.
+std::vector<ManagedNpcCandidate> nearbyCache;
+std::int64_t nearbyScanAtMs{ 0 };
+constexpr float kNearbyRange = 4096.0F;
+
+// Crosshair "who is managed" hint: one notification when the crosshair moves
+// onto a managed NPC, repeated for the same NPC at most every few seconds.
+std::uint32_t lastCrosshairFormID{ 0 };
+std::int64_t lastCrosshairToldMs{ 0 };
+constexpr std::int64_t kCrosshairRepeatMs = 8000;
+
+std::string ActorName(RE::Actor* actor)
+{
+    const char* name = actor ? actor->GetDisplayFullName() : nullptr;
+    return name && name[0] != '\0' ? name : "Unnamed NPC";
+}
+
+// Verified vanilla native: Debug.Notification(string) global (vanilla-papyrus
+// Debug.psc). Dispatched like the other SPS Papyrus calls; dropped silently
+// while the VM is not ready, since it is only feedback.
+void Notify(const std::string& text, std::int64_t allowedAfterMs)
+{
+    (void)DispatchStatic("Debug", "Notification", allowedAfterMs, NowMs(),
+        RE::BSFixedString(text.c_str()));
+}
+
+std::string PhysicsLabel(ActorContext* context)
+{
+    if (!context) return "Not loaded";
+    const auto ownership = PhysicsOwnershipController{ context->physics }.Read();
+    if (ownership.pending) return "Switching";
+    if (!ownership.known) return "Unknown";
+    return ownership.usingCBPC ? "Erect (CBPC)" : "Soft (SMP)";
+}
 
 Driver& DriverFor(ActorWorkTicket ticket)
 {
@@ -104,6 +158,65 @@ const char* RejectionReason(std::uint32_t formID)
     return nullptr;
 }
 
+// Bounded: one pass over the high-process handles per second with cheap
+// checks, then the node lookup only for the closest few. No world scan.
+void ScanNearby(RE::PlayerCharacter* player, std::int64_t now)
+{
+    if (now < nearbyScanAtMs) return;
+    nearbyScanAtMs = now + 1000;
+    nearbyCache.clear();
+    auto* lists = RE::ProcessLists::GetSingleton();
+    if (!lists || !player) return;
+    const auto origin = player->GetPosition();
+    struct Found { RE::Actor* actor; float distance; };
+    std::vector<Found> found;
+    for (const auto& handle : lists->highActorHandles) {
+        const auto actor = handle.get();
+        if (!actor || actor.get() == player || !actor->Is3DLoaded() ||
+            actor->IsDead() || actor->IsChild() || actor->IsDisabled()) continue;
+        const auto* race = actor->GetRace();
+        if (!race || !race->HasKeywordString("ActorTypeNPC")) continue;
+        const float distance = origin.GetDistance(actor->GetPosition());
+        if (distance <= kNearbyRange) found.push_back({ actor.get(), distance });
+    }
+    std::sort(found.begin(), found.end(),
+        [](const Found& a, const Found& b) { return a.distance < b.distance; });
+    if (found.size() > kManagedNpcNearbyLimit) found.resize(kManagedNpcNearbyLimit);
+    for (const auto& item : found) {
+        ManagedNpcCandidate candidate;
+        candidate.formID = item.actor->GetFormID();
+        candidate.name = ActorName(item.actor);
+        candidate.distance = item.distance;
+        candidate.managed = registry.Find(candidate.formID).has_value();
+        if (!candidate.managed) {
+            if (const auto* reason = RejectionReason(candidate.formID)) candidate.unavailable = reason;
+        }
+        nearbyCache.push_back(std::move(candidate));
+    }
+}
+
+// Tells the player, in game, when the crosshair lands on a managed NPC.
+void HintCrosshairTarget(std::int64_t allowedAfterMs, std::int64_t now)
+{
+    std::uint32_t target = 0;
+    if (auto* data = RE::CrosshairPickData::GetSingleton()) {
+        if (const auto ref = data->GetActiveTarget().get()) {
+            if (const auto* npc = ref->As<RE::Actor>()) target = npc->GetFormID();
+        }
+    }
+    const auto entry = target ? registry.Find(target) : std::nullopt;
+    if (!entry) {
+        if (target != lastCrosshairFormID) lastCrosshairFormID = 0;
+        return;
+    }
+    if (target == lastCrosshairFormID && now - lastCrosshairToldMs < kCrosshairRepeatMs) return;
+    lastCrosshairFormID = target;
+    lastCrosshairToldMs = now;
+    const auto actor = RE::TESForm::LookupByID<RE::Actor>(target);
+    Notify(fmt::format("{}: managed by SPS - {}", ActorName(actor),
+        PhysicsLabel(registry.Resolve(entry->ticket))), allowedAfterMs);
+}
+
 void Remove(ActorWorkTicket ticket)
 {
     // Invalidate before cancelling tokens so a late callback cannot rebuild the
@@ -115,7 +228,7 @@ void Remove(ActorWorkTicket ticket)
     DropDriver(ticket);
 }
 
-void ApplyQueuedMembership()
+void ApplyQueuedMembership(std::int64_t allowedAfterMs)
 {
     std::vector<std::uint32_t> adds, removes;
     std::string rejection;
@@ -125,10 +238,16 @@ void ApplyQueuedMembership()
         removes.swap(pendingRemoves);
         rejection.swap(lastRejection);
     }
+    if (!adds.empty() || !removes.empty()) nearbyScanAtMs = 0;  // Refresh the list now.
     for (const auto formID : removes) {
         const auto found = registry.Find(formID);
-        if (found) Remove(found->ticket);
-        else rejection = "That NPC is not managed.";
+        if (found) {
+            Remove(found->ticket);
+            SKSE::log::info("Managed NPC {} ({:08X}) removed",
+                ActorName(RE::TESForm::LookupByID<RE::Actor>(formID)), formID);
+            Notify(fmt::format("SPS no longer manages {}",
+                ActorName(RE::TESForm::LookupByID<RE::Actor>(formID))), allowedAfterMs);
+        } else rejection = "That NPC is not managed.";
     }
     for (const auto formID : adds) {
         const auto* reason = RejectionReason(formID);
@@ -143,7 +262,15 @@ void ApplyQueuedMembership()
             case ActorRegistrationStatus::added: break;
             }
         }
-        if (reason) rejection = reason;
+        const auto name = ActorName(RE::TESForm::LookupByID<RE::Actor>(formID));
+        if (reason) {
+            rejection = reason;
+            SKSE::log::warn("Managed NPC {} ({:08X}) refused: {}", name, formID, reason);
+            Notify(fmt::format("SPS cannot manage {}: {}", name, reason), allowedAfterMs);
+        } else {
+            SKSE::log::info("Managed NPC {} ({:08X}) added", name, formID);
+            Notify(fmt::format("SPS now manages {}", name), allowedAfterMs);
+        }
     }
     std::scoped_lock lock(statusLock);
     lastRejection = std::move(rejection);
@@ -151,17 +278,21 @@ void ApplyQueuedMembership()
 
 void Publish(const char* state)
 {
+    if (lastLoggedState != state) {
+        SKSE::log::info("Managed NPC runtime: {}", state);
+        lastLoggedState = state;
+    }
     ManagedNpcStatus next;
     next.state = state;
     next.capacity = kManagedNpcCapacity;
     next.rejection = lastRejection;
+    next.nearby = nearbyCache;
     for (const auto& snapshot : registry.Snapshot()) {
         ManagedNpcActorStatus actor;
         actor.formID = snapshot.ticket.formID;
         actor.loaded = snapshot.loaded;
-        const auto actorRef = RE::TESForm::LookupByID<RE::Actor>(snapshot.ticket.formID);
-        const char* name = actorRef ? actorRef->GetDisplayFullName() : nullptr;
-        actor.name = name && name[0] != '\0' ? name : "Unnamed NPC";
+        actor.name = ActorName(RE::TESForm::LookupByID<RE::Actor>(snapshot.ticket.formID));
+        actor.physics = snapshot.loaded ? PhysicsLabel(registry.Resolve(snapshot.ticket)) : "Not loaded";
         if (const auto driver = drivers.find(Key(snapshot.ticket)); driver != drivers.end()) {
             const auto& value = driver->second;
             actor.arousal = value.arousal;
@@ -187,29 +318,69 @@ void QueueOwnership(Driver& driver, RE::Actor* actor,
     PhysicsOwnershipController& controller)
 {
     const auto begin = controller.Begin(wantCBPC, purpose, false, now);
-    if (begin.status == OwnershipBeginStatus::blocked) { ++driver.blocked; return; }
+    const auto logBlocked = [&](const char* why) {
+        if (driver.blockedLoggedAt >= 0 && now - driver.blockedLoggedAt < kRepeatLogMs) return;
+        driver.blockedLoggedAt = now;
+        SKSE::log::warn("Managed NPC {} ({:08X}) {} handoff not sent: {}", ActorName(actor),
+            ticket.formID, wantCBPC ? "CBPC" : "SMP", why);
+    };
+    if (begin.status == OwnershipBeginStatus::blocked) {
+        ++driver.blocked;
+        logBlocked("the NPC's ownership controller refused it (retry cooldown or invalid state)");
+        return;
+    }
     if (begin.status == OwnershipBeginStatus::alreadyPending) return;
+    const int requested = wantCBPC ? 1 : 0;
+    if (driver.loggedRequestCBPC != requested || driver.requestLoggedAt < 0 ||
+        now - driver.requestLoggedAt >= kRepeatLogMs) {
+        driver.loggedRequestCBPC = requested;
+        driver.requestLoggedAt = now;
+        SKSE::log::info("Managed NPC {} ({:08X}) arousal {}: requesting {}", ActorName(actor), ticket.formID,
+            driver.arousal ? fmt::format("{:.0f}", *driver.arousal) : std::string("unknown"),
+            wantCBPC ? "CBPC (erect)" : "SMP (soft)");
+    }
     const auto generation = begin.generation;
     const auto result = SetActorPhysicsOwner(lease, actor, wantCBPC,
         purpose == OwnershipPurpose::resetLoad ? 1 : 0, FsmpActorApiAvailable(),
-        allowedAfterMs, now, [ticket, generation](OwnershipReadback readback) {
-            auto* current = registry.Resolve(ticket);
-            const auto found = drivers.find(Key(ticket));
-            if (!current || found == drivers.end()) return;
-            auto& state = found->second;
-            // Completion must be applied through the same context the request
-            // began on, so a reloaded actor cannot accept the old generation.
-            const auto completion = PhysicsOwnershipController{ current->physics }.Complete(generation,
-                { readback.acknowledged, readback.dynamicBonesBefore, readback.boneCount,
-                    readback.dynamicBonesAfter },
-                NowMs());
-            if (!completion.matched) return;
-            if (completion.success) ++state.switched;
-            else ++state.failed;
+        allowedAfterMs, now, [ticket, generation, wantCBPC](OwnershipReadback readback) {
+            // The Papyrus callback runs on a script thread, but the registry and
+            // drivers are game-thread-only (as on the player path, which also
+            // queues its completion as a task).
+            auto* tasks = SKSE::GetTaskInterface();
+            if (!tasks) return;
+            tasks->AddTask([ticket, generation, wantCBPC, readback] {
+                auto* current = registry.Resolve(ticket);
+                const auto found = drivers.find(Key(ticket));
+                if (!current || found == drivers.end()) return;
+                auto& state = found->second;
+                // Completion must be applied through the same context the request
+                // began on, so a reloaded actor cannot accept the old generation.
+                const auto completion = PhysicsOwnershipController{ current->physics }.Complete(generation,
+                    { readback.acknowledged, readback.dynamicBonesBefore, readback.boneCount,
+                        readback.dynamicBonesAfter },
+                    NowMs());
+                if (!completion.matched) return;
+                const auto name = ActorName(RE::TESForm::LookupByID<RE::Actor>(ticket.formID));
+                if (completion.success) {
+                    ++state.switched;
+                    if (!wantCBPC && readback.boneCount > 0 && readback.dynamicBonesAfter == readback.boneCount)
+                        SKSE::log::info("Managed NPC {} ({:08X}) switched to SMP; SMP proof {}/{}",
+                            name, ticket.formID, readback.dynamicBonesAfter, readback.boneCount);
+                    else
+                        SKSE::log::info("Managed NPC {} ({:08X}) switched to {}", name, ticket.formID,
+                            wantCBPC ? "CBPC (erect)" : "SMP (soft), not proven");
+                } else {
+                    ++state.failed;
+                    SKSE::log::warn("Managed NPC {} ({:08X}) handoff to {} did not complete (bridge returned {})",
+                        name, ticket.formID, wantCBPC ? "CBPC" : "SMP",
+                        readback.acknowledged ? "acknowledged" : "not done");
+                }
+            });
         });
     if (result != OwnershipDispatchResult::queued) {
         (void)controller.Complete(generation, false, now);
         ++driver.blocked;
+        logBlocked("the physics script was busy or unavailable (player work, another handoff, or bridge not ready)");
     }
 }
 
@@ -249,8 +420,16 @@ void Service(ActorWorkTicket ticket, ActorContext& context, RE::Actor* actor, co
                 if (!entry.Finish(started)) return;
                 const auto found = drivers.find(Key(ticket));
                 if (found == drivers.end() || !registry.Resolve(ticket)) return;
-                found->second.scene = value;
-                found->second.sceneAt = started;
+                auto& tracked = found->second;
+                if (!tracked.sceneLogged || tracked.loggedScene != value) {
+                    tracked.sceneLogged = true;
+                    tracked.loggedScene = value;
+                    SKSE::log::info("Managed NPC {} ({:08X}): {}",
+                        ActorName(RE::TESForm::LookupByID<RE::Actor>(ticket.formID)), ticket.formID,
+                        SceneName(value));
+                }
+                tracked.scene = value;
+                tracked.sceneAt = started;
             })) {
                 (void)sceneSlot.Finish(started);
                 driver.scene = ActorSceneStatus::unknown;
@@ -308,11 +487,24 @@ void Service(ActorWorkTicket ticket, ActorContext& context, RE::Actor* actor, co
             [ticket, event = *bendEvent](ActorWorkTicket, bool applied) {
                 const auto found = drivers.find(Key(ticket));
                 if (found == drivers.end()) return;
+                const auto name = ActorName(RE::TESForm::LookupByID<RE::Actor>(ticket.formID));
                 if (applied) {
                     found->second.appliedEvent = event;
                     ++found->second.applied;
-                } else ++found->second.deferred;
-            })) ++driver.blocked;
+                    SKSE::log::info("Managed NPC {} ({:08X}) angle sent: {}", name, ticket.formID, event);
+                } else {
+                    ++found->second.deferred;
+                    SKSE::log::info("Managed NPC {} ({:08X}) angle {} deferred (scene or stale target)",
+                        name, ticket.formID, event);
+                }
+            })) {
+        ++driver.blocked;
+        if (driver.blockedLoggedAt < 0 || now - driver.blockedLoggedAt >= kRepeatLogMs) {
+            driver.blockedLoggedAt = now;
+            SKSE::log::warn("Managed NPC {} ({:08X}) angle {} not sent: position bridge busy or unavailable",
+                ActorName(actor), ticket.formID, *bendEvent);
+        }
+    }
 }
 
 } // namespace
@@ -333,20 +525,25 @@ void TickManagedNpcs(bool enabled, const ManagedNpcSettings& settings,
     }
     if (!enabled) {
         if (registry.Size() != 0) ResetManagedNpcs();
+        nearbyCache.clear();
         Publish("Off");
         return;
     }
-    ApplyQueuedMembership();
+    ApplyQueuedMembership(allowedAfterMs);
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    const auto now = NowMs();
+    if (!ExecutionPaused()) {
+        ScanNearby(player, now);
+        HintCrosshairTarget(allowedAfterMs, now);
+    }
     if (registry.Size() == 0) { Publish("No managed NPC"); return; }
-    if (!PapyrusReady(allowedAfterMs, NowMs())) { Publish("Waiting for the game"); return; }
+    if (!PapyrusReady(allowedAfterMs, now)) { Publish("Waiting for the game"); return; }
     if (!FsmpActorApiAvailable() || !OrderedFsmpBridgeAvailable() || !PositionBackendAvailable()) {
         Publish("Requires Faster HDT-SMP and SOS or TNG");
         return;
     }
     if (playerBusy) { Publish("Waiting for player work"); return; }
 
-    auto* player = RE::PlayerCharacter::GetSingleton();
-    const auto now = NowMs();
     for (const auto& snapshot : registry.Snapshot()) {
         const auto ticket = snapshot.ticket;
         const auto actorRef = RE::TESForm::LookupByID<RE::Actor>(ticket.formID);
@@ -354,6 +551,9 @@ void TickManagedNpcs(bool enabled, const ManagedNpcSettings& settings,
         // Availability changes give the actor a fresh generation and reset its
         // transient state, so in-flight work can never land on the new 3D.
         if (eligible != snapshot.loaded) {
+            SKSE::log::info("Managed NPC {} ({:08X}) {}", ActorName(actorRef), ticket.formID,
+                eligible ? "loaded; physics state will be re-established" :
+                    "not available (unloaded, disabled or dead); membership kept, no work queued");
             if (!registry.SetLoaded(ticket, eligible)) { Remove(ticket); continue; }
             DropDriver(ticket);
             continue;
@@ -375,6 +575,9 @@ void ResetManagedNpcs()
     drivers.clear();
     arousalSlots.clear();
     sceneSlots.clear();
+    nearbyCache.clear();
+    nearbyScanAtMs = 0;
+    lastCrosshairFormID = 0;
     std::scoped_lock lock(statusLock);
     status = {};
 }

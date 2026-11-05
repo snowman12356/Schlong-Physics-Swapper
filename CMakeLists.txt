@@ -119,6 +119,8 @@ add_commonlibsse_plugin(${PROJECT_NAME} AUTHOR "snowman12356" SOURCES
     src/diagnostics/SupportReport.h
     src/runtime/Compatibility.cpp
     src/runtime/Compatibility.h
+    src/runtime/ActorIdentity.cpp
+    src/runtime/ActorIdentity.h
     src/runtime/ActorBridgeAdapter.cpp
     src/runtime/ActorBridgeAdapter.h
     src/runtime/BasicNpcRuntime.cpp

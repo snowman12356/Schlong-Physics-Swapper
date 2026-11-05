@@ -63,16 +63,20 @@ std::optional<std::string> BasicNpcPolicy::Decide(float arousal, std::int64_t ar
         nowMs - sceneAtMs_ > kFreshMs || nowMs - arousalSampledAtMs > kFreshMs ||
         nowMs - clearSinceMs_ < kClearDelayMs) return std::nullopt;
     const auto event = BasicSosEvent(arousal);
-    if (!event || (applied_ == event && nowMs >= appliedAtMs_ &&
-        nowMs - appliedAtMs_ < kRefreshMs)) return std::nullopt;
+    // OSL Aroused 2.9.3 (ActorStateManager::UpdateSOSAnimation) sends an event
+    // only when the bend bucket differs from the last one it applied, and never
+    // repeats an unchanged one: a repeat replays the SOS blend. SPS matches that.
+    // The applied state is still cleared by scenes, failures, unload and resets
+    // (as OSL clears its cache on scenes and load), so the pose is re-asserted
+    // after those.
+    if (!event || applied_ == event) return std::nullopt;
     return event;
 }
 
-void BasicNpcPolicy::Complete(const std::string& event, BasicPositionResult result, std::int64_t nowMs)
+void BasicNpcPolicy::Complete(const std::string& event, BasicPositionResult result, std::int64_t)
 {
     if (result == BasicPositionResult::applied) {
         applied_ = event;
-        appliedAtMs_ = nowMs;
     } else {
         // A scene may have started after the initial query. Require fresh clear
         // observations and settling again, not a retry against a cached clear.

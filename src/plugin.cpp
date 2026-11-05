@@ -24,6 +24,7 @@
 #include "diagnostics/SupportReport.h"
 #include "runtime/Compatibility.h"
 #include "runtime/ActorBridgeAdapter.h"
+#include "runtime/ActorIdentity.h"
 #include "runtime/BasicNpcRuntime.h"
 #include "runtime/ManagedNpcRuntime.h"
 #include "runtime/PapyrusGateway.h"
@@ -649,6 +650,9 @@ void Load() {
     }
     SPS::Runtime::ConfigureBasicNpcCommands(result.settings.enabled && result.settings.basicNpcEnabled &&
         result.settings.basicNpcProviderSosDisabled);
+    // Managed commands are permission-gated the same way. Without this, a saved
+    // ManagedNPCEnabled=true stayed inactive until the checkbox was toggled.
+    SPS::Runtime::ConfigureManagedNpcCommands(result.settings.enabled && result.settings.managedNpcEnabled);
     spdlog::set_level(settings.verboseLogging ? spdlog::level::debug : spdlog::level::info);
     if (result.shouldWriteCurrent) {
         // Onboarding or migration writes the current file and consumes the
@@ -2328,6 +2332,12 @@ void StartPolling() {
                             current.basicNpcProviderSosDisabled, papyrusDispatchAllowedAfterMs.load(), playerBusy);
                         SPS::Runtime::TickManagedNpcs(current.enabled && current.managedNpcEnabled,
                             current, papyrusDispatchAllowedAfterMs.load(), playerBusy);
+                        if (playerDue && current.enabled) {
+                            std::vector<std::uint32_t> watched{ SPS::API::kPlayerFormID };
+                            for (const auto& actor : SPS::Runtime::ReadManagedNpcStatus().actors)
+                                watched.push_back(actor.formID);
+                            SPS::Runtime::TickActorIdentities(watched, papyrusDispatchAllowedAfterMs.load());
+                        }
                     });
                 }
             }
@@ -2380,6 +2390,9 @@ void ReloadSettingsFromDisk() {
     settingsLoaded = true;
     SPS::Runtime::ConfigureBasicNpcCommands(result.settings.enabled && result.settings.basicNpcEnabled &&
         result.settings.basicNpcProviderSosDisabled);
+    // Managed commands are permission-gated the same way. Without this, a saved
+    // ManagedNPCEnabled=true stayed inactive until the checkbox was toggled.
+    SPS::Runtime::ConfigureManagedNpcCommands(result.settings.enabled && result.settings.managedNpcEnabled);
     Record("Settings reloaded from SchlongPhysicsSwapper.ini");
 }
 
@@ -2738,20 +2751,25 @@ void __stdcall RenderLooks() {
         // the everyday view stays short.
         changed |= ImGuiMCP::Checkbox("Let SPS control the angle", &copy.positionControl);
         BeginDependent(copy.positionControl);
-        const char* bendMethods[]{ "SOS / TNG animation stages", "Choose automatically (recommended)" };
-        // 0 = animation stages (ten discrete steps), 1 = automatic. Both map onto
-        // bendMethod 3 (pose) for automatic, which is the continuous channel.
-        int methodChoice = copy.bendMethod == SPS::Runtime::kBendMethodEvents ? 0 : 1;
-        if (ImGuiMCP::Combo("Method", &methodChoice, bendMethods, 2)) {
-            copy.bendMethod = methodChoice == 0
-                ? SPS::Runtime::kBendMethodEvents
-                : SPS::Runtime::kBendMethodPose;
+        // Choice -> Position/Method: 0 stages (1), 1 automatic (2), 2 pose (3).
+        // Automatic used to write 3, the experimental pose angle, which the
+        // animation graph overwrites every frame (docs/SOSAE_4_POSE_ANGLE_2026-11-01.md),
+        // so touching this combo silently stopped the angle from moving.
+        // Method 0 (the removed SOS AE native) behaves like automatic.
+        const char* bendMethods[]{ "SOS / TNG animation stages", "Choose automatically (recommended)",
+            "SPS pose angle (experimental)" };
+        int methodChoice = copy.bendMethod == SPS::Runtime::kBendMethodEvents ? 0 :
+            copy.bendMethod == SPS::Runtime::kBendMethodPose ? 2 : 1;
+        if (ImGuiMCP::Combo("Method", &methodChoice, bendMethods, 3)) {
+            copy.bendMethod = methodChoice == 0 ? SPS::Runtime::kBendMethodEvents :
+                methodChoice == 2 ? SPS::Runtime::kBendMethodPose : SPS::Runtime::kBendMethodAutomatic;
             changed = true;
         }
-        if (copy.bendMethod != SPS::Runtime::kBendMethodEvents) {
-            ImGuiMCP::TextDisabled("SPS holds a continuous angle every frame.");
+        if (copy.bendMethod == SPS::Runtime::kBendMethodPose) {
+            ImGuiMCP::TextDisabled("Experimental: writes the base bone directly. The SOS/TNG animation "
+                "usually overwrites it, so the angle may not move. Use automatic instead.");
         } else {
-            ImGuiMCP::TextDisabled("SOS/TNG stages: 10 visible steps, no in-between angle.");
+            ImGuiMCP::TextDisabled("SOS/TNG animation stages: 19 positions, SOSBend-9 to SOSBend9.");
         }
         changed |= ImGuiMCP::Checkbox("Smooth angle changes", &copy.animatePosition);
         changed |= ImGuiMCP::Checkbox("Stop repeated bouncing", &copy.bounceGuard);
@@ -2913,24 +2931,111 @@ void __stdcall RenderNPCs() {
     ImGuiMCP::TextWrapped("One NPC can be enrolled in full SPS control: its own arousal, its own soft/erect decisions, and SMP or CBPC ownership. This is separate from the basic behavior above. A managed NPC leaves the basic list so the two never issue competing commands.");
     changed |= ImGuiMCP::Checkbox("Enable managed NPC", &copy.managedNpcEnabled);
     if (!copy.enabled) ImGuiMCP::TextWrapped("SPS is disabled on the Home page, so managed NPC control is also off.");
-    ImGuiMCP::TextWrapped("Look at an NPC and use Add. This build has no saved membership yet: closing the game forgets the list.");
+    ImGuiMCP::TextWrapped("Pick an NPC from the nearby list below, or look at one and use Add NPC in crosshair. "
+        "In game, looking at a managed NPC shows a short notification. Closing the game forgets the list.");
 
     const auto managed = SPS::Runtime::ReadManagedNpcStatus();
     ImGuiMCP::TextWrapped("Status: %s (limit %zu)", managed.state.c_str(), managed.capacity);
     if (!managed.rejection.empty()) ImGuiMCP::TextWrapped("Last refused action: %s", managed.rejection.c_str());
-    for (const auto& actor : managed.actors) {
-        const auto arousalText = actor.arousal ? fmt::format(" (arousal {:.0f})", *actor.arousal) : std::string{};
-        ImGuiMCP::TextWrapped("%s [0x%08X] - %s%s", actor.name.c_str(), actor.formID,
-            actor.state.c_str(), arousalText.c_str());
-    }
-    if (managed.actors.empty()) ImGuiMCP::TextWrapped("No NPC is currently managed.");
-    else ImGuiMCP::TextWrapped("Current managed NPC: %llu physics changes, %llu poses applied, %llu deferred, %llu failed, %llu blocked.",
-        static_cast<unsigned long long>(managed.switched), static_cast<unsigned long long>(managed.applied),
-        static_cast<unsigned long long>(managed.deferred), static_cast<unsigned long long>(managed.failed),
-        static_cast<unsigned long long>(managed.blocked));
 
     // Every registry access is game-thread-only, so the render callback only
-    // queues an intent and the tick resolves the crosshair and applies it.
+    // queues an intent by FormID and the tick applies it.
+    const auto queueAdd = [](std::uint32_t formID) {
+        if (auto* tasks = SKSE::GetTaskInterface())
+            tasks->AddTask([formID] {
+                if (!SPS::Runtime::QueueManagedNpcAdd(formID))
+                    Record(fmt::format("Could not queue managed NPC {:08X}", formID), true);
+            });
+    };
+    const auto queueRemove = [](std::uint32_t formID) {
+        if (auto* tasks = SKSE::GetTaskInterface())
+            tasks->AddTask([formID] { SPS::Runtime::QueueManagedNpcRemove(formID); });
+    };
+
+    SectionHeading("MANAGED NOW");
+    if (managed.actors.empty()) ImGuiMCP::TextWrapped("No NPC is currently managed.");
+    for (const auto& actor : managed.actors) {
+        const auto arousalText = actor.arousal ? fmt::format(", arousal {:.0f}", *actor.arousal) : std::string{};
+        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.85F, 0.45F, 1.0F), "%s", actor.name.c_str());
+        ImGuiMCP::SameLine();
+        ImGuiMCP::TextWrapped("- %s, %s%s", actor.physics.c_str(), actor.state.c_str(), arousalText.c_str());
+        ImGuiMCP::SameLine();
+        if (ImGuiMCP::Button(fmt::format("Remove###sps-managed-remove-{:08X}", actor.formID).c_str()))
+            queueRemove(actor.formID);
+    }
+    if (!managed.actors.empty())
+        ImGuiMCP::TextWrapped("Commands so far: %llu physics changes, %llu poses applied, %llu deferred, %llu failed, %llu blocked. "
+            "These count commands sent; check the NPC in game for visible motion.",
+            static_cast<unsigned long long>(managed.switched), static_cast<unsigned long long>(managed.applied),
+            static_cast<unsigned long long>(managed.deferred), static_cast<unsigned long long>(managed.failed),
+            static_cast<unsigned long long>(managed.blocked));
+
+    SectionHeading("SCHLONG AND SEXLAB");
+    {
+        const bool sosAe = SosAeNativeLoaded();
+        const bool sexLab = PluginLoaded({ "SexLab.esm" });
+        if (!sosAe && !sexLab)
+            ImGuiMCP::TextWrapped("Needs Schlongs of Skyrim AE or SexLab P+ to show this.");
+        else
+            ImGuiMCP::TextWrapped("SOS AE schlong and SexLab sex for the player and managed NPCs. "
+                "'Make futa' uses SexLab's own futa override; SPS remembers it in this save and "
+                "re-applies it if SexLab loses it.");
+        std::vector<std::pair<std::uint32_t, std::string>> people{ { SPS::API::kPlayerFormID, "Player" } };
+        for (const auto& actor : managed.actors) people.emplace_back(actor.formID, actor.name);
+        for (const auto& [formID, name] : people) {
+            const auto identity = SPS::Runtime::ReadActorIdentity(formID);
+            if (!identity || !identity->known) {
+                ImGuiMCP::TextWrapped("%s: reading...", name.c_str());
+                continue;
+            }
+            std::string schlong = !identity->sosRead ? "SOS AE not detected" :
+                identity->addon.empty() ? "no schlong" :
+                fmt::format("{} (size {})", identity->addon, identity->rank);
+            std::string sex = !identity->sexLabRead ? "SexLab not detected" :
+                fmt::format("SexLab: {}{}", SPS::Runtime::SexLabSexName(identity->sex),
+                    identity->sex == 2 && identity->baseSex != 2 ? " (forced)" : "");
+            ImGuiMCP::TextWrapped("%s: %s, %s%s", name.c_str(), schlong.c_str(), sex.c_str(),
+                identity->rememberedFuta ? ", remembered in this save" : "");
+            if (!identity->sexLabRead) continue;
+            const bool forced = identity->rememberedFuta || (identity->sex == 2 && identity->baseSex != 2);
+            if (SPS::Runtime::FutaEligible(*identity) && identity->sex != 2) {
+                ImGuiMCP::SameLine();
+                if (ImGuiMCP::Button(fmt::format("Make futa in SexLab###sps-futa-{:08X}", formID).c_str()))
+                    SPS::Runtime::RequestFuta(formID, true);
+            } else if (forced) {
+                ImGuiMCP::SameLine();
+                if (ImGuiMCP::Button(fmt::format("Undo futa###sps-unfuta-{:08X}", formID).c_str()))
+                    SPS::Runtime::RequestFuta(formID, false);
+            }
+        }
+    }
+
+    SectionHeading("NEARBY NPCS");
+    if (!copy.managedNpcEnabled || !copy.enabled)
+        ImGuiMCP::TextWrapped("Turn on Enable managed NPC to see nearby NPCs here.");
+    else if (managed.nearby.empty())
+        ImGuiMCP::TextWrapped("No loaded NPC within range. Move closer to the NPC you want.");
+    const bool atLimit = managed.actors.size() >= managed.capacity;
+    for (const auto& candidate : managed.nearby) {
+        const auto meters = candidate.distance / 70.0F;  // ~70 units per metre
+        ImGuiMCP::TextWrapped("%s (%.0f m)", candidate.name.c_str(), meters);
+        ImGuiMCP::SameLine();
+        if (candidate.managed) {
+            ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.85F, 0.45F, 1.0F), "Managed");
+            continue;
+        }
+        if (!candidate.unavailable.empty()) {
+            ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.75F, 0.75F, 0.75F, 1.0F), "%s", candidate.unavailable.c_str());
+            continue;
+        }
+        ImGuiMCP::BeginDisabled(atLimit);
+        if (ImGuiMCP::Button(fmt::format("Manage###sps-managed-add-{:08X}", candidate.formID).c_str()))
+            queueAdd(candidate.formID);
+        ImGuiMCP::EndDisabled();
+    }
+    if (atLimit && !managed.nearby.empty())
+        ImGuiMCP::TextWrapped("The limit is %zu managed NPC in this build. Remove one to manage another.", managed.capacity);
+
     if (ImGuiMCP::Button("Add NPC in crosshair")) {
         if (auto* tasks = SKSE::GetTaskInterface()) {
             tasks->AddTask([] {
@@ -3600,6 +3705,7 @@ public:
 };
 
 void ResetTransientTimers() {
+    SPS::Runtime::ResetActorIdentities();
     SPS::Runtime::ResetBasicNpcs();
     SPS::Runtime::ResetManagedNpcs();
     SPS::Runtime::ResetActorBridgeRequests();
@@ -3781,6 +3887,8 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
     spdlog::set_level(spdlog::level::info);
     spdlog::flush_on(spdlog::level::info);
     Mod::ConfigureControllers();
+    // Per-save list of actors the user made futa in SexLab (co-save "SPSW").
+    SPS::Runtime::RegisterActorIdentitySerialization();
     if (!SKSE::GetPapyrusInterface()->Register([](RE::BSScript::IVirtualMachine* vm) {
             return SPS::Runtime::RegisterPhysicsBridge(vm) && SPS::Runtime::RegisterActorBridgeGuards(vm) &&
                 SPS::Runtime::SosPose::RegisterPoseAngleNatives(vm);

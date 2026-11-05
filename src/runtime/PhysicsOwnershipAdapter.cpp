@@ -144,19 +144,30 @@ OwnershipReadback ReadBridgeReadback(const RE::BSScript::Variable& value)
 
 class OwnerCompletionCallback final : public RE::BSScript::IStackCallbackFunctor {
 public:
-    OwnerCompletionCallback(std::string token, OwnershipCompletion completion) :
-        token_(std::move(token)), completion_(std::move(completion)) {}
-    ~OwnerCompletionCallback() override { operationGate.Complete(token_); }
+    OwnerCompletionCallback(std::string token, OwnershipCompletion completion,
+        bool actorRequest = false) :
+        token_(std::move(token)), completion_(std::move(completion)), actorRequest_(actorRequest) {}
+    ~OwnerCompletionCallback() override { Release(); }
     void operator()(RE::BSScript::Variable result) override
     {
         // Cancellation retains the lease until the stack really returns.
-        operationGate.Complete(token_);
+        Release();
         if (completion_) completion_(ReadBridgeReadback(result));
     }
     void SetObject(const RE::BSTSmartPointer<RE::BSScript::Object>&) override {}
 private:
+    void Release()
+    {
+        operationGate.Complete(token_);
+        // The NPC's ownership request must stay readable until the stack has
+        // returned: SetActorOwnerV3 resolves its target through it on entry and
+        // re-checks it around every engine call. Releasing it at dispatch made
+        // every NPC handoff resolve None and fail.
+        if (actorRequest_) ownershipRequests.Discard(token_);
+    }
     std::string token_;
     OwnershipCompletion completion_;
+    bool actorRequest_{ false };
 };
 }
 
@@ -254,12 +265,14 @@ OwnershipDispatchResult SetActorPhysicsOwner(
         return OwnershipDispatchResult::failed;
     }
     RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{
-        new OwnerCompletionCallback(token, std::move(completion))
+        new OwnerCompletionCallback(token, std::move(completion), true)
     };
+    // The callback releases both the gate lease and the ownership request when
+    // the stack returns (or is disposed), so the request stays resolvable for
+    // the whole bridge call. Expiry (10 s) still bounds a stack that never runs.
     if (DispatchStaticWithCallback("SPS_FSMPBridge", "SetActorOwnerV3",
             allowedAfterMs, nowMs, std::move(callback),
             RE::BSFixedString(token), useCBPC, preparation)) {
-        (void)ownershipRequests.Finish(token, nowMs);
         return OwnershipDispatchResult::queued;
     }
     ownershipRequests.Discard(token);

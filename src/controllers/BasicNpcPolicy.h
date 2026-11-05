@@ -10,7 +10,10 @@ namespace SPS::Controllers {
 enum class ActorSceneStatus : int { unknown = 0, clear = 1, active = 2 };
 enum class BasicPositionResult : int { failed = -1, deferred = 0, applied = 1 };
 
-// Source-backed legacy OSL mapping, independent of player SPS thresholds.
+// OSL Aroused's SOS mapping, independent of player SPS thresholds. Verified
+// identical in the legacy Papyrus UpdateSOSPosition and in OSL 2.9.3's native
+// ActorStateManager::UpdateSOSAnimation: int(arousal) / 4 - 14, below -9 sends
+// SOSFlaccid, above 9 is capped at SOSBend9.
 [[nodiscard]] std::optional<std::string> BasicSosEvent(float arousal);
 
 // The subset of settings that decides a managed NPC's pose. Kept here, in the
@@ -39,7 +42,6 @@ class BasicNpcPolicy {
 public:
     static constexpr std::int64_t kFreshMs = 2500;
     static constexpr std::int64_t kClearDelayMs = 1500;
-    static constexpr std::int64_t kRefreshMs = 10000;
     void ObserveScene(ActorSceneStatus status, std::int64_t sampledAtMs);
     [[nodiscard]] std::optional<std::string> Decide(float arousal, std::int64_t arousalSampledAtMs,
         std::int64_t nowMs, bool enabled, bool fullyManaged, bool providerSosDisabled) const;
@@ -50,7 +52,6 @@ private:
     std::int64_t sceneAtMs_{ -1 };
     std::int64_t clearSinceMs_{ -1 };
     std::optional<std::string> applied_;
-    std::int64_t appliedAtMs_{ -1 };
 };
 
 }

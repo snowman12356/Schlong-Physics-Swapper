@@ -91,12 +91,10 @@ changing the same physics as SPS. Auto Physics Reset is optional; disable its
 overlapping load, cell or scene triggers if it changes SPS's chosen state.
 
 Schlongs of Skyrim AE is supported. SPS does not call any SOS native: Schlongs of
-Skyrim AE 4.0.0 removed `SOSAE_SKSE.SetSchlongBend`, so SPS owns the angle itself
-through the `SPS pose angle` method, which rotates `NPC GenitalsBase [GenBase]`
-directly. That works with the SOS skeleton and animation events that SOS still
-ships, and needs no SOS script beyond it. The `SOS / TNG animation stages` method
-remains available and uses the `SOSFlaccid`/`SOSBend0`-`SOSBend9` graph events.
-Legacy SOS is supported through those same events.
+Skyrim AE 4.0.0 removed `SOSAE_SKSE.SetSchlongBend`, so SPS sets the angle through
+the animation events SOS still ships, `SOSBend-9` (lowest) to `SOSBend9`
+(highest), using the same mapping as SOS's own code. Legacy SOS and TNG use the
+same 19 events.
 
 The New Gentleman is also supported. TNG uses the same Gen01-Gen06 skeleton
 nodes and SOS-style animation events, so physics switching and position control
@@ -204,16 +202,13 @@ SPS switches between:
 - automatic soft-angle refresh for SOS AE-NG, without a manual SMP reset
 - a simple recommended-settings button
 
-The **Advanced** page lets you choose how SPS sets the angle:
+The **Advanced** section of the Appearance page lets you choose how SPS sets the angle:
 
-- `SPS pose angle` (recommended with Schlongs of Skyrim AE): SPS rotates the base
-  of the assembly itself. The angle is continuous rather than ten stages, works
-  without any SOS native, and shows the same way under CBPC and SMP.
-- `SOS / TNG animation stages`: sends the `SOSBend0`-`SOSBend9` graph events.
-  Use this when another setup expects SOS to own the angle.
-- `SOS AE direct control`: the pre-4.0.0 native path. Schlongs of Skyrim AE
-  4.0.0 removed that native, so this now falls back to the animation stages.
-- `Choose automatically`: picks the pose angle when SOS AE is present.
+- `Choose automatically` (recommended): uses the SOS/TNG animation stages.
+- `SOS / TNG animation stages`: sends the 19 `SOSBend-9`-`SOSBend9` graph events.
+- `SPS pose angle` (experimental): writes `NPC GenitalsBase [GenBase]` directly.
+  The SOS/TNG animation rewrites that bone every frame, so this usually does not
+  move the angle; it remains only for diagnosis.
 
 The **Appearance** page controls the transition between those positions:
 
@@ -230,8 +225,9 @@ The **Appearance** page controls the transition between those positions:
   after a long sleep or wait
 - a test button so random behaviour can be checked immediately
 
-SexLab and OStim controls have their own **Scenes** page. Rare timing,
-recovery and compatibility controls live under **Advanced** and are collapsed
+SexLab and OStim controls have their own **Scenes** page, and NPC controls
+have the **NPCs** page. Rare timing, recovery and compatibility controls live
+in collapsed **Advanced** sections and are collapsed
 until needed. **Troubleshooting** shows the important setup results first,
 keeps file names and counters inside optional detail sections, and uses normal
 language for quick fixes and support reports.

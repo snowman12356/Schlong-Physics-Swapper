@@ -75,6 +75,7 @@ scripts/BuildStubs/*
 !scripts/BuildStubs/OMetadata.psc
 !scripts/BuildStubs/SOSAE_SKSE.psc
 !scripts/BuildStubs/OSLArousedNative.psc
+!scripts/BuildStubs/SexLabRegistry.psc
 *.pex
 !scripts/SPS_PoseAngle.pex
 !scripts/SPS_SexLabBridge.pex

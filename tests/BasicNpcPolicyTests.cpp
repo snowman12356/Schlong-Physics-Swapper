@@ -109,11 +109,19 @@ int RunBasicNpcPolicyTests()
     policy.ObserveScene(ActorSceneStatus::clear, 10000);
     expect(!decide(10000) && decide(11500), "gap in clear observations restarts settling");
     policy.Complete("SOSBend1", BasicPositionResult::applied, 11500);
-    for (std::int64_t time = 12000; time <= 22000; time += 2000) {
+    // OSL 2.9.3 never repeats an unchanged bucket; neither does SPS.
+    bool repeated = false;
+    for (std::int64_t time = 12000; time <= 120000; time += 2000) {
         policy.ObserveScene(ActorSceneStatus::clear, time);
-        if (time < 21500) expect(!decide(time), "unchanged command stays suppressed inside refresh period");
+        repeated = repeated || decide(time).has_value();
     }
-    expect(decide(22000) == "SOSBend1", "occasional refresh is allowed after the bounded repeat interval");
+    expect(!repeated, "an unchanged bucket is never re-sent while the scene stays clear");
+    expect(decide(120000, 100) == "SOSBend9", "a changed bucket is sent straight away");
+    policy.Complete("SOSBend9", BasicPositionResult::applied, 120000);
+    policy.ObserveScene(ActorSceneStatus::active, 121000);
+    policy.ObserveScene(ActorSceneStatus::clear, 122000);
+    expect(!decide(123499, 100) && decide(123500, 100) == "SOSBend9",
+        "after a scene the same bucket is re-asserted, as OSL clears its cache on scenes");
 
     BasicNpcPolicy other;
     expect(!other.Decide(0, 22000, 22000, true, false, true), "one actor's clear scene cannot authorize another actor");

@@ -1,7 +1,7 @@
 Scriptname SPS_SexLabBridge Hidden
 
 Int Function GetSPSBridgeVersion() Global
-    Return 3
+    Return 4
 EndFunction
 
 Bool Function IsPlayerActive() Global
@@ -56,4 +56,56 @@ Int Function GetPlayerThreadID() Global
         Return -1
     EndIf
     Return thread.GetThreadID()
+EndFunction
+
+; Version 4: identity and futa override for the player and managed NPCs.
+; The actor is resolved from its FormID here; the native side only asks for
+; actors it is already tracking (the player and managed NPCs).
+;
+; Returns "<addon>|<rank>|<baseSex>|<sex>". addon is "" when SOS AE reports no
+; schlong or was not read; the sex fields are -1 when SexLab was not read.
+; Returns "" when the FormID does not resolve to an actor.
+String Function DescribeActor(Int formID, Bool readSos, Bool readSexLab) Global
+    Actor target = Game.GetForm(formID) as Actor
+    If target == None
+        Return ""
+    EndIf
+    String addon = ""
+    Int rank = 0
+    If readSos
+        ; SOS AE 4.0 getters only read; they never roll or assign an addon.
+        addon = SOSAE_SKSE.GetActorAddonName(target)
+        rank = SOSAE_SKSE.GetActorRank(target)
+    EndIf
+    Int baseSex = -1
+    Int sex = -1
+    If readSexLab
+        baseSex = SexLabRegistry.GetSex(target, True)
+        sex = SexLabRegistry.GetSex(target, False)
+    EndIf
+    Return addon + "|" + rank + "|" + baseSex + "|" + sex
+EndFunction
+
+; futa = True: SexLab treats a female (base sex 1) as futa. futa = False clears
+; the SexLab override. Both use SexLab P+'s own TreatAsFuta / ClearForcedSex,
+; stored by SexLab as a faction rank on the actor.
+; Returns 1 applied, 0 not eligible or SexLab unavailable, -1 actor not found.
+Int Function SetActorFuta(Int formID, Bool futa) Global
+    Actor target = Game.GetForm(formID) as Actor
+    If target == None
+        Return -1
+    EndIf
+    SexLabFramework sexLab = Game.GetFormFromFile(0xD62, "SexLab.esm") as SexLabFramework
+    If sexLab == None
+        Return 0
+    EndIf
+    If futa
+        If SexLabRegistry.GetSex(target, True) != 1
+            Return 0
+        EndIf
+        sexLab.TreatAsFuta(target)
+    Else
+        sexLab.ClearForcedSex(target)
+    EndIf
+    Return 1
 EndFunction

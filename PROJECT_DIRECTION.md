@@ -52,6 +52,159 @@ requiring users to repair the state manually.
 
 ## Current development status
 
+**Menu framework check and Method combo fix (built and installed 2026-11-05,
+not checked in game):** installed with Skyrim closed. 13 files were verified and
+8 changed; INI, `meta.ini`, XMLs and CBPC files were unchanged. Rollback:
+`out/backups/testmod-before-methodfix-20261105-173705`. at the user's request, SPS's menu calls were checked against the
+SKSE Menu Framework 3 source now in `codex-references/ui`. All 22 framework
+functions SPS uses exist in the installed Menu Framework 3.23.0, and the newer
+framework header binds them identically. Begin/EndDisabled calls are balanced
+and there are no duplicate widget IDs. Bug found and fixed: on
+Appearance → Advanced, "Choose automatically (recommended)" wrote `Method=3`, the
+experimental pose angle that the animation graph overwrites, so touching the combo
+stopped the angle moving. It now writes `2`, automatic; the pose angle is a
+separate, labelled third choice, and the hint text is corrected (19 positions).
+README angle-method and page text corrected. Open notes: `CMakeLists.txt`
+fetches the menu example from a moving `master` (pinned locally by the
+`.sps-deps` override), and the framework's wrappers call exports without null
+checks, with no minimum-version check in SPS. ZIP SHA-256
+`DD8EB30B16FC22CD8E21432C934332131F029BB23EC471080B1E6D0C88D2EEFF`, DLL SHA-256
+`783683349DACDB4595122D51839B8EAE17A0BD1B1725DA1B565766FF0E08079D`. Native
+only; the existing INI value 2 is unchanged.
+
+**SOS schlong / SexLab futa (built and installed 2026-11-04, not checked in
+game):** installed with Skyrim closed. 13 files were verified and 8 changed;
+INI, `meta.ini`, XMLs and CBPC files were unchanged. Rollback:
+`out/backups/testmod-before-futa-20261104-222458`. requested by the user, with a per-NPC button (not automatic), shown
+for the player and managed NPCs, and remembered per save. The NPCs page
+"Schlong and SexLab" section shows each actor's SOS AE addon and size (via
+read-only `SOSAE_SKSE.GetActorAddonName/GetActorRank`) and SexLab P+ sex (via
+`SexLabRegistry.GetSex`, with and without overrides). Females with a schlong
+get **Make futa in SexLab**, which calls P+'s own `TreatAsFuta`; forced ones
+get **Undo futa**, which calls `ClearForcedSex`. The user reported "SexLab
+forgets between saves". P+ stores the override only as a faction rank on the
+reference (`sslActorLibrary.psc:203-212`), so it is lost when the reference is
+rebuilt. SPS therefore adds its **first SKSE co-save data**: unique ID `SPSW`,
+record `FUTA` v1, a list of up to 256 form IDs, remapped with `ResolveFormID`
+on load and cleared on revert. It re-applies `TreatAsFuta` (at most every 10 s
+per actor) to loaded actors in the list whose SexLab sex no longer reads futa.
+`SPS_SexLabBridge` advances to v4 (`DescribeActor`, `SetActorFuta`; the
+existing functions are unchanged); the DLL checks v4 before using it. New
+build-only stub `SexLabRegistry.psc`; `SexLabFramework.psc` stub extended. Save
+impact: new co-save data is ignored by older SPS and dropped if SPS is
+removed. The SexLab faction override itself is SexLab's own data and stays on
+the actor until cleared (use Undo before uninstalling if desired). Validation:
+the native build had 0 warnings, the three suites passed, all six scripts
+compiled 0/0, and package validation and guards passed. ZIP SHA-256
+`BF5E3873CA7CE04B8B71CE850E9BFFF7022E6DBBDB1F7DF6999F2DBBCCD56B74`, DLL SHA-256
+`35B57113935218C282478ABC024754CF45D6170F17FF1BE352F6F55E1593A2C4`.
+Unverified: `Game.GetForm` with runtime (FF) form IDs and P+ native `GetSex`
+results were not exercised in game.
+
+**Managed NPC logging (built 2026-11-04, not installed):** requested by the
+user. `SchlongPhysicsSwapper.log` now records:
+- runtime state changes (`Managed NPC runtime: …`);
+- add, remove and refusal with the reason;
+- load/unload;
+- scene changes;
+- each physics request, with arousal and target;
+- handoff completion, the SMP proof or "did not complete";
+- each angle event sent or deferred;
+- why a handoff or angle was not sent.
+
+Changes are always logged; repeats of the same request or blocked reason at
+most every 10 s, so the 250 ms NPC tick cannot flood the log. Native only. ZIP
+SHA-256 `7664F1B0028D036CC8C8BE4191EA105484A33AD745A7A9AAE9165539086BC24E`, DLL
+SHA-256 `6C3D1322A12AB792ABC44A1C39368DE021072C5030819D7E560DA5D2FFE71085`
+(includes the handoff fix). The native build had 0 warnings, the suites passed,
+and package validation passed.
+
+**Managed NPC handoff bug fixed (built 2026-11-04, not installed):** the user
+reported that NPC switching kept failing. The 21:33-21:40 log has no NPC lines,
+because the managed runtime did not log. Cause, confirmed in source:
+`SetActorPhysicsOwner` erased the NPC's ownership request from the ledger
+(`ownershipRequests.Finish`) immediately after queuing `SetActorOwnerV3`. The
+script's first step, `ResolveOwnershipRequest(token)`, therefore found nothing
+and returned None, so every NPC handoff returned "not done" and was retried
+indefinitely. The working arousal, scene and position bridges release their
+request only in the completion callback. The ownership callback now does the
+same: it releases the request together with the gate lease when the stack
+returns or is disposed. Also fixed: the NPC ownership completion touched the
+game-thread-only registry from the Papyrus callback thread, and now runs as an
+SKSE task like the player path. NPC handoffs are now logged ("Managed NPC …
+switched to …", the SMP proof, or "did not complete"). ZIP SHA-256
+`CFDA9B7B7FCF68F68175C276E569B91D18845BAD35852E31FCB388EAC4CEFD15`, DLL SHA-256
+`D824FD988B5FE93559D52D6C67ABF932154F9579D1A1917E3843F791CC07527F`. The native
+build had 0 warnings, the suites passed, and package validation passed.
+Unverified in game.
+
+**Managed NPC startup bug fixed (built and installed 2026-11-04, not checked in
+game):** installed with Skyrim closed. 13 package files were verified and 7
+changed; INI, `meta.ini`, XMLs and CBPC files were unchanged. Rollback:
+`out/backups/testmod-before-npcfix-20261104-212537`. the user
+reported an NPC at arousal 100 not erect. The 21:01-21:15 log shows four
+`Could not queue managed NPC FF000B9C`. Cause, confirmed in source:
+`ConfigureManagedNpcCommands` was called only when the menu checkbox changed,
+never at settings load or reload, so a saved `ManagedNPCEnabled=true` left the
+runtime "Off". The first Add stayed queued forever and later clicks were
+rejected as duplicates. Both load paths now configure it, matching the basic
+path. Basic (unmanaged) NPCs only receive SOS events, never a physics switch;
+with SMP genital XMLs (the installed SPS SOFTBODY profiles apply to every actor
+using those paths) an SMP-simulated shaft can stay hanging at SOSBend9. That is
+inferred from the design, not observed; full management (CBPC) is the path that
+makes an NPC visibly erect. The same log also shows repeated `SMP resumed
+ownership of 6/6 managed bones while CBPC was selected` for the player between
+20:56 and 21:14, each reasserted automatically; the trigger is not yet
+established. ZIP SHA-256
+`9521B407BEEFF1AD405A6934F879423F00221FC869819F7DC10E5144DFFDE388`, DLL SHA-256
+`EFE66590258A4D8440F199770B422B0E91D151BC08E996E6216825E8F73AE034` (includes
+the managed NPC menu and the OSL no-repeat change). The native build had 0
+warnings, the suites passed, and package validation passed.
+
+**Basic NPCs follow OSL 2.9.3's SOS behaviour (built 2026-11-04, not installed,
+not checked in game):** the user asked that ordinary NPCs copy what OSL does with
+Enable SOS on. Read from OSL's public source at commit `b1f85b6` ("2.9.3",
+matching the installed 2.9.3.0), `ActorStateManager::UpdateSOSAnimation`:
+`int(arousal)/4 - 14`, below -9 sends `SOSFlaccid`, capped at `SOSBend9`; skipped
+in scenes, with the cache cleared so the pose is re-asserted afterwards; an event
+is sent only when the bucket differs from the last applied one, and is never
+repeated; dead actors are sent `SOSFlaccid`. SPS's mapping was already
+identical. The one change: SPS no longer re-sends an unchanged event every 10 s
+(`kRefreshMs` removed). Remaining deliberate differences:
+- SPS waits 1.5 s after a scene clears, because its scene check is an async
+  query.
+- SPS re-sends after an NPC's 3D reloads, which OSL's formID cache does not.
+- SPS skips dead actors.
+- SPS still tracks at most 8 NPCs with a Gen01 node within 3000 units, where OSL
+  covers all humanoids in nearby cells.
+
+Native only, safe for existing saves. The native build had 0 warnings, the
+three suites passed with the updated no-repeat tests, the scripts compiled 0/0,
+and package validation and guards passed. ZIP SHA-256
+`229591758AC4995F30F77EC7A53CECF10EDDB5D3F447B341A417CE9E3C46D0D1`, DLL SHA-256
+`4771A0C6F399053CCA1698F48E61415FF202A736CCBFB2F4C6671F1AC4E1B400` (includes
+the managed NPC selection UI).
+
+**Managed NPC selection UI (built 2026-11-04, not installed, not checked in
+game):** requested by the user. The NPCs page now lists up to eight loaded NPCs
+within about 58 m (4096 units), closest first, each with a **Manage** button
+or the reason it cannot be managed. "Managed now" shows each managed NPC's name,
+physics command state (Soft (SMP) / Erect (CBPC) / Switching), state and
+arousal, with a per-NPC **Remove** button. In game, SPS shows a notification
+on add, remove or refusal, and when the crosshair lands on a managed NPC (at
+most every 8 s for the same NPC), using vanilla `Debug.Notification`, verified
+in `vanilla-papyrus/Debug.psc`. CommonLib's build has no native notification
+helper, so none was invented. The nearby scan runs once a second over the
+high-process handles with cheap checks, and only does the node check for the
+closest eight; it runs only while managed NPC is enabled. The crosshair-Add
+button and the one-NPC limit are unchanged. Native only: no settings, scripts,
+bridge versions or saved data changed, so it is safe for existing saves. The
+native build had 0 warnings, the three suites passed, all six scripts compiled
+0/0, and package validation and guards passed. ZIP SHA-256
+`3BA955891309A67C8E5AE94407366F78F0E814B68989ADEE7691667C32A7C6AF`, DLL SHA-256
+`4138A8EAB089E65FAA145D0FCE80D2FFFC5446CED8638BAC376354048479706C`. Managed NPC
+physics itself is still unverified in game (Stage 3 gate).
+
 **User-reported pass (2026-11-04, 20:33-20:41 session):** after installing the
 audit-fix build the user reported "it works". The matching log was written to
 the normal SKSE log path by the new wide-path logger (2.3.0.0 loaded at

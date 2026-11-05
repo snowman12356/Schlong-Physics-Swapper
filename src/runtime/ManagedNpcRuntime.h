@@ -19,8 +19,21 @@ struct ManagedNpcActorStatus {
     std::uint32_t formID{ 0 };
     std::string name;
     std::string state{ "Unknown" };
+    // "Soft (SMP)", "Erect (CBPC)", "Switching" or "Unknown". Command state, not
+    // proof of visible motion.
+    std::string physics{ "Unknown" };
     std::optional<float> arousal;
     bool loaded{ false };
+};
+
+// A loaded NPC near the player, offered in the menu so it can be managed with
+// one click instead of aiming the crosshair.
+struct ManagedNpcCandidate {
+    std::uint32_t formID{ 0 };
+    std::string name;
+    float distance{ 0.0F };
+    bool managed{ false };
+    std::string unavailable;  // Why it cannot be managed; empty when it can.
 };
 
 struct ManagedNpcStatus {
@@ -29,7 +42,10 @@ struct ManagedNpcStatus {
     std::string rejection;  // Last Add/Remove refusal, cleared on success.
     std::uint64_t switched{ 0 }, applied{ 0 }, deferred{ 0 }, failed{ 0 }, blocked{ 0 };
     std::vector<ManagedNpcActorStatus> actors;
+    std::vector<ManagedNpcCandidate> nearby;  // Closest first, at most kNearbyLimit.
 };
+
+inline constexpr std::size_t kManagedNpcNearbyLimit = 8;
 
 // One fully managed NPC alongside the player, per the Stage 3 milestone. The
 // player is never counted against this limit and is never a target here.
