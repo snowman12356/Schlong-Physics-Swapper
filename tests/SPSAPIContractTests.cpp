@@ -33,6 +33,15 @@ SPS_CHECK_API_OFFSET(UnregisterStateListener, 64);
 #undef SPS_CHECK_API_OFFSET
 
 static_assert(offsetof(InterfaceV2, GetArousal) == 72 && offsetof(InterfaceV2, GetErectThreshold) == 80);
+// V3 keeps the whole V2 layout and appends exactly two function pointers.
+static_assert(kVersionV3 == 3 && sizeof(InterfaceV3) == 104 && InterfaceV3{}.version == 3);
+static_assert(std::is_standard_layout_v<InterfaceV3>);
+static_assert(offsetof(InterfaceV3, GetArousal) == 72 && offsetof(InterfaceV3, GetErectThreshold) == 80 &&
+    offsetof(InterfaceV3, GetActorArousal) == 88 && offsetof(InterfaceV3, IsActorInScene) == 96);
+static_assert(static_cast<std::uint32_t>(Capability::ActorArousalReadback) == (1u << 7) &&
+    static_cast<std::uint32_t>(Capability::ActorSceneReadback) == (1u << 8));
+static_assert(std::is_same_v<GetActorArousalFn, Result(__cdecl*)(std::uint32_t, float*)>);
+static_assert(std::is_same_v<IsActorInSceneFn, Result(__cdecl*)(std::uint32_t, bool*)>);
 static_assert(std::is_same_v<GetAPIFn, GetAPIV1Fn>);
 static_assert(std::is_same_v<GetArousalFn, Result(__cdecl*)(std::uint32_t, float*)>);
 static_assert(std::is_same_v<GetErectThresholdFn, Result(__cdecl*)(float*)>);

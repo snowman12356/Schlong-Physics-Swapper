@@ -69,6 +69,32 @@ int RunBasicNpcPolicyTests()
             (ManagedSosEvent(46, managed, false) != "SOSBend-9"),
         "pose and event channels agree on the managed threshold");
 
+    // Rise gradually with arousal: the angle follows the value between the start
+    // arousal and the threshold, like the player, and both channels agree.
+    ManagedPoseProfile rising;
+    rising.threshold = 80.0F;
+    rising.erectBend = 18;
+    rising.arousalBased = true;
+    rising.startArousal = 40.0F;
+    expect(ManagedPoseBend(0, rising) == 0 && ManagedPoseBend(40, rising) == 0,
+        "gradual managed NPC holds neutral at and below the start arousal");
+    expect(ManagedPoseBend(60, rising) == 9,
+        "gradual managed NPC is half way between start and threshold");
+    expect(ManagedPoseBend(80, rising) == 18 && ManagedPoseBend(100, rising) == 18,
+        "gradual managed NPC reaches the erect bend at the threshold");
+    expect(ManagedPoseBend(61, rising) > ManagedPoseBend(60, rising) ||
+            ManagedPoseBend(70, rising) > ManagedPoseBend(60, rising),
+        "gradual managed NPC angle changes as arousal changes");
+    expect(ManagedSosEvent(60, rising, false) == "SOSBend-1" &&
+        ManagedSosEvent(80, rising, false) == "SOSBend8" &&
+        ManagedSosEvent(20, rising, false) == "SOSBend-9",
+        "gradual managed NPC event follows the same bend");
+    expect(ManagedPoseBend(-1, rising) == -1,
+        "unknown arousal still gives no gradual angle");
+    rising.arousalBased = false;
+    expect(ManagedPoseBend(60, rising) == 0 && ManagedPoseBend(80, rising) == 18,
+        "gradual off keeps the soft-or-erect behaviour");
+
     BasicNpcPolicy policy;
     const auto decide = [&](std::int64_t now, float value = 60) {
         return policy.Decide(value, now, now, true, false, true);

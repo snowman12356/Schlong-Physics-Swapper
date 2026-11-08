@@ -3,6 +3,7 @@
 #include "PoseTargets.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace SPS::Controllers {
 
@@ -21,8 +22,8 @@ std::optional<std::string> ManagedSosEvent(float arousal, const ManagedPoseProfi
     if (!reading) return std::nullopt;
     // Below the threshold the NPC is soft. At or above it the configured erect
     // bend applies; zero keeps the ordinary soft pose rather than inventing one.
-    const bool erect = *reading >= profile.threshold && profile.erectBend > 0;
-    const int bend = erect ? std::clamp(profile.erectBend, 0, 20) : 0;
+    // With arousalBased set the bend follows ManagedPoseBend's gradient.
+    const int bend = ManagedPoseBend(*reading, profile);
     // Same curve as the player. SOSBend-9 is the lowest angle, including the
     // soft pose; SOSFlaccid is not a step on this curve.
     return std::string(SPS::Core::PoseTargets::EventName(bend, tngBackend));
@@ -35,6 +36,15 @@ int ManagedPoseBend(float arousal, const ManagedPoseProfile& profile)
     // Same threshold rule as the event path so the two channels stay in step,
     // but the result is the bend itself, which the pose channel can express
     // continuously instead of rounding to one of ten stages.
+    if (profile.arousalBased) {
+        // Same arithmetic as the player's DesiredBend with a soft bend of 0.
+        const float start = std::clamp(profile.startArousal, 0.0F, 99.0F);
+        const float fullyErect = std::max(start + 1.0F, profile.threshold);
+        const float progress = std::clamp((*reading - start) / (fullyErect - start), 0.0F, 1.0F);
+        if (profile.erectBend <= 0) return 0;
+        return std::clamp(static_cast<int>(std::lround(
+            std::clamp(profile.erectBend, 0, 20) * progress)), 0, 20);
+    }
     const bool erect = *reading >= profile.threshold && profile.erectBend > 0;
     return erect ? std::clamp(profile.erectBend, 0, 20) : 0;
 }

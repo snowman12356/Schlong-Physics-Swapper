@@ -21,6 +21,11 @@ enum class BasicPositionResult : int { failed = -1, deferred = 0, applied = 1 };
 struct ManagedPoseProfile {
     float threshold{ 60.0F };
     int erectBend{ 14 };
+    // The player's "Rise gradually with arousal": the angle grows from 0 at
+    // startArousal to erectBend at the threshold instead of jumping. Off keeps
+    // the original soft-or-erect behaviour.
+    bool arousalBased{ false };
+    float startArousal{ 0.0F };
 };
 
 // A managed NPC uses its own threshold and configured erect bend, not the

@@ -10,8 +10,10 @@ namespace SPS::API {
 inline constexpr auto kPluginDLL = L"SchlongPhysicsSwapper.dll";
 inline constexpr auto kGetAPIFunctionNameV1 = "SchlongPhysicsSwapper_GetAPI_V1";
 inline constexpr auto kGetAPIFunctionNameV2 = "SchlongPhysicsSwapper_GetAPI_V2";
+inline constexpr auto kGetAPIFunctionNameV3 = "SchlongPhysicsSwapper_GetAPI_V3";
 inline constexpr std::uint32_t kVersionV1 = 1;
 inline constexpr std::uint32_t kVersionV2 = 2;
+inline constexpr std::uint32_t kVersionV3 = 3;
 // Source compatibility for existing V1 consumers.
 inline constexpr std::uint32_t kVersion = kVersionV1;
 inline constexpr std::uint32_t kPlayerFormID = 0x14;
@@ -47,7 +49,11 @@ enum class Capability : std::uint32_t {
     ActorAwareABI = 1u << 3,
     ResetNotification = 1u << 4,
     LiveArousalReadback = 1u << 5,
-    ErectThresholdReadback = 1u << 6
+    ErectThresholdReadback = 1u << 6,
+    // V3: GetActorArousal works for any loaded actor, not only the player.
+    ActorArousalReadback = 1u << 7,
+    // V3: IsActorInScene is available for the player and loaded NPCs.
+    ActorSceneReadback = 1u << 8
 };
 
 struct PhysicsRequest {
@@ -147,4 +153,48 @@ static_assert(offsetof(InterfaceV2, UnregisterStateListener) ==
               offsetof(InterfaceV1, UnregisterStateListener));
 
 using GetAPIV2Fn = const InterfaceV2*(__cdecl*)();
+
+// V3 adds two read-only, per-actor answers. Neither changes SPS state, requests
+// physics, or makes an actor "supported" for RequestPhysics/GetState: those still
+// accept only the player (IsActorSupported is unchanged).
+//
+// Both must be called on the game thread (for example from an SKSE task). They
+// are cheap: no Papyrus stack is created per call. Outputs are written only on
+// Success. Null output pointers return InvalidArgument; an actor that is not a
+// loaded, enabled actor returns UnsupportedActor.
+//
+// GetActorArousal returns the current 0-100 value from the configured arousal
+// provider for any loaded actor, read directly (OSL Aroused, SLO Aroused NG) or
+// from the provider's faction (SexLab Aroused Redux). A real 0 is Success.
+// NotReady means the provider has no reading for that actor.
+//
+// IsActorInScene is true while SexLab or OStim has the actor in a scene and for
+// SPS's scene-end delay afterwards, the same hold the player gets. NPCs are
+// answered from a cache that SPS refreshes about once a second after the first
+// call, so the first call for an actor returns NotReady. Actors not asked about
+// for 30 seconds are dropped from that cache.
+using GetActorArousalFn = Result(__cdecl*)(std::uint32_t actorFormID, float* arousal);
+using IsActorInSceneFn = Result(__cdecl*)(std::uint32_t actorFormID, bool* inScene);
+
+// V3 repeats the complete V2 layout unchanged and appends two members.
+struct InterfaceV3 {
+    std::uint32_t version{ kVersionV3 };
+    std::uint32_t size{ sizeof(InterfaceV3) };
+    GetCapabilitiesFn GetCapabilities{ nullptr };
+    IsActorSupportedFn IsActorSupported{ nullptr };
+    GetStateFn GetState{ nullptr };
+    RequestPhysicsFn RequestPhysics{ nullptr };
+    ReleasePhysicsFn ReleasePhysics{ nullptr };
+    NotifyPhysicsResetFn NotifyPhysicsReset{ nullptr };
+    RegisterStateListenerFn RegisterStateListener{ nullptr };
+    UnregisterStateListenerFn UnregisterStateListener{ nullptr };
+    GetArousalFn GetArousal{ nullptr };
+    GetErectThresholdFn GetErectThreshold{ nullptr };
+    GetActorArousalFn GetActorArousal{ nullptr };
+    IsActorInSceneFn IsActorInScene{ nullptr };
+};
+
+static_assert(offsetof(InterfaceV3, GetErectThreshold) == offsetof(InterfaceV2, GetErectThreshold));
+
+using GetAPIV3Fn = const InterfaceV3*(__cdecl*)();
 }

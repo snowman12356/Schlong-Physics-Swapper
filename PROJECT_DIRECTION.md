@@ -52,6 +52,71 @@ requiring users to repair the state manually.
 
 ## Current development status
 
+**Managed NPC uses the player's rise/fall control (built and installed
+2026-11-08 14:08 with Skyrim closed, 8 files verified identical to the package,
+INI and `meta.ini` unchanged, rollback
+`out/backups/testmod-before-npcramp-20261108-140858`; not checked in game):** requested by the user ("same control the
+player has but with an NPC"). In `ManagedNpcRuntime.cpp` the event channel now
+moves the NPC's angle like the player's timed ramp, using the same settings:
+Rise time (`ErectionDurationMs`) when the target grows and Fall time
+(`SofteningDurationMs`) when it shrinks, where a full 0 to Erect bend travel takes
+exactly that time, one SOS event per visible stage (not every bend unit), and a
+first `SOSBend-9` prime after each switch to CBPC. A fall holds CBPC until the
+lowest stage has been sent, then hands to SMP (bounded to 15 s so an unavailable
+position bridge cannot hold CBPC forever). With gradual erection off the angle
+jumps to the target. The target is the soft-or-erect angle unless "Rise gradually
+with arousal" is on, in which case it follows arousal (next entry). Not
+replicated: the soft-angle control (`FlaccidAngleControl`), random/spontaneous
+erections, SexLab/OStim role angles and the pose-angle method (unchanged, still
+immediate). Each stage is one Papyrus call through the shared gate, so a busy
+gate delays or skips a step. Native only, safe for existing saves. ZIP SHA-256
+`677E3023F5BC3E685AE280BA9D756A51ED84060039537E86EE7E70330F1EB8DA`, DLL SHA-256
+`1785178C81790739CC278F246803E1F99A1554627555D379302346ACB33FB7D1`; the
+hashes in the next entry are superseded.
+
+**Managed NPC angle follows arousal (built 2026-11-08, not installed, not checked
+in game):** the user tested the gate build and reported the NPC angle does not
+change. The 13:52-13:57 log shows Cicero at arousal 61 and 75 both sent
+`SOSBend8`: `ManagedSosEvent`/`ManagedPoseBend` were binary (soft below the
+threshold, the configured erect bend at or above it), with no arousal gradient.
+`ManagedPoseProfile` gained `arousalBased` and `startArousal`; when the
+existing "Rise gradually with arousal" setting (`ArousalBasedErection`) is on,
+the NPC's bend runs from 0 at `ErectionStartArousal` to `ErectBend` at the
+threshold, using the player's `DesiredBend` arithmetic with a soft bend of 0. It
+changes in steps (one SOS event per bend change, at most one per second poll),
+not a timed ramp. The user's INI has `ArousalBasedErection=false`, so the new
+behaviour is OFF until it is switched on, and switching it on also changes the
+player's rise. Four new policy tests; native build 0 warnings, suites passed,
+package validation passed. ZIP SHA-256
+`252526E596371896ED1F2BBBA797C084331B5AAD88D3336ED8DD6770476C927F`, DLL SHA-256
+`BBCB200068ADD809D1AE4F821DFAD4E7275CBC9589FF1D90FFB220692DC2DA25`. Gate
+finding from the same log: `NPC work is waiting for the player: player owner
+handoff pending` appears about every 11 s, alongside `Could not queue CBPC
+restoration after an external physics reset` (SPS-010) and `SMP resumed
+ownership of 6/6 ... reasserted`, so the player's owner handoff is the blocker
+and it is being re-triggered repeatedly (open item 2); a split gate would help
+NPCs but not stop that loop.
+
+**NPC "waiting for player work" gate narrowed (built and installed 2026-11-07,
+not checked in game; installed with Skyrim closed, 8 files verified identical to
+the package, INI and `meta.ini` unchanged, rollback
+`out/backups/testmod-before-gatenarrow-20261107-163226`). A split into separate
+player and NPC gates was discussed and deferred until the new
+`NPC work is waiting for the player` log line names the real cause:** requested by the user ("can we make this better"). The
+tick passed `playerBusy` to both NPC systems when the player owner was unknown or
+had a pending handoff, a menu action or test was active, **or the player's angle
+was animating/relaxing**. The last two do not hold the shared Papyrus operation
+gate (`PapyrusOperationGate`; the ramp runs on its own thread), so a 4-8 s rise or
+fall stalled every NPC command; each NPC dispatch already fails safely if the gate
+is busy. `animating`/`relaxing` were removed from the condition, and the reason is
+now logged as `NPC work is waiting for the player: <reason>` (every change, same
+reason at most every 10 s). The cause of the log's ~2 s "Waiting for player
+work"/"Managing NPC" alternation at a steady 18/18 is NOT established (it was
+not the angle animation: `animating=false` in the polls); the new log line will
+name it. Native only, safe for existing saves. ZIP SHA-256
+`DBDA732C035C54311C6B1B33ABEFC2742325D72BDBD2CD24F27024BB306BBA36`, DLL SHA-256
+`7A44CCDDB9816B3F49857159DC9B70C28D7C1B644784B89022790E1F244CC511`.
+
 **OSL arousal revert, root cause found (2026-11-05, no code changed yet):** read
 from `ozooma10/OSLAroused` master (`ArousalSystemOSL.cpp`,
 `ActorStateManager.cpp`, `PapyrusInterface.cpp`; commit hash not captured, so
@@ -1079,3 +1144,84 @@ six-bone build, confirming that its single merged `MaleGenitals` shape supports
 collisions in all three SOFTBODY profiles. Managed NPC support remains outside
 this release and requires a separate authorized phase after broader player
 coverage is complete.
+
+**Managed NPC soft pose hold (built 2026-11-08, NOT installed, not checked in game):** the
+log showed the fall reaching SOSBend-9 and the SMP handoff succeeding, but nothing was sent
+after SMP took over (the ownership change resets `sentIndex`), unlike the player, whose
+`ApplyRequestedSoftBend` re-sends the soft stage after each soft handoff. `Service()` now
+sends SOSBend-9 once per ownership change or finished scene while SMP owns the NPC (event
+channel only; retry every 3 s if deferred; log `soft pose held`). No setting, API or save
+change. DLL `E3593DF3D99901EB8C3E123EA3743CCBBAC3A1531283B9865F07F07E742FFAC4`,
+ZIP `4BC478CB4D16737DE0CDB7D0DB36C5808D6E37490393566BA4A86CCE6B6F58EA`.
+
+**Crosshair notification removed (built 2026-11-08, NOT installed):** the "<name>: managed by SPS - <owner>"
+message repeated every 8 s while the crosshair stayed on a managed NPC; `HintCrosshairTarget` is no longer
+called. One-off "SPS now manages / no longer manages / cannot manage" messages remain. This build supersedes the
+soft-pose-hold build: DLL `E005291B5621C794471C1B9D8335670D74A664B0135BDEE0F7848E35507CFBB0`,
+ZIP `6CAF0B21BA4BFBFDF6A6F47DA05D8E6F0231075C6894C8E2C2E20F828D9CA7EC`.
+
+**Crosshair notification restored (2026-11-08):** the user confirmed it only appears while the crosshair is on a
+managed NPC, so the removal above was reverted. Current build (soft-pose hold only), NOT installed:
+DLL `21A30133B898EDB427CDE3E428FFDCB5365465293A55F94F1FE86FDDC79093BE`,
+ZIP `F2284DD8E31A7295DC1336215456C967B2C85475B8F4CC4D04505175907B8E79`. Supersedes the two hashes above.
+
+**Managed NPC limit raised 1 -> 2 (built 2026-11-08, NOT installed, not checked in game):** `kManagedNpcCapacity = 2`
+(ManagedNpcRuntime.h). The tick already loops every managed NPC and keeps arousal/scene slots and drivers per ticket;
+the shared Papyrus operation gate still lets only one NPC handoff run at a time, so a second NPC may wait a tick or two.
+Includes the soft-pose hold. DLL `5519750606FC7CD1C8EAC1284381FBF4E6BD73FA80609DC6E9211BCE3C50C186`,
+ZIP `B8CECFC5E19CF366CCDE3BD7D18297D31AB68744682BAADB735479F0D759FE37`. Supersedes earlier hashes.
+
+**Per-NPC settings (built 2026-11-08, NOT installed, not checked in game):** managed NPCs no longer read the
+player's threshold, erect angle, rise/fall or gradual settings. Each managed NPC has five of its own
+(`ManagedNpcOptions`): Erect at arousal (60), Erect angle (14), Rise with arousal (off), Rise time (3 s),
+Fall time (5 s). Hysteresis (5), start arousal (20), mode (automatic) and gradual (on) are fixed. Only the shared
+bend method still comes from the player's configuration. UI: a "Settings for <name>" header under each managed
+NPC on the NPCs page. Saved by base record (`Plugin.esp|LocalID`) in
+`Data/SKSE/Plugins/SchlongPhysicsSwapper_NPCs.ini` (created on first change; written when a control is released);
+a runtime-only base is session-only. The player INI/settings are untouched. Includes limit 2 and the soft-pose hold.
+DLL `49D2D474D6E542696564D4E7B3F648E67415671090AA5B22295E4D7362608895`,
+ZIP `CD73073CE1F37E87FC8A73AD74EAD3975B895474D212D1912BB1D94340BC37EC`. Supersedes earlier hashes.
+
+**Resting pose is SOSFlaccid again, after the SMP handoff only (built 2026-11-08, NOT installed, not checked in game):**
+the user's screenshots show the soft player with the shaft tilted out, not hanging, under SMP. SOSBend-9 is the lowest
+bend stage but not the hanging clip. `ApplyPosition` (PositionBackendAdapter.cpp) now sends `SOSFlaccid` when called
+with `flaccid=true` and bend 0 on a non-TNG backend; `ApplyRequestedSoftBend` is the only caller that passes
+`flaccid=true` and it only runs when SMP owns the player. Managed NPCs do the same in their soft-pose hold. Rises
+and falls, the SOSBend-9 prime before a rise and the SOSBend-9 CBPC release are unchanged; a configured FlaccidBend
+is also unchanged. This reverses part of the earlier "no SOSFlaccid" change (made because the clip snapped during
+a rise); if a snap returns at the end of a fall or at the start of a rise, revert only that one condition.
+DLL `0B306DD42ACE288F4A4F88B14A045FD5209BFA9DEE038598A6C75FD445250860`,
+ZIP `EABB4EC4305D59CED0D83A9C5ADEEEDAD16251D24E4C32E0AA5D750D3FACE999`. Supersedes earlier hashes.
+
+**Installed 2026-11-08 23:12 (Skyrim closed):** DLL `0B306DD42ACE288F4A4F88B14A045FD5209BFA9DEE038598A6C75FD445250860`
+plus the six paired PEX files and `SPSBuildManifest.json` copied into `D:\Modding\mods\Schlong Physics Swapper`
+(hash-verified against the package). This install carries: managed NPC limit 2, per-NPC settings, NPC soft-pose
+hold, and the SOSFlaccid resting pose. INI, `meta.ini` and the physics XMLs untouched. Rollback:
+`out\backups\testmod-before-npcsettings-20261108-231209` (46 files, verified identical to the pre-install mod).
+Not checked in game.
+
+**Soft handoff now runs the full FSMP reset (built 2026-11-08, NOT installed, not checked in game):** the user reports the
+SOSFlaccid resting pose only settles after a manual FSMP reset. The automatic post-fall refresh (`resetSoft`) used
+`SPS_FSMPBridge` preparation 4, which only toggles SMP off/on and never calls `DynamicHDT.ResetPhysics`. `resetSoft` now
+uses preparation 1 (the same path as the load, mesh and angle resets: actor `ResetPhysics(full)` + barrier, then SMP on),
+and the refresh is due 2.5 s after the handoff (was 1.5 s, window 12 s) so the resting clip has blended first. Runtime
+argument only: no PEX, bridge version, INI, setting or save-data change; safe for existing saves. Managed NPCs are
+unchanged (they still need a manual reset if they show the same). DLL
+`1F00DBF54A4DC9FB290667BCB47496CA03631DF84E4C046C0B95303FB640F05A`, ZIP
+`5BA7F945734F9025401B4E644D84CCBDB2CCF07D27E70B51B1FFE5622ED010DA`. Supersedes the 0B306DD4 install.
+
+**Installed 2026-11-08 23:49 (Skyrim closed):** DLL `1F00DBF54A4DC9FB290667BCB47496CA03631DF84E4C046C0B95303FB640F05A` + paired PEX + manifest, hash-verified. INI/meta.ini/XMLs untouched. Rollback: `out\backups\testmod-before-softreset-20261108-234856` (46 files verified). Not checked in game.
+
+**Public API V3 (built 2026-11-08, NOT installed, not tested with the addon):** new export
+`SchlongPhysicsSwapper_GetAPI_V3` -> `InterfaceV3` = the V2 layout unchanged + `GetActorArousal(formID, float*)` and
+`IsActorInScene(formID, bool*)`; capability bits `ActorArousalReadback` (1<<7) and `ActorSceneReadback` (1<<8).
+`IsActorSupported` is unchanged (player only), so `RequestPhysics`/`GetState` still refuse NPCs. Arousal: player =
+`GetArousal`; other loaded actors read directly (OSL `GetArousalExt`, SLO/Classic `sla_Arousal` faction), no Papyrus,
+`NotReady` with no reading. Scene: player from the SexLab/OStim state + `sceneEndDelayMs`; NPCs from a probe cache
+(`src/runtime/ApiActorReads.*`, up to 32, refreshed ~1 s via the existing `QueryActorScene` bridge, `NotReady` on the
+first call, stale > 5 s, dropped after 30 s idle, cleared on save load/new game) with the same scene-end hold. Game
+thread only. ABI frozen in `tests/SPSAPIContractTests.cpp` (sizeof 104); V1/V2 untouched. `docs/MOD_AUTHOR_API.md`
+updated; packaged `Mod Author API\SPSAPI.h` carries V3. DLL `35E97F907D918E77FD1871A70A2C68F2C0B1BA2E9460A93E48C519B34A224E88`,
+ZIP `E7DF6478259B4533E567A43F12204B0C5996DD9215B5EBAA88058D0FB5B8D4DE`. Supersedes the 1F00DBF5 install (not installed yet).
+
+**Installed 2026-11-08 23:56 (Skyrim closed):** API V3 build, DLL `35E97F907D918E77FD1871A70A2C68F2C0B1BA2E9460A93E48C519B34A224E88` + paired PEX + manifest + `Mod Author API\SPSAPI.h`, hash-verified. INI/meta.ini/XMLs untouched. Rollback: `out\backups\testmod-before-apiv3-20261108-235601` (46 files verified). Not tested with the addon.

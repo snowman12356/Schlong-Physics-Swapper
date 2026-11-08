@@ -10,8 +10,10 @@
 #include "SosPoseAngle.h"
 #include "controllers/ManagedActorRegistry.h"
 #include "controllers/PhysicsOwnershipController.h"
+#include "controllers/PoseTargets.h"
 
 #include <SKSE/SKSE.h>
+#include <SimpleIni.h>
 #include <fmt/format.h>
 #include <algorithm>
 #include <cmath>
@@ -28,6 +30,10 @@ ManagedActorRegistry registry{ kManagedNpcCapacity };
 // a previous actor's pending ownership generation. The ownership controller is
 // built per tick from the actor's own ActorContext, because it binds directly to
 // that context's PhysicsOwnershipState.
+constexpr int kUnknownIndex = -100;   // no SOS stage has been sent yet
+constexpr int kBottomIndex = -9;      // SOSBend-9, where a fall releases CBPC
+constexpr std::int64_t kFallHoldMaxMs = 15000;
+
 struct Driver {
     std::optional<float> arousal;
     std::int64_t arousalAt{ -1 };
@@ -39,6 +45,17 @@ struct Driver {
     std::string appliedEvent;
     // Last bend written through the pose channel. -1 means nothing applied yet.
     int appliedBend{ -1 };
+    // Timed rise and fall for the event channel, mirroring the player: the bend
+    // moves from curBend toward the arousal target at the player's Rise/Fall
+    // speed, one SOS event per visible stage.
+    float curBend{ 0.0F };
+    int sentIndex{ kUnknownIndex };
+    std::int64_t lastStepMs{ 0 };
+    bool positionInFlight{ false };
+    // When CBPC owner is held until the angle has been lowered to the bottom.
+    std::int64_t fallHoldSinceMs{ -1 };
+    // Next time the soft (SMP) pose may be re-sent after a failed attempt.
+    std::int64_t softPoseRetryAt{ 0 };
     std::uint64_t switched{ 0 }, applied{ 0 }, deferred{ 0 }, failed{ 0 }, blocked{ 0 };
     // Log throttling: changes are always logged; repeats of the same request or
     // the same blocked reason at most every kRepeatLogMs.
@@ -112,6 +129,85 @@ void Notify(const std::string& text, std::int64_t allowedAfterMs)
 {
     (void)DispatchStatic("Debug", "Notification", allowedAfterMs, NowMs(),
         RE::BSFixedString(text.c_str()));
+}
+
+// ---- Per-NPC settings ----
+// Kept apart from the player's Settings. Stored by the NPC's base record
+// ("Plugin.esp|LocalID") so they survive reloads; a runtime-only base falls back
+// to this session. Game thread only (form lookups).
+constexpr auto kNpcIni = "Data/SKSE/Plugins/SchlongPhysicsSwapper_NPCs.ini";
+std::mutex optionsLock;
+std::unordered_map<std::string, ManagedNpcOptions> savedOptions;
+std::unordered_map<std::uint32_t, ManagedNpcOptions> liveOptions;
+bool savedOptionsLoaded{ false };
+
+ManagedNpcOptions ClampOptions(ManagedNpcOptions o)
+{
+    o.erectAt = std::clamp(o.erectAt, 0.0F, 100.0F);
+    o.angle = std::clamp(o.angle, 1, 20);
+    o.riseSeconds = std::clamp(o.riseSeconds, 1, 30);
+    o.fallSeconds = std::clamp(o.fallSeconds, 1, 30);
+    return o;
+}
+
+std::string StableKey(std::uint32_t formID)
+{
+    const auto* actor = RE::TESForm::LookupByID<RE::Actor>(formID);
+    const auto* base = actor ? actor->GetActorBase() : nullptr;
+    const auto* file = base ? base->GetFile(0) : nullptr;
+    if (!file) return {};
+    return fmt::format("{}|{:06X}", file->GetFilename(), base->GetLocalFormID());
+}
+
+void LoadSavedOptions()  // optionsLock held
+{
+    if (savedOptionsLoaded) return;
+    savedOptionsLoaded = true;
+    CSimpleIniA ini;
+    ini.SetUnicode();
+    if (ini.LoadFile(kNpcIni) < 0) return;
+    CSimpleIniA::TNamesDepend sections;
+    ini.GetAllSections(sections);
+    for (const auto& section : sections) {
+        ManagedNpcOptions o;
+        o.erectAt = static_cast<float>(ini.GetDoubleValue(section.pItem, "ErectAt", o.erectAt));
+        o.angle = static_cast<int>(ini.GetLongValue(section.pItem, "Angle", o.angle));
+        o.followArousal = ini.GetBoolValue(section.pItem, "FollowArousal", o.followArousal);
+        o.riseSeconds = static_cast<int>(ini.GetLongValue(section.pItem, "RiseSeconds", o.riseSeconds));
+        o.fallSeconds = static_cast<int>(ini.GetLongValue(section.pItem, "FallSeconds", o.fallSeconds));
+        savedOptions[section.pItem] = ClampOptions(o);
+    }
+}
+
+ManagedNpcOptions OptionsFor(std::uint32_t formID)
+{
+    std::scoped_lock lock(optionsLock);
+    if (const auto found = liveOptions.find(formID); found != liveOptions.end()) return found->second;
+    ManagedNpcOptions o;
+    const auto key = StableKey(formID);
+    if (!key.empty()) {
+        LoadSavedOptions();
+        if (const auto saved = savedOptions.find(key); saved != savedOptions.end()) o = saved->second;
+    }
+    liveOptions[formID] = o;
+    return o;
+}
+
+// Builds the engine settings for one NPC from its own options. Only the shared
+// technical choices (bend method) come from the player's configuration.
+ManagedNpcSettings EffectiveSettings(const ManagedNpcSettings& shared, const ManagedNpcOptions& o)
+{
+    ManagedNpcSettings s = shared;
+    s.mode = 0;
+    s.threshold = o.erectAt;
+    s.hysteresis = 5.0F;
+    s.erectBend = o.angle;
+    s.gradualErection = true;
+    s.arousalBasedErection = o.followArousal;
+    s.erectionStartArousal = 20.0F;
+    s.erectionDurationMs = o.riseSeconds * 1000;
+    s.softeningDurationMs = o.fallSeconds * 1000;
+    return s;
 }
 
 std::string PhysicsLabel(ActorContext* context)
@@ -300,6 +396,7 @@ void Publish(const char* state)
     for (const auto& snapshot : registry.Snapshot()) {
         ManagedNpcActorStatus actor;
         actor.formID = snapshot.ticket.formID;
+        actor.options = OptionsFor(snapshot.ticket.formID);
         actor.loaded = snapshot.loaded;
         actor.name = ActorName(RE::TESForm::LookupByID<RE::Actor>(snapshot.ticket.formID));
         actor.physics = snapshot.loaded ? PhysicsLabel(registry.Resolve(snapshot.ticket)) : "Not loaded";
@@ -395,8 +492,10 @@ void QueueOwnership(Driver& driver, RE::Actor* actor,
 }
 
 void Service(ActorWorkTicket ticket, ActorContext& context, RE::Actor* actor, const ActorWorkLease& lease,
-    const ManagedNpcSettings& settings, std::int64_t allowedAfterMs, std::int64_t now)
+    const ManagedNpcSettings& sharedSettings, std::int64_t allowedAfterMs, std::int64_t now)
 {
+    const ManagedNpcSettings settings =
+        EffectiveSettings(sharedSettings, OptionsFor(ticket.formID));
     auto& driver = DriverFor(ticket);
     auto& slot = arousalSlots[Key(ticket)];
     auto& sceneSlot = sceneSlots[Key(ticket)];
@@ -491,6 +590,10 @@ void Service(ActorWorkTicket ticket, ActorContext& context, RE::Actor* actor, co
         // event is never re-sent once the scene ends and the angle is lost.
         driver.appliedEvent.clear();
         driver.appliedBend = -1;
+        driver.sentIndex = kUnknownIndex;
+        driver.curBend = 0.0F;
+        driver.lastStepMs = 0;
+        driver.fallHoldSinceMs = -1;
         return;
     }
     if (!driver.arousal || driver.arousalAt < 0 ||
@@ -500,7 +603,20 @@ void Service(ActorWorkTicket ticket, ActorContext& context, RE::Actor* actor, co
     const auto ownership = controller.Read();
     const Core::NormalDecisionState decision{
         *driver.arousal, true, ownership.known, ownership.usingCBPC, false };
-    const bool wantCBPC = Core::NormalSettingsWantCBPC(settings, decision);
+    const bool eventChannel = settings.bendMethod != SPS::Runtime::kBendMethodPose;
+    bool wantCBPC = Core::NormalSettingsWantCBPC(settings, decision);
+    // Like the player, lower the angle while CBPC still owns the bones and only
+    // hand over to SMP once the lowest stage was sent. Releasing first would let
+    // SMP settle the shaft into its own pose before the fall. Bounded, so an
+    // unavailable position bridge can never keep CBPC forever.
+    if (eventChannel && settings.gradualErection && !wantCBPC && ownership.known &&
+        ownership.usingCBPC) {
+        const bool atBottom = driver.sentIndex == kBottomIndex && driver.curBend <= 0.0F;
+        if (driver.fallHoldSinceMs < 0) driver.fallHoldSinceMs = now;
+        if (!atBottom && now - driver.fallHoldSinceMs < kFallHoldMaxMs) wantCBPC = true;
+    } else {
+        driver.fallHoldSinceMs = -1;
+    }
     // An unknown owner must be established before this actor can be trusted to
     // hold a pose, so the first decision always dispatches.
     if (!ownership.known || ownership.usingCBPC != wantCBPC) {
@@ -508,11 +624,46 @@ void Service(ActorWorkTicket ticket, ActorContext& context, RE::Actor* actor, co
         // The new owner may rebuild the node, so the recorded pose is no longer
         // evidence that the current bone matches it.
         driver.appliedBend = -1;
+        driver.sentIndex = kUnknownIndex;
+        driver.curBend = 0.0F;
+        driver.lastStepMs = 0;
+        driver.fallHoldSinceMs = -1;
         QueueOwnership(driver, actor, lease, wantCBPC,
             OwnershipPurpose::switchOwner, allowedAfterMs, now, ticket, controller);
         return;
     }
-    if (!wantCBPC) return;  // SMP owns the pose; no position command is needed.
+    if (!wantCBPC) {
+        // SMP owns the physics, but the graph keeps whatever bend was last sent,
+        // and the handoff or a finished scene can leave it above the bottom. Like
+        // the player (ApplyRequestedSoftBend after each soft handoff), put the
+        // graph on SOSBend-9 once per ownership change so the NPC stays fully down.
+        if (eventChannel && ownership.known && !ownership.usingCBPC &&
+            driver.sentIndex != kBottomIndex && !driver.positionInFlight &&
+            now >= driver.softPoseRetryAt) {
+            driver.softPoseRetryAt = now + 3000;
+            // SMP owns the bones here, so use the true hanging clip (what OSL sends
+            // for a soft actor); SOSBend-9 would leave the shaft tilted out.
+            const std::string bottomEvent = TngLoaded() ?
+                std::string(SPS::Core::PoseTargets::EventName(0, true)) : std::string("SOSFlaccid");
+            driver.positionInFlight = true;
+            if (!QueueActorPosition(lease, actor, bottomEvent, std::nullopt, allowedAfterMs,
+                    [ticket, bottomEvent](ActorWorkTicket, bool applied) {
+                        const auto found = drivers.find(Key(ticket));
+                        if (found == drivers.end()) return;
+                        found->second.positionInFlight = false;
+                        if (!applied) { ++found->second.deferred; return; }
+                        found->second.sentIndex = kBottomIndex;
+                        found->second.appliedEvent = bottomEvent;
+                        ++found->second.applied;
+                        SKSE::log::info("Managed NPC {} ({:08X}) soft pose held: {}",
+                            ActorName(RE::TESForm::LookupByID<RE::Actor>(ticket.formID)), ticket.formID, bottomEvent);
+                    })) {
+                driver.positionInFlight = false;
+                ++driver.blocked;
+            }
+        }
+        return;
+    }
 
     // SPS pose angle: continuous, idempotent, and independent of the SOS event
     // contract, so it is written directly instead of being queued. The graph
@@ -520,7 +671,8 @@ void Service(ActorWorkTicket ticket, ActorContext& context, RE::Actor* actor, co
     // are relative and would repeat the same blend.
     if (settings.bendMethod == SPS::Runtime::kBendMethodPose) {
         const int bend = Controllers::ManagedPoseBend(*driver.arousal,
-            { settings.threshold, settings.erectBend });
+            { settings.threshold, settings.erectBend, settings.arousalBasedErection,
+                settings.erectionStartArousal });
         if (bend == driver.appliedBend) return;
         if (SPS::Runtime::SosPose::Apply(actor, bend,
                 SPS::Runtime::SosPose::ConfiguredDegrees())) {
@@ -530,31 +682,61 @@ void Service(ActorWorkTicket ticket, ActorContext& context, RE::Actor* actor, co
         return;
     }
 
-    // CBPC owns the pose. Reuse the verified SOS event contract the basic
-    // bridge already uses, converted from this NPC's own bend.
-    const auto bendEvent = Controllers::ManagedSosEvent(*driver.arousal,
-        { settings.threshold, settings.erectBend }, TngLoaded());
-    if (!bendEvent || *bendEvent == driver.appliedEvent) return;
-    if (!QueueActorPosition(lease, actor, *bendEvent, std::nullopt, allowedAfterMs,
-            [ticket, event = *bendEvent](ActorWorkTicket, bool applied) {
+    // CBPC owns the pose. Move the angle toward the arousal target the way the
+    // player does: at the Rise time when it grows and the Fall time when it
+    // shrinks (full travel 0 to the erect bend takes exactly that time), with
+    // gradual erection off jumping straight to the target. One verified SOS
+    // event is sent per visible stage change.
+    const int target = Controllers::ManagedPoseBend(*driver.arousal,
+        { settings.threshold, settings.erectBend, settings.arousalBasedErection,
+            settings.erectionStartArousal });
+    if (target < 0) return;
+    const float elapsedMs = driver.lastStepMs > 0 ?
+        static_cast<float>(std::clamp<std::int64_t>(now - driver.lastStepMs, 0, 1000)) : 0.0F;
+    driver.lastStepMs = now;
+    if (settings.gradualErection) {
+        const float travel = static_cast<float>(std::max(1, std::min(settings.erectBend, 20)));
+        const float riseMs = static_cast<float>(std::clamp(settings.erectionDurationMs, 500, 30000));
+        const float fallMs = static_cast<float>(std::clamp(settings.softeningDurationMs, 500, 30000));
+        const float goal = static_cast<float>(target);
+        if (driver.curBend < goal)
+            driver.curBend = std::min(goal, driver.curBend + elapsedMs * travel / riseMs);
+        else if (driver.curBend > goal)
+            driver.curBend = std::max(goal, driver.curBend - elapsedMs * travel / fallMs);
+    } else {
+        driver.curBend = static_cast<float>(target);
+    }
+    const bool tng = TngLoaded();
+    const int bendNow = std::clamp(static_cast<int>(std::lround(driver.curBend)), 0, 20);
+    const int index = SPS::Core::PoseTargets::EventIndex(bendNow, tng);
+    if (index == driver.sentIndex || driver.positionInFlight) return;
+    const std::string bendEvent = SPS::Core::PoseTargets::EventName(bendNow, tng);
+    driver.positionInFlight = true;
+    if (!QueueActorPosition(lease, actor, bendEvent, std::nullopt, allowedAfterMs,
+            [ticket, event = bendEvent, index, target](ActorWorkTicket, bool applied) {
                 const auto found = drivers.find(Key(ticket));
                 if (found == drivers.end()) return;
+                found->second.positionInFlight = false;
                 const auto name = ActorName(RE::TESForm::LookupByID<RE::Actor>(ticket.formID));
                 if (applied) {
+                    found->second.sentIndex = index;
                     found->second.appliedEvent = event;
                     ++found->second.applied;
-                    SKSE::log::info("Managed NPC {} ({:08X}) angle sent: {}", name, ticket.formID, event);
+                    // Log the start and the end of a move, not every stage.
+                    if (index == kBottomIndex || index == SPS::Core::PoseTargets::EventIndex(target, TngLoaded()))
+                        SKSE::log::info("Managed NPC {} ({:08X}) angle sent: {}", name, ticket.formID, event);
                 } else {
                     ++found->second.deferred;
                     SKSE::log::info("Managed NPC {} ({:08X}) angle {} deferred (scene or stale target)",
                         name, ticket.formID, event);
                 }
             })) {
+        driver.positionInFlight = false;
         ++driver.blocked;
         if (driver.blockedLoggedAt < 0 || now - driver.blockedLoggedAt >= kRepeatLogMs) {
             driver.blockedLoggedAt = now;
             SKSE::log::warn("Managed NPC {} ({:08X}) angle {} not sent: position bridge busy or unavailable",
-                ActorName(actor), ticket.formID, *bendEvent);
+                ActorName(actor), ticket.formID, bendEvent);
         }
     }
 }
@@ -627,6 +809,7 @@ void ResetManagedNpcs()
     drivers.clear();
     arousalSlots.clear();
     sceneSlots.clear();
+    { std::scoped_lock lock(optionsLock); liveOptions.clear(); }
     nearbyCache.clear();
     nearbyScanAtMs = 0;
     lastCrosshairFormID = 0;
@@ -653,6 +836,31 @@ bool QueueManagedNpcArousalWrite(std::uint32_t formID, float value)
     driver.requestedArousalWrite = *requested;
     driver.writeRetryAt = 0;
     driver.writeExpiresAt = NowMs() + 5000;
+    return true;
+}
+
+bool SetManagedNpcOptions(std::uint32_t formID, const ManagedNpcOptions& options, bool save)
+{
+    if (!registry.Find(formID)) return false;
+    const auto clamped = ClampOptions(options);
+    const auto key = StableKey(formID);
+    {
+        std::scoped_lock lock(optionsLock);
+        liveOptions[formID] = clamped;
+        if (key.empty() || !save) return true;  // session only, or still dragging
+        LoadSavedOptions();
+        savedOptions[key] = clamped;
+        CSimpleIniA ini;
+        ini.SetUnicode();
+        (void)ini.LoadFile(kNpcIni);
+        ini.SetDoubleValue(key.c_str(), "ErectAt", clamped.erectAt);
+        ini.SetLongValue(key.c_str(), "Angle", clamped.angle);
+        ini.SetBoolValue(key.c_str(), "FollowArousal", clamped.followArousal);
+        ini.SetLongValue(key.c_str(), "RiseSeconds", clamped.riseSeconds);
+        ini.SetLongValue(key.c_str(), "FallSeconds", clamped.fallSeconds);
+        if (ini.SaveFile(kNpcIni) < 0)
+            SKSE::log::warn("Could not save managed NPC settings to {}", kNpcIni);
+    }
     return true;
 }
 

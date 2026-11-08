@@ -25,6 +25,7 @@
 #include "runtime/Compatibility.h"
 #include "runtime/ActorBridgeAdapter.h"
 #include "runtime/ActorIdentity.h"
+#include "runtime/ApiActorReads.h"
 #include "runtime/BasicNpcRuntime.h"
 #include "runtime/ManagedNpcRuntime.h"
 #include "runtime/PapyrusGateway.h"
@@ -302,6 +303,48 @@ SPS::API::Result __cdecl APIGetArousal(std::uint32_t actorFormID, float* arousal
     if (!reading) return SPS::API::Result::NotReady;
     *arousal = *reading;
     return SPS::API::Result::Success;
+}
+
+std::uint32_t __cdecl APIGetCapabilitiesV3() {
+    using SPS::API::Capability;
+    return APIGetCapabilitiesV2() |
+        static_cast<std::uint32_t>(Capability::ActorArousalReadback) |
+        static_cast<std::uint32_t>(Capability::ActorSceneReadback);
+}
+
+// V3. Any loaded actor. The player is answered from SPS's own state; every other
+// actor is read through the arousal provider. Game thread only.
+SPS::API::Result __cdecl APIGetActorArousal(std::uint32_t actorFormID, float* arousal) {
+    if (!arousal) return SPS::API::Result::InvalidArgument;
+    if (actorFormID == SPS::API::kPlayerFormID) return APIGetArousal(actorFormID, arousal);
+    switch (SPS::Runtime::ReadApiActorArousal(actorFormID, arousal)) {
+    case SPS::Runtime::ApiActorRead::ready: return SPS::API::Result::Success;
+    case SPS::Runtime::ApiActorRead::notReady: return SPS::API::Result::NotReady;
+    default: return SPS::API::Result::UnsupportedActor;
+    }
+}
+
+// V3. True during a SexLab/OStim scene and for the scene-end delay afterwards.
+SPS::API::Result __cdecl APIIsActorInScene(std::uint32_t actorFormID, bool* inScene) {
+    if (!inScene) return SPS::API::Result::InvalidArgument;
+    int delayMs;
+    { std::scoped_lock lock(settingsLock); delayMs = settings.sceneEndDelayMs; }
+    if (actorFormID == SPS::API::kPlayerFormID) {
+        const auto now = NowMs();
+        const auto& state = sceneController.State();
+        const auto recent = [&](std::int64_t endedMs) {
+            return endedMs > 0 && now - endedMs < delayMs;
+        };
+        *inScene = state.sexLab.active.load() || state.ostim.active.load() ||
+            recent(state.sexLab.endedMs.load()) || recent(state.ostim.endedMs.load());
+        return SPS::API::Result::Success;
+    }
+    switch (SPS::Runtime::ReadApiActorScene(actorFormID, inScene, delayMs,
+            papyrusDispatchAllowedAfterMs.load())) {
+    case SPS::Runtime::ApiActorRead::ready: return SPS::API::Result::Success;
+    case SPS::Runtime::ApiActorRead::notReady: return SPS::API::Result::NotReady;
+    default: return SPS::API::Result::UnsupportedActor;
+    }
 }
 
 SPS::API::Result __cdecl APIGetErectThreshold(float* threshold) {
@@ -1616,8 +1659,11 @@ void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& comp
     const bool realSoftHandoff = !cbpc && previousState == SPS::API::PhysicsState::CBPC;
     if (realSoftHandoff) {
         playerContext.recovery.softConfirmationDueMs.store(0);
-        playerContext.recovery.softHandoffResetDueMs.store(now + 1500);
-        playerContext.recovery.softHandoffResetUntilMs.store(now + 10000);
+        // The resting clip (SOSFlaccid) is sent when this handoff completes. Reset
+        // SMP only after it has had time to blend, so the reset captures the
+        // finished pose rather than a mid-blend one.
+        playerContext.recovery.softHandoffResetDueMs.store(now + 2500);
+        playerContext.recovery.softHandoffResetUntilMs.store(now + 12000);
     } else {
         playerContext.recovery.softConfirmationDueMs.store(cbpc ? 0 : now + 750);
     }
@@ -1710,8 +1756,12 @@ bool QueueOwnershipHandoff(
     const bool reset = purpose == Purpose::resetLoad ||
         purpose == Purpose::resetAngle || purpose == Purpose::resetMesh;
     const int preparation = purpose == Purpose::maintainCBPC ? 3 :
-        (purpose == Purpose::resetSoft ? 4 :
+        (purpose == Purpose::resetSoft ? 1 :
             (reset ? 1 : (purpose == Purpose::reconnectMesh ? 2 : 0)));
+    // resetSoft used preparation 4, which only toggled SMP off and on. That left
+    // the shaft settled against the old pose; preparation 1 runs the actor's full
+    // DynamicHDT.ResetPhysics (the FSMP reset the user ran by hand to make the
+    // resting pose settle) before SMP is re-enabled.
     // softBend >= 0 makes SPS_FSMPBridge send SOSFlaccid before its reset.
     // That clip is not the lowest pose, so it is no longer requested on the
     // graph path: the soft stage (SOSBend-9 or FlaccidBend) is sent natively by
@@ -2339,8 +2389,30 @@ void StartPolling() {
                         { std::scoped_lock lock(settingsLock); current = settings; }
                         const auto ownership = ownershipController.Read();
                         const auto position = positionController.Read();
-                        const bool playerBusy = !ownership.known || ownership.pending || position.animating ||
-                            position.relaxing || pendingQuickAction.load() >= 0 || activeManualPhysicsTest.load() >= 0;
+                        // Only work that holds the shared Papyrus operation gate (an
+                        // owner handoff or a menu test) makes NPCs wait. The player's
+                        // angle ramp and fall run on their own thread and do not take
+                        // the gate, so they no longer stall NPC commands for their
+                        // whole 4-8 s; each NPC dispatch still checks the gate itself.
+                        const char* busyReason = !ownership.known ? "player owner not known yet" :
+                            ownership.pending ? "player owner handoff pending" :
+                            pendingQuickAction.load() >= 0 ? "menu physics action pending" :
+                            activeManualPhysicsTest.load() >= 0 ? "menu physics test active" : nullptr;
+                        const bool playerBusy = busyReason != nullptr;
+                        {
+                            // Changes always logged; the same reason at most every 10 s.
+                            static std::string lastBusyReason;
+                            static std::int64_t lastBusyLogMs = 0;
+                            const std::string reasonText = busyReason ? busyReason : "";
+                            const auto nowMs = NowMs();
+                            if (reasonText != lastBusyReason &&
+                                (reasonText.empty() || nowMs - lastBusyLogMs >= 10000)) {
+                                if (!reasonText.empty())
+                                    logger::info("NPC work is waiting for the player: {}", reasonText);
+                                lastBusyReason = reasonText;
+                                lastBusyLogMs = nowMs;
+                            }
+                        }
                         SPS::Runtime::TickBasicNpcs(current.enabled && current.basicNpcEnabled,
                             current.basicNpcProviderSosDisabled, papyrusDispatchAllowedAfterMs.load(), playerBusy);
                         SPS::Runtime::TickManagedNpcs(current.enabled && current.managedNpcEnabled,
@@ -2949,6 +3021,41 @@ void __stdcall RenderNPCs() {
                     });
                 }
                 slider.editing = false;
+            }
+        }
+        // This NPC's own settings. They are separate from the player's.
+        if (ImGuiMCP::CollapsingHeader(fmt::format("Settings for {}###sps-managed-opt-{:08X}",
+                actor.name, actor.formID).c_str())) {
+            // Local copy while dragging, so the page does not snap back to the
+            // last published value; the file is written when the control is released.
+            struct OptionState { SPS::Runtime::ManagedNpcOptions value; bool editing{ false }; };
+            static std::unordered_map<std::uint32_t, OptionState> optionStates;
+            auto& state = optionStates[actor.formID];
+            if (!state.editing) state.value = actor.options;
+            auto& o = state.value;
+            bool edited = false, released = false;
+            const auto track = [&](bool changedNow) {
+                edited |= changedNow;
+                released |= ImGuiMCP::IsItemDeactivatedAfterEdit();
+            };
+            track(ImGuiMCP::SliderFloat(fmt::format("Erect at arousal###sps-o-at-{:08X}", actor.formID).c_str(),
+                &o.erectAt, 0.0F, 100.0F, "%.0f"));
+            track(ImGuiMCP::SliderInt(fmt::format("Erect angle###sps-o-ang-{:08X}", actor.formID).c_str(),
+                &o.angle, 1, 20));
+            if (ImGuiMCP::Checkbox(fmt::format("Rise with arousal###sps-o-follow-{:08X}", actor.formID).c_str(),
+                    &o.followArousal)) { edited = true; released = true; }
+            track(ImGuiMCP::SliderInt(fmt::format("Rise time (seconds)###sps-o-rise-{:08X}", actor.formID).c_str(),
+                &o.riseSeconds, 1, 30));
+            track(ImGuiMCP::SliderInt(fmt::format("Fall time (seconds)###sps-o-fall-{:08X}", actor.formID).c_str(),
+                &o.fallSeconds, 1, 30));
+            if (edited) state.editing = !released;
+            if (edited || released) {
+                if (auto* tasks = SKSE::GetTaskInterface()) {
+                    const auto formID = actor.formID;
+                    const auto value = o;
+                    const bool save = released;
+                    tasks->AddTask([formID, value, save] { SPS::Runtime::SetManagedNpcOptions(formID, value, save); });
+                }
             }
         }
     }
@@ -3780,6 +3887,7 @@ void ResetTransientTimers() {
     SPS::Runtime::ResetActorIdentities();
     SPS::Runtime::ResetBasicNpcs();
     SPS::Runtime::ResetManagedNpcs();
+    SPS::Runtime::ResetApiActorReads();
     SPS::Runtime::ResetActorBridgeRequests();
     SPS::Runtime::ResetPhysicsOperations();
     ownershipController.ResetPending();
@@ -3931,6 +4039,27 @@ SchlongPhysicsSwapper_GetAPI_V2() {
         Mod::APIUnregisterStateListener,
         Mod::APIGetArousal,
         Mod::APIGetErectThreshold
+    };
+    return &api;
+}
+
+extern "C" __declspec(dllexport) const SPS::API::InterfaceV3* __cdecl
+SchlongPhysicsSwapper_GetAPI_V3() {
+    static const SPS::API::InterfaceV3 api{
+        SPS::API::kVersionV3,
+        sizeof(SPS::API::InterfaceV3),
+        Mod::APIGetCapabilitiesV3,
+        Mod::APIIsActorSupported,
+        Mod::APIGetState,
+        Mod::APIRequestPhysics,
+        Mod::APIReleasePhysics,
+        Mod::APINotifyPhysicsReset,
+        Mod::APIRegisterStateListener,
+        Mod::APIUnregisterStateListener,
+        Mod::APIGetArousal,
+        Mod::APIGetErectThreshold,
+        Mod::APIGetActorArousal,
+        Mod::APIIsActorInScene
     };
     return &api;
 }

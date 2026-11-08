@@ -15,8 +15,20 @@ namespace SPS::Runtime {
 // for an NPC; they describe player time-of-day and sleep assumptions.
 using ManagedNpcSettings = Core::Settings;
 
+// The only settings a managed NPC has. They are its own, separate from the
+// player's: nothing here reads or changes the player page. Saved per NPC (by its
+// base record, so they survive reloads) in SchlongPhysicsSwapper_NPCs.ini.
+struct ManagedNpcOptions {
+    float erectAt{ 60.0F };       // Arousal at which the NPC is fully erect.
+    int angle{ 14 };              // Erect angle, 1 to 20.
+    bool followArousal{ false };  // Angle grows with arousal instead of jumping.
+    int riseSeconds{ 3 };         // Time to rise, 1 to 30.
+    int fallSeconds{ 5 };         // Time to fall, 1 to 30.
+};
+
 struct ManagedNpcActorStatus {
     std::uint32_t formID{ 0 };
+    ManagedNpcOptions options;
     std::string name;
     std::string state{ "Unknown" };
     // "Soft (SMP)", "Erect (CBPC)", "Switching" or "Unknown". Command state, not
@@ -49,7 +61,7 @@ inline constexpr std::size_t kManagedNpcNearbyLimit = 8;
 
 // One fully managed NPC alongside the player, per the Stage 3 milestone. The
 // player is never counted against this limit and is never a target here.
-inline constexpr std::size_t kManagedNpcCapacity = 1;
+inline constexpr std::size_t kManagedNpcCapacity = 2;
 
 // Game-thread entry point. `playerBusy` keeps managed work behind the player's
 // own pending handoff because both share one engine operation gate.
@@ -68,6 +80,9 @@ bool QueueManagedNpcRemove(std::uint32_t formID);
 // same bridge call as the basic NPC test sliders. False if OSL is absent, the
 // value is invalid or the actor is not managed.
 bool QueueManagedNpcArousalWrite(std::uint32_t formID, float value);
+// Game thread. Stores (clamped) and saves one managed NPC's own settings.
+// `save` false applies it now without writing the file (used while dragging).
+bool SetManagedNpcOptions(std::uint32_t formID, const ManagedNpcOptions& options, bool save = true);
 
 // Thread-safe invalidation, mirroring the basic bridge's event hook.
 void InvalidateManagedNpc(std::uint32_t formID);

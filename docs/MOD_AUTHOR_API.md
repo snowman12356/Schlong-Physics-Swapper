@@ -1,4 +1,4 @@
-# SPS compatibility API (V1 and V2)
+# SPS compatibility API (V1, V2 and V3)
 
 The SPS API lets another SKSE plugin cooperate with Schlong Physics Swapper
 without linking against it or making it a required dependency.
@@ -108,6 +108,34 @@ calls are separate observations, not an atomic combined snapshot.
 V1's export, table layout, capabilities and behavior remain unchanged. V2 adds
 the two capability bits and function pointers. The request, snapshot and event
 payloads retain `apiVersion=1` even when passed through V2; use their defaults.
+
+## NPC arousal and scene reads (V3)
+
+`SchlongPhysicsSwapper_GetAPI_V3` returns `InterfaceV3`: the V2 layout unchanged,
+plus two members. Check `version == kVersionV3`, `size >= sizeof(InterfaceV3)` and
+the capability bits `ActorArousalReadback` and `ActorSceneReadback`.
+
+| Call | Input | Output | Notes |
+|---|---|---|---|
+| `GetActorArousal(formID, float*)` | any loaded actor | 0-100 | A real 0 is `Success`. `NotReady` if the provider has no reading. Works for any loaded NPC, not only ones SPS tracks. The player (`0x14`) behaves like `GetArousal`. |
+| `IsActorInScene(formID, bool*)` | player or loaded NPC | true/false | SexLab and OStim, plus SPS's scene-end delay afterwards (the same hold the player gets). |
+
+Rules:
+
+- **Game thread only** (for example from an SKSE task). No Papyrus stack is
+  created per call.
+- Outputs are written only on `Success`. A null output is `InvalidArgument`. An
+  actor that is not loaded and enabled is `UnsupportedActor`.
+- `IsActorInScene` for an NPC answers from a cache SPS refreshes about once a
+  second through its existing scene bridge. The first call for an actor returns
+  `NotReady`; keep asking. An answer older than 5 seconds is `NotReady` again, and
+  actors not asked about for 30 seconds are dropped (up to 32 are cached).
+- `GetActorArousal` reads OSL Aroused (`GetArousalExt`) or SLO Aroused NG directly,
+  and SexLab Aroused Redux through its arousal faction. With no arousal provider it
+  is `NotReady`.
+- **`IsActorSupported` is unchanged and still means the player only.** `GetState`,
+  `RequestPhysics` and the listeners still accept only the player, so other mods
+  cannot request physics on NPCs through these reads.
 
 ## Requesting physics
 

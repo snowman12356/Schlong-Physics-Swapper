@@ -123,6 +123,8 @@ add_commonlibsse_plugin(${PROJECT_NAME} AUTHOR "snowman12356" SOURCES
     src/runtime/ActorIdentity.h
     src/runtime/ActorBridgeAdapter.cpp
     src/runtime/ActorBridgeAdapter.h
+    src/runtime/ApiActorReads.cpp
+    src/runtime/ApiActorReads.h
     src/runtime/BasicNpcRuntime.cpp
     src/runtime/BasicNpcRuntime.h
     src/runtime/ManagedNpcRuntime.cpp

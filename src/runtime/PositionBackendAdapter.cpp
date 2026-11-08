@@ -134,10 +134,16 @@ PositionDispatchResult ApplyPosition(
     // raised pose, which is the snap at the start of a rise. Bend 0 resolves to
     // SOSBend-9, the real lowest position; a configured FlaccidBend resolves to
     // its own stage.
-    (void)flaccid;
+    //
+    // Exception: the final resting pose. Once SMP owns the bones (flaccid is only
+    // set by the soft-state path, after the handoff) SOSBend-9 still leaves the
+    // shaft tilted out of the hanging pose, so an unconfigured soft pose sends
+    // SOSFlaccid, the clip OSL itself sends for a soft actor. Never during a rise
+    // or fall, and not for TNG, whose graph is not verified to bind it.
+    const bool restingPose = flaccid && bend == 0 && !tngBackend;
     const bool accepted = SendPositionEvent(
         actor,
-        RE::BSFixedString(SosBendEventName(bend, tngBackend)),
+        RE::BSFixedString(restingPose ? "SOSFlaccid" : SosBendEventName(bend, tngBackend)),
         tngBackend, allowedAfterMs, nowMs);
     return { accepted, false, 1 };
 }
