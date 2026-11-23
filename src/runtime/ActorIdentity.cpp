@@ -1,6 +1,7 @@
 #include "ActorIdentity.h"
 
 #include "Compatibility.h"
+#include "ManagedNpcRuntime.h"
 #include "PapyrusGateway.h"
 #include "SPSAPI.h"
 
@@ -28,8 +29,11 @@ constexpr std::uint32_t kSerializationID = Tag('S', 'P', 'S', 'W');
 constexpr std::uint32_t kFutaRecord = Tag('F', 'U', 'T', 'A');
 constexpr std::uint32_t kFutaRecordVersion = 1;
 constexpr std::uint32_t kMaxRemembered = 256;
+// Managed NPC membership for this save: count then FormIDs, at most kManagedNpcMaxCapacity.
+constexpr std::uint32_t kManagedRecord = Tag('M', 'N', 'P', 'C');
+constexpr std::uint32_t kManagedRecordVersion = 1;
 
-constexpr int kSexLabBridgeVersion = 4;
+constexpr int kSexLabBridgeVersion = 5;
 constexpr std::int64_t kDescribeEveryMs = 5000;
 constexpr std::int64_t kReapplyEveryMs = 10000;
 
@@ -149,6 +153,10 @@ void Describe(std::uint32_t formID, bool readSos, bool readSexLab, std::uint64_t
                 parsed.sosRead = readSos;
                 parsed.sexLabRead = readSexLab;
                 parsed.pending = false;
+                const auto& old = entry.identity;
+                if (!old.known || old.addon != parsed.addon || old.baseSex != parsed.baseSex || old.sex != parsed.sex)
+                    SKSE::log::info("Identity {:08X}: schlong '{}' size {}, SexLab base sex {}, current sex {}",
+                        formID, parsed.addon, parsed.rank, parsed.baseSex, parsed.sex);
                 entry.identity = std::move(parsed);
             }
         }),
@@ -203,17 +211,38 @@ void OnSave(SKSE::SerializationInterface* intfc)
         std::scoped_lock guard(lock);
         list.assign(remembered.begin(), remembered.end());
     }
-    if (!intfc->OpenRecord(kFutaRecord, kFutaRecordVersion)) return;
-    const auto count = static_cast<std::uint32_t>(std::min<std::size_t>(list.size(), kMaxRemembered));
-    intfc->WriteRecordData(count);
-    for (std::uint32_t i = 0; i < count; ++i) intfc->WriteRecordData(list[i]);
+    if (intfc->OpenRecord(kFutaRecord, kFutaRecordVersion)) {
+        const auto count = static_cast<std::uint32_t>(std::min<std::size_t>(list.size(), kMaxRemembered));
+        intfc->WriteRecordData(count);
+        for (std::uint32_t i = 0; i < count; ++i) intfc->WriteRecordData(list[i]);
+    }
+    const auto managed = ReadManagedNpcMembership();
+    if (!managed.empty() && intfc->OpenRecord(kManagedRecord, kManagedRecordVersion)) {
+        const auto count = static_cast<std::uint32_t>(std::min<std::size_t>(managed.size(), kManagedNpcMaxCapacity));
+        intfc->WriteRecordData(count);
+        for (std::uint32_t i = 0; i < count; ++i) intfc->WriteRecordData(managed[i]);
+    }
 }
 
 void OnLoad(SKSE::SerializationInterface* intfc)
 {
     std::set<std::uint32_t> loaded;
+    std::vector<std::uint32_t> managed;
     std::uint32_t type = 0, version = 0, length = 0;
     while (intfc->GetNextRecordInfo(type, version, length)) {
+        if (type == kManagedRecord && version == kManagedRecordVersion) {
+            std::uint32_t count = 0;
+            if (intfc->ReadRecordData(count) != sizeof(count)) break;
+            count = std::min<std::uint32_t>(count, static_cast<std::uint32_t>(kManagedNpcMaxCapacity));
+            for (std::uint32_t i = 0; i < count; ++i) {
+                std::uint32_t saved = 0;
+                if (intfc->ReadRecordData(saved) != sizeof(saved)) break;
+                RE::FormID resolved = 0;
+                // A removed plugin drops the actor; FF runtime IDs pass through unchanged.
+                if (intfc->ResolveFormID(saved, resolved)) managed.push_back(resolved);
+            }
+            continue;
+        }
         if (type != kFutaRecord || version != kFutaRecordVersion) continue;
         std::uint32_t count = 0;
         if (intfc->ReadRecordData(count) != sizeof(count)) break;
@@ -229,6 +258,8 @@ void OnLoad(SKSE::SerializationInterface* intfc)
     std::scoped_lock guard(lock);
     remembered = std::move(loaded);
     SKSE::log::info("SexLab futa list loaded from this save: {} actor(s)", remembered.size());
+    RestoreManagedNpcMembership(managed);
+    SKSE::log::info("Managed NPC list loaded from this save: {} actor(s)", managed.size());
 }
 
 void OnRevert(SKSE::SerializationInterface*)
@@ -238,9 +269,25 @@ void OnRevert(SKSE::SerializationInterface*)
     entries.clear();
     futaRequests.clear();
     ++generation;
+    ClearManagedNpcMembership();
+}
+
+// SPS_SexLabBridge.ResolveIdentityActor. Game.GetForm returns None for FormIDs
+// >= 0x80000000, so light-plugin (FE) and runtime-created (FF) actors such as a
+// spawned follower could never be described or made futa from Papyrus.
+RE::Actor* NativeResolveIdentityActor(RE::StaticFunctionTag*, std::int32_t formID)
+{
+    return RE::TESForm::LookupByID<RE::Actor>(static_cast<RE::FormID>(static_cast<std::uint32_t>(formID)));
 }
 
 }  // namespace
+
+bool RegisterActorIdentityNatives(RE::BSScript::IVirtualMachine* vm)
+{
+    if (!vm) return false;
+    vm->RegisterFunction("ResolveIdentityActor", "SPS_SexLabBridge", NativeResolveIdentityActor);
+    return true;
+}
 
 bool FutaEligible(const ActorIdentity& identity)
 {
@@ -298,7 +345,8 @@ void TickActorIdentities(const std::vector<std::uint32_t>& watched, std::int64_t
             // SexLab's override lives on the reference and is lost when the
             // reference is rebuilt. Re-apply only for loaded actors in this
             // save's list whose SexLab sex no longer reads futa.
-            if (readSexLab && entry.identity.rememberedFuta && FutaEligible(entry.identity) &&
+            if (readSexLab && entry.identity.rememberedFuta && entry.identity.known &&
+                entry.identity.sexLabRead &&
                 entry.identity.sex != 2 && actor->Is3DLoaded() &&
                 (entry.reappliedAt < 0 || now - entry.reappliedAt >= kReapplyEveryMs)) {
                 entry.reappliedAt = now;

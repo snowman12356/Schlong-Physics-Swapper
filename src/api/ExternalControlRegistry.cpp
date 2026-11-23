@@ -124,4 +124,128 @@ std::vector<Listener> ExternalControlRegistry::Listeners() const
     return copy;
 }
 
+Request ExternalControlRegistry::AddRiseHold(
+    const SPS::API::RiseHoldRequest& request,
+    std::int64_t nowMs)
+{
+    std::scoped_lock lock(lock_);
+    Request stored;
+    stored.handle = NextNonZero(nextRequestHandle_);
+    const auto duration = std::min(request.durationMilliseconds, SPS::API::kMaxRiseHoldMilliseconds);
+    stored.expiresAtMs = nowMs + duration;
+    if (request.requesterName && request.requesterName[0] != '\0') {
+        stored.requester = request.requesterName;
+        if (stored.requester.size() > 64) {
+            stored.requester.resize(64);
+        }
+    }
+    riseHolds_.emplace(stored.handle, stored);
+    return stored;
+}
+
+std::optional<std::string> ExternalControlRegistry::ReleaseRiseHold(SPS::API::RequestHandle handle)
+{
+    std::scoped_lock lock(lock_);
+    const auto found = riseHolds_.find(handle);
+    if (found == riseHolds_.end()) {
+        return std::nullopt;
+    }
+    auto requester = found->second.requester;
+    riseHolds_.erase(found);
+    return requester;
+}
+
+bool ExternalControlRegistry::RiseHoldActive(std::int64_t nowMs)
+{
+    std::scoped_lock lock(lock_);
+    for (auto it = riseHolds_.begin(); it != riseHolds_.end();) {
+        if (nowMs >= it->second.expiresAtMs) {
+            it = riseHolds_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    return !riseHolds_.empty();
+}
+
+std::size_t ExternalControlRegistry::ClearRiseHolds()
+{
+    std::scoped_lock lock(lock_);
+    const auto count = riseHolds_.size();
+    riseHolds_.clear();
+    return count;
+}
+
+SPS::API::ListenerHandle ExternalControlRegistry::RegisterActorListener(
+    SPS::API::ActorEventCallback callback,
+    void* userData)
+{
+    if (!callback) {
+        return 0;
+    }
+    std::scoped_lock lock(lock_);
+    const auto handle = NextNonZero(nextListenerHandle_);
+    actorListeners_.emplace(handle, ActorListener{ callback, userData });
+    return handle;
+}
+
+bool ExternalControlRegistry::UnregisterActorListener(SPS::API::ListenerHandle handle)
+{
+    std::scoped_lock lock(lock_);
+    return actorListeners_.erase(handle) > 0;
+}
+
+SPS::API::ListenerHandle ExternalControlRegistry::RegisterNpcListener(
+    SPS::API::ActorEventCallback callback,
+    void* userData)
+{
+    if (!callback) {
+        return 0;
+    }
+    std::scoped_lock lock(lock_);
+    const auto handle = NextNonZero(nextListenerHandle_);
+    npcListeners_.emplace(handle, ActorListener{ callback, userData });
+    return handle;
+}
+
+bool ExternalControlRegistry::UnregisterNpcListener(SPS::API::ListenerHandle handle)
+{
+    std::scoped_lock lock(lock_);
+    return npcListeners_.erase(handle) > 0;
+}
+
+std::vector<ActorListener> ExternalControlRegistry::NpcListeners() const
+{
+    std::scoped_lock lock(lock_);
+    std::vector<ActorListener> copy;
+    copy.reserve(npcListeners_.size());
+    for (const auto& [_, listener] : npcListeners_) {
+        copy.push_back(listener);
+    }
+    return copy;
+}
+
+bool ExternalControlRegistry::HasNpcListeners() const
+{
+    std::scoped_lock lock(lock_);
+    return !npcListeners_.empty();
+}
+
+bool ExternalControlRegistry::HasActorListeners() const
+{
+    std::scoped_lock lock(lock_);
+    return !actorListeners_.empty();
+}
+
+std::vector<ActorListener> ExternalControlRegistry::ActorListeners() const
+{
+    std::scoped_lock lock(lock_);
+    std::vector<ActorListener> copy;
+    copy.reserve(actorListeners_.size());
+    for (const auto& [_, listener] : actorListeners_) {
+        copy.push_back(listener);
+    }
+    return copy;
+}
+
 }

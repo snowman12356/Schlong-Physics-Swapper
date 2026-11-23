@@ -49,6 +49,10 @@ public:
     [[nodiscard]] std::optional<ManagedActorSnapshot> Find(std::uint32_t formID) const;
     [[nodiscard]] std::vector<ManagedActorSnapshot> Snapshot() const;
     [[nodiscard]] std::size_t Size() const;
+    // The limit can change while NPCs are enrolled. Lowering it never removes an
+    // existing entry; it only refuses new ones until the count is below the limit.
+    [[nodiscard]] std::size_t Capacity() const { return capacity_; }
+    void SetCapacity(std::size_t capacity) { capacity_ = capacity; }
 
     // Registration starts unloaded. Only a verified runtime availability
     // change may activate it. Every change gives work a fresh generation and
@@ -69,7 +73,7 @@ private:
 
     [[nodiscard]] std::optional<std::uint64_t> NextGeneration();
 
-    const std::size_t capacity_;
+    std::size_t capacity_;
     std::unordered_map<std::uint32_t, Entry> actors_;
 };
 

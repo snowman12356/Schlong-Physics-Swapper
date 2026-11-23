@@ -14,6 +14,8 @@ using ActorArousalCompletion = std::function<void(Controllers::ActorWorkTicket, 
 using ActorArousalWriteCompletion = std::function<void(Controllers::ActorWorkTicket, std::optional<float>)>;
 using ActorPositionCompletion = std::function<void(Controllers::ActorWorkTicket, bool)>;
 using ActorSceneCompletion = std::function<void(Controllers::ActorWorkTicket, Controllers::ActorSceneStatus)>;
+// 0 unknown, 1 receiving, 2 penetrating, -1 the bridge call was stale or failed.
+using ActorSceneRoleCompletion = std::function<void(Controllers::ActorWorkTicket, int)>;
 using BasicPositionCompletion = std::function<void(Controllers::ActorWorkTicket, Controllers::BasicPositionResult)>;
 
 // These are building blocks, not automatic NPC enrollment or policy. Call on
@@ -32,6 +34,9 @@ bool QueueActorPosition(Controllers::ActorWorkLease lease, RE::Actor* actor,
     std::int64_t allowedAfterMs, ActorPositionCompletion completion);
 bool QueryActorScene(Controllers::ActorWorkLease lease, RE::Actor* actor,
     std::int64_t allowedAfterMs, ActorSceneCompletion completion);
+// The actor's role in a SexLab or OStim scene (SPS_PositionBridge v5).
+bool QueryActorSceneRole(Controllers::ActorWorkLease lease, RE::Actor* actor,
+    std::int64_t allowedAfterMs, ActorSceneRoleCompletion completion);
 // Store request-start time with arousal/scene samples; callback arrival is not
 // a new observation time. False dispatch, stale/absent callbacks and unknown
 // results never establish permission to write.

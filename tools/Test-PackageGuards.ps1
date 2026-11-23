@@ -1,6 +1,11 @@
 [CmdletBinding()]
-param([Parameter(Mandatory)][string]$PackagePath, [string]$Version = '2.0.0')
+param([Parameter(Mandatory)][string]$PackagePath, [string]$Version = '')
 $ErrorActionPreference = 'Stop'
+if (-not $Version) {
+    $cmakeText = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\CMakeLists.txt') -Raw
+    if ($cmakeText -notmatch 'project\(SchlongPhysicsSwapper VERSION (\d+(?:\.\d+){2,3})') { throw 'Cannot read the version from CMakeLists.txt; pass -Version.' }
+    $Version = $Matches[1]
+}
 . (Join-Path $PSScriptRoot 'SPS.PexContracts.ps1')
 
 function Assert-Rejected {

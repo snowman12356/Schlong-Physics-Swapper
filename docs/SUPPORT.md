@@ -4,7 +4,7 @@ Please include enough information to reproduce the problem:
 
 1. Open **SKSE Menu Framework > Schlong Physics Swapper > Troubleshooting**.
 2. Press **Check setup again**.
-3. If the problem happens on demand, press **Record the next 30 seconds** and
+3. If the problem happens on demand, press **Record 30 seconds** and
    reproduce it before the timer finishes.
 4. Attach `SchlongPhysicsSwapper_DebugCapture.txt` from
    `Data/SKSE/Plugins`. If no capture was needed, attach
@@ -35,8 +35,10 @@ SOFTBODY is detected automatically. SPS waits for its SexLab/OStim genital XML
 reloads to finish and then restores the selected physics owner. Most users
 should keep **I have my own compatible physics**. Alternatively choose **Use my
 personal physics** for the supplied general six-bone profile, or **Use my
-SOFTBODY physics** when GT SOFTBODY 3.37.2 is also installed. Both supplied
-choices support compatible SOS, TNG and UBE six-bone meshes. For the SOFTBODY
+SOFTBODY physics** when GT SOFTBODY 3.37.2 is also installed. **Use my SOFTBODY
+physics (natural hang)** is a looser alternative to the standard SOFTBODY choice
+(choose one, not both): the balls hang under gravity and the shaft curves, with no
+shaft-to-thigh or ground collision. All supplied choices support compatible SOS, TNG and UBE six-bone meshes. For either SOFTBODY
 choice, make SPS win MO2 conflicts for
 `MaleGenitals.xml`, `MaleGenitalsSoft.xml` and `MaleGenitalsToAnus.xml`; another
 winning copy can make the soft shaft rigid or prevent the erect angle from

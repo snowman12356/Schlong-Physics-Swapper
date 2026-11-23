@@ -1,11 +1,11 @@
 Scriptname SPS_PoseAngle Hidden
 
-; SPS-owned schlong angle.
+; SPS-owned schlong angle (experimental, Position Method=3).
 ;
-; Schlongs of Skyrim AE 4.0.0 removed SOSAE_SKSE.SetSchlongBend, so SPS applies
-; its angle to the base of the assembly itself instead of asking SOS. The plugin
+; Schlongs of Skyrim AE 4.0.0 removed SOSAE_SKSE.SetSchlongBend. The plugin
 ; rotates 'NPC GenitalsBase [GenBase]' only; the bones below it are left to CBPC
-; or Faster HDT-SMP as before. No SOS script or native is required or called.
+; or Faster HDT-SMP. The SOS/TNG animation graph rewrites GenBase every frame,
+; so the angle does not persist while SOS/TNG animates the bone.
 
 Int Function GetSPSBridgeVersion() Global
     Return 1

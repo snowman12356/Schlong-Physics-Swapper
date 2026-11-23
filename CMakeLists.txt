@@ -135,6 +135,7 @@ add_commonlibsse_plugin(${PROJECT_NAME} AUTHOR "snowman12356" SOURCES
     src/runtime/PhysicsOwnershipAdapter.h
     src/runtime/PositionBackendAdapter.cpp
     src/runtime/PositionBackendAdapter.h
+    src/runtime/ShaftPoseTracker.h
     src/runtime/SosPoseAngle.cpp
     src/runtime/SosPoseAngle.h)
 target_include_directories(${PROJECT_NAME} SYSTEM PRIVATE "${mcp_sdk_SOURCE_DIR}/include")

@@ -1,4 +1,4 @@
-# SPS compatibility API (V1, V2 and V3)
+# SPS compatibility API (V1 to V5)
 
 The SPS API lets another SKSE plugin cooperate with Schlong Physics Swapper
 without linking against it or making it a required dependency.
@@ -51,8 +51,7 @@ features are required; that export and structure remain unchanged.
 
 ## Reading live arousal and the erect threshold (V2)
 
-V2 is first available in the local **2.1.0.2 test candidate**. Published 2.0.1
-and the earlier 2.1.0.1 NPC candidate do not export it.
+Published 2.0.1 does not export V2.
 
 ```cpp
 const SPS::API::InterfaceV2* GetSPSReadAPI()
@@ -118,7 +117,7 @@ the capability bits `ActorArousalReadback` and `ActorSceneReadback`.
 | Call | Input | Output | Notes |
 |---|---|---|---|
 | `GetActorArousal(formID, float*)` | any loaded actor | 0-100 | A real 0 is `Success`. `NotReady` if the provider has no reading. Works for any loaded NPC, not only ones SPS tracks. The player (`0x14`) behaves like `GetArousal`. |
-| `IsActorInScene(formID, bool*)` | player or loaded NPC | true/false | SexLab and OStim, plus SPS's scene-end delay afterwards (the same hold the player gets). |
+| `IsActorInScene(formID, bool*)` | player or loaded NPC | true/false | SexLab and OStim (and, for the player, Accurate Penetration), plus SPS's scene-end delay afterwards (the same hold the player gets). |
 
 Rules:
 
@@ -136,6 +135,81 @@ Rules:
 - **`IsActorSupported` is unchanged and still means the player only.** `GetState`,
   `RequestPhysics` and the listeners still accept only the player, so other mods
   cannot request physics on NPCs through these reads.
+
+## Scene role, rise hold and notifications (V4)
+
+`SchlongPhysicsSwapper_GetAPI_V4` returns `InterfaceV4`: the V3 layout unchanged,
+plus five members. Check `version == kVersionV4`, `size >= sizeof(InterfaceV4)` and
+the capability bits `kCapabilitySceneRoleReadback`, `kCapabilityRiseHold` and
+`kCapabilityActorEvents`. Every V4 call is player-only (`0x14`) and runs on the game
+thread. Nothing in V1-V3 changed, except that `IsActorInScene` for the player is also
+true while Accurate Penetration is reporting a scene.
+
+**Scene role.** `GetActorSceneRole(formID, SceneRole*)` gives `Unknown`, `Receiving`
+or `Penetrating`. It works without Accurate Penetration: OStim and SexLab roles are
+used first, then PPA's. `Unknown` is a successful answer (no scene, role not reported
+yet, or not identified). Asking keeps SPS's SexLab/OStim role queries running for 30
+seconds even if the user has role switching off. The role needs SPS's SexLab/OStim
+scene override enabled, as scene detection does. NPCs return `UnsupportedActor`.
+
+**In-scene flag.** `IsActorInScene` (V3) reads scene state only. A rise hold, a
+`RequestPhysics` hold or an SPS handoff never changes it, so it stays true for the
+whole scene plus SPS's scene-end delay. `StateSnapshot.source` is still
+`ExternalAPI` while your `RequestPhysics` is active; use `IsActorInScene` for the
+scene, not `source`.
+
+**Wait before going erect.** `RequestRiseHold(RiseHoldRequest*)` returns a handle (0
+if rejected) and `ReleaseRiseHold(handle)` ends it. While any hold is active and
+SMP (or an unknown owner) has the bones, SPS does not hand them to CBPC because of
+arousal. It does not delay a scene's own request and does not stop a rise already
+under way. `durationMilliseconds` must be 1 to `kMaxRiseHoldMilliseconds` (10000);
+a longer value is clamped, zero is rejected, so a hold always ends. Holds also end
+when a game loads or SPS is disabled. The handle is separate from `RequestPhysics`
+handles: pass it to `ReleaseRiseHold`, not `ReleasePhysics`. Releasing lets a waiting
+rise start straight away.
+
+**Notifications.** `RegisterActorEventListener(callback, userData)` /
+`UnregisterActorEventListener(handle)`. The callback receives an `ActorEvent` with
+`kind`, the current `arousal` (`arousalValid` says whether SPS has one), `inScene` and
+`role`:
+
+- `ArousalChanged`: the accepted arousal moved by 0.5 or more (or became valid). It
+  runs before SPS evaluates the new value, in the same game-thread task, so a hold
+  you take inside the callback is in place when SPS decides. This closes the race on
+  sudden arousal jumps: take `RequestRiseHold` and then your SMP request inside the
+  callback.
+- `SceneChanged`: `inScene` or `role` changed (checked on SPS's poll, about every
+  tick). The baseline is taken when you register, so read `IsActorInScene` once at
+  registration.
+
+Callbacks run with no SPS lock held and may call any V4 function. Keep them short
+and do not throw; an exception is caught and logged.
+
+Not verified in game yet: the V4 calls are built and unit-checked for layout only.
+
+## NPC state, scene role and events (V5)
+
+`SchlongPhysicsSwapper_GetAPI_V5` returns `InterfaceV5`: the V4 layout unchanged,
+plus four members. Check `version == kVersionV5`, `size >= sizeof(InterfaceV5)` and
+the capability bits `kCapabilityActorState`, `kCapabilityActorSceneRole` and
+`kCapabilityNpcEvents`. **Everything in V5 is read-only.** It never controls NPC
+physics: `RequestPhysics`, `GetState`, the V4 rise hold and the V4 listeners still
+accept only the player. Call on the game thread.
+
+| Call | Notes |
+|---|---|
+| `GetActorState(formID, ActorStateSnapshot*)` | The player or any loaded actor. Pass a snapshot with `apiVersion = kVersionV5` and `size = sizeof(ActorStateSnapshot)`. `validFlags` says which fields are real (`kStatePhysicsValid`, `kStateArousalValid`, `kStateSceneValid`, `kStateRoleValid`); ignore a field whose bit is clear. Physics (`state`, `source`) is only valid for the player and managed NPCs; `managed` is 1 for those. An actor that is not loaded returns `UnsupportedActor`. |
+| `GetAnyActorSceneRole(formID, SceneRole*)` | Like V4 `GetActorSceneRole` but also for loaded NPCs. The first NPC call returns `NotReady` while SPS asks SexLab/OStim (about a second); answers are cached and refresh about once a second, like `IsActorInScene`. `Unknown` is a successful answer. |
+| `RegisterNpcEventListener` / `UnregisterNpcEventListener` | `ActorEvent` for **managed NPCs only**, with `actorFormID` set to the NPC: `ArousalChanged` (arousal moved by 0.5 or more) and `SceneChanged` (`inScene` or `role` changed). |
+
+NPC events come from SPS's NPC service tick (about once a second), on the game thread,
+so they are not instant. The role comes from OStim first, then SexLab's directional
+interactions (the same test the player role uses). A scene that only OSL Aroused
+reports has no role, so `role` stays `Unknown`. NPC reads need the matching SPS Papyrus
+bridges (`SPS_PositionBridge` v5; the optional `SPS_OStimBridge` v3 for OStim). With an
+older bridge, NPC scene and role reads stay `NotReady`.
+
+Not verified in game yet: layout-checked and built only.
 
 ## Requesting physics
 

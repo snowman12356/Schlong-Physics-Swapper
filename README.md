@@ -1,38 +1,7 @@
-# Schlong Physics Swapper 2.1.0.3 - NPC arousal controls and API test
+# Schlong Physics Swapper 2.3.0.0
 
-This is a local development candidate, not the published 2.0.1 release. The new
-NPC behavior still needs in-game testing. Existing player settings are retained.
-
-This increment adds an optional native V2 compatibility API for reading SPS's
-current player arousal and configured erect threshold. V1 stays compatible.
-See `Mod Author API/README.md` in the package or
-[`docs/MOD_AUTHOR_API.md`](docs/MOD_AUTHOR_API.md) in the source tree.
-
-The **NPCs** page adds optional basic OSL arousal-to-SOS poses for up to eight
-nearby loaded adult humanoid NPCs with the required positioning node. It does
-not yet provide selected NPC physics switching, saved membership or NPC repair.
-Skeleton nodes alone do not establish mesh compatibility or floppy motion.
-
-For this test, disable **Enable SOS** in OSL Aroused, confirm that on the SPS
-NPCs page, then enable **basic NPC behavior**. Both new options default off.
-Scene participants are deferred; missing or stale scene information blocks
-output. Other arousal providers and a generic SOS-state fallback are not yet
-available for this NPC mode. Existing player provider support is unchanged.
-
-The same page has test sliders for the player and for every currently tracked
-NPC. Releasing a slider writes that actor's real OSL Aroused value through
-OSL's supported `SetArousal` function. These are not SPS-only overrides: OSL
-keeps ownership of the value and may change it again through normal gameplay.
-NPC sliders appear only after the bounded basic pool discovers an eligible
-actor, and writes are rejected when that actor unloads or belongs to an old
-game session.
-
-Observe one compatible NPC as arousal rises and falls, while also checking the
-player. Then check scene entry/exit, leaving and returning to the area, paused
-menus, save/load and disabling/re-enabling the option. Menu command counts are
-not proof of visible motion. Turning the option off leaves the last pose and
-stops further changes; re-enable OSL's own SOS control yourself if desired.
-Settings apply across saves, but the nearby NPC list is rebuilt each session.
+Local development build, not a published release; the latest release is 2.0.1.
+Optional NPC support is on the **NPCs** page and is off by default.
 
 Native SKSE plugin for compatible SOS six-bone schlongs. Faster HDT-SMP owns
 Gen01-Gen06 while arousal is below a configurable threshold; CBPC owns them
@@ -90,8 +59,8 @@ Editor may stay installed; disable only its schlong controls if it starts
 changing the same physics as SPS. Auto Physics Reset is optional; disable its
 overlapping load, cell or scene triggers if it changes SPS's chosen state.
 
-Schlongs of Skyrim AE is supported. SPS does not call any SOS native: Schlongs of
-Skyrim AE 4.0.0 removed `SOSAE_SKSE.SetSchlongBend`, so SPS sets the angle through
+Schlongs of Skyrim AE is supported. SPS calls only SOS AE's read-only addon and rank
+getters. Schlongs of Skyrim AE 4.0.0 removed `SOSAE_SKSE.SetSchlongBend`, so SPS sets the angle through
 the animation events SOS still ships, `SOSBend-9` (lowest) to `SOSBend9`
 (highest), using the same mapping as SOS's own code. Legacy SOS and TNG use the
 same 19 events.
@@ -178,16 +147,10 @@ so they cannot race each other on replacement genital nodes.
 
 ## Mod-author compatibility API
 
-SPS now exposes an optional native V1 API for other SKSE plugins. A mod can
-detect SPS at runtime, read the current physics state, temporarily ask SPS to
-hold SMP or CBPC, receive state-change notifications, and then release control
-back to normal arousal handling. A cooperating mod can also notify SPS after a
-physics reset so the selected owner is restored once the rebuild settles. No
-new requirement is added for players.
-
-The API uses actor FormIDs from the beginning, but V1 intentionally supports
-only the player. That leaves room for selected-NPC support later without
-replacing the interface. The public header and examples are in
+SPS exposes an optional native API (V1-V5) for other SKSE plugins: read
+physics, arousal and scene state, temporarily hold SMP or CBPC, receive
+state-change notifications and report physics resets. Later versions add
+NPC reads. No new requirement is added for players. See
 [SPSAPI.h](src/SPSAPI.h) and the [mod-author guide](docs/MOD_AUTHOR_API.md).
 
 ## Settings
@@ -199,7 +162,7 @@ SPS switches between:
 - live arousal, current physics engine, and overall health
 - plain-language Automatic, Always Soft, and Always Erect modes
 - soft and erect angle controls in one place
-- automatic soft-angle refresh for SOS AE-NG, without a manual SMP reset
+- automatic soft-angle refresh, without a manual SMP reset
 - a simple recommended-settings button
 
 The **Advanced** section of the Appearance page lets you choose how SPS sets the angle:
@@ -242,7 +205,8 @@ The Nexus archive includes a simple FOMOD. You manually choose OSL Aroused,
 SLO Aroused NG, SexLab Aroused Redux, or no arousal mod for manual-only use,
 so the installer does not have to guess.
 The physics page offers **I have my own compatible physics**, **Use my personal
-physics**, and **Use my SOFTBODY physics**. The supplied profiles work with
+physics**, **Use my SOFTBODY physics**, and **Use my SOFTBODY physics (natural hang)**
+(looser balls and shaft, same SOFTBODY collisions). The supplied profiles work with
 compatible SOS, TNG and UBE six-bone meshes; only choose the SOFTBODY profile
 when GT SOFTBODY 3.37.2 is installed.
 The current OSL, SLO NG and Redux choices install no extra SPS compatibility
@@ -259,9 +223,8 @@ Physics Editor and Auto Physics Reset notices are shown on the in-game
 ## Behavior
 
 - Soft/below threshold: CBPC is stopped first, then SMP is enabled.
-- With optional soft-angle control enabled, SOS AE-NG can hold the selected
-  flaccid angle while SMP still owns the six physics bones. Legacy SOS and TNG
-  keep their normal floppy animation-event position.
+- With optional soft-angle control enabled, SPS sends the selected soft stage
+  while SMP still owns the six physics bones.
 - Changing the soft angle performs one debounced player-only SMP refresh and
   reapplies the selected pose after FSMP settles.
 - Above threshold: SMP is disabled first, then CBPC is started.
@@ -283,8 +246,8 @@ Physics Editor and Auto Physics Reset notices are shown on the in-game
   optional bridge is installed.
 - PPA controls live scene position when installed; SPS does not send competing
   SOS bend or flaccid commands while PPA is active.
-- With gradual erection enabled, the native SOS AE position eases from 0 to the
-  selected erect bend after CBPC settles. Only changed integer bend values are
+- With gradual erection enabled, the SOS animation stage eases from the soft
+  stage to the selected erect bend after CBPC settles. Only changed integer bend values are
   sent, avoiding per-frame Papyrus traffic and animation-event bouncing.
 - A 5-point default hysteresis keeps ownership stable around the threshold.
 - About 10 seconds after loading a save or starting a new game, SPS resets the
@@ -301,7 +264,6 @@ Physics Editor and Auto Physics Reset notices are shown on the in-game
   CBPC has fully settled. Slider changes receive one debounced final
   confirmation. Blind periodic replays are avoided because they cause visible
   bouncing.
-  Both the SOS animation event and SOS AE's finer native 0-20 API are used.
   Animated events run only on a genuine state or slider change; automatic OSL
   checks do not replay an already accepted position.
 - Position control can be suspended independently while SMP/CBPC switching stays
@@ -316,7 +278,8 @@ Physics Editor and Auto Physics Reset notices are shown on the in-game
   scene it owns the genital position; this mod restores the selected SOS angle
   after the scene instead of fighting over the same bones.
 - Arousal queries stop while the plugin is disabled or a physics engine is forced.
-- No ESP, quests, save-game records, or SkyUI dependency beyond Menu Framework.
+- No ESP, quests or SkyUI dependency beyond Menu Framework. Per-save NPC settings
+  and futa choices are stored in the SKSE co-save.
 
 ## Installation
 
@@ -378,11 +341,12 @@ When reporting a problem, attach the diagnostic report or 30-second capture and
 include the schlong addon, Skyrim runtime, mod-manager name, expected result,
 actual result, and short reproduction steps. See [SUPPORT.md](docs/SUPPORT.md).
 
-## 2.2.0 changes
+## Unreleased 2.2.0 changes
 
 - Added the `SPS pose angle` angle method. SPS rotates `NPC GenitalsBase
-  [GenBase]` itself, giving a continuous angle instead of ten animation stages,
-  and needs no Schlongs of Skyrim native.
+  [GenBase]` itself, giving a continuous angle instead of the 19 animation
+  stages, and needs no Schlongs of Skyrim native. Experimental: the SOS/TNG
+  animation graph rewrites that bone every frame, so the angle does not persist.
 - Fixed angle control with Schlongs of Skyrim AE 4.0.0, which removed
   `SOSAE_SKSE.SetSchlongBend`. SPS no longer calls it anywhere; the position
   bridge, physics bridge and build stubs were updated accordingly.
@@ -394,283 +358,10 @@ actual result, and short reproduction steps. See [SUPPORT.md](docs/SUPPORT.md).
 - Added pose diagnostics: a bone-frame log line and a base-pose recapture
   control, so the rotation axis can be confirmed in game.
 
-## 2.0.0 changes
+## Earlier changes
 
-- Fixed the SOS AE `SetSchlongBend` crash by resolving the player inside a
-  Papyrus bridge instead of passing a native Actor pointer into Papyrus.
-- Fixed TNG's repeated `Debug.SendAnimationEvent` argument-type errors through
-  the same player-safe bridge boundary.
-- Fixed SPS-triggered OSL Aroused MCM stalls by using OSL's native arousal API,
-  consuming its update value directly and pausing SPS work in the Journal/MCM.
-- Corrected that native OSL API boundary to pass the player Actor pointer its
-  runtime implementation requires, preventing a startup arousal-query crash.
-- Refreshes the live six-bone compatibility result after the player mesh
-  settles, so loading a save no longer requires a manual physics repair.
-- Added automatic SOFTBODY scene-reload recovery without an installer
-  requirement or changing SOFTBODY collision files by default.
-- Added optional personal SPS physics and combined SOFTBODY 3.37.2 + SPS
-  six-bone XML choices for compatible SOS, TNG and UBE meshes, preserving
-  SOFTBODY's three collision profiles while avoiding competing genital XMLs.
-- Fixed PPA's receiver records overriding a valid SexLab receiving role, which
-  could make a flaccid player switch to CBPC and restore the wrong state after
-  a scene.
-- A valid temporary SexLab `Not identified` role now keeps its configured
-  fallback instead of letting PPA create a short incorrect CBPC transition.
-- Added a delayed post-scene SMP pose refresh for a player who remains soft,
-  preventing scene transforms from leaving the floppy shaft stretched until a
-  manual SMP reset.
-- Prevented equipment recovery and position replay from running through an
-  unfinished FSMP/CBPC ownership handoff.
-- A failed or timed-out ownership transaction now invalidates the cached owner
-  so the next evaluation must reassert it instead of trusting stale state.
-- Disabling SPS now waits out any in-flight handoff, returns the player to SMP,
-  and clears recovery work that would otherwise be stale if SPS were enabled
-  again.
-- Delayed P+ role queries briefly while a new native scene thread registers,
-  avoiding transient `Thread instance not found` Papyrus stacks.
-- Moved the SexLab active-player query behind the same safe bridge pattern.
-- Versioned the completed modular rework and compatibility fixes as 2.0.0.
-
-## 1.9.6 changes
-
-- Fixed a save-loading crash on heavily scripted games when SPS tried to
-  dispatch a physics request before the player's cell and body were ready.
-- Moved FSMP player lookup into the SPS Papyrus bridge, so the native plugin no
-  longer passes an Actor through the unsafe startup path.
-- Applied the same protection to normal FSMP enable/disable calls.
-- Made each FSMP/CBPC ownership change one ordered Papyrus transaction with a
-  short settle period between releasing one engine and enabling the other.
-- Reduced each normal ownership change from seven Papyrus jobs to one.
-- Added a DLL/bridge compatibility check so an incomplete update fails safely
-  instead of dispatching a missing Papyrus function.
-
-## 1.9.5 changes
-
-- Moved FSMP's six-bone physics list into a required Papyrus bridge instead of
-  allocating the array from the native plugin during startup.
-- Fixed the remaining timing-dependent crash when SPS switched FSMP physics
-  while a busy game was still completing its load transition.
-- Added setup checks and support-report details for a missing SPS FSMP bridge.
-
-## 1.9.4 changes
-
-- Fixed a startup crash that could occur when SPS asked FSMP to switch the
-  player's physics state.
-- Made SPS safely handle the result returned by FSMP's `TogglePhysics` call.
-
-## 1.9.3 changes
-
-- Prevented a startup crash on Skyrim 1.5.97 when an older FSMP build was
-  installed.
-- Added a proper FSMP version check before SPS calls its actor physics API.
-- Older unsupported FSMP versions now show a clear update warning instead of
-  crashing or leaving a half-applied physics state.
-- Set FSMP 4.0.1 as the minimum supported version, with 4.1.1 or newer
-  recommended.
-- Reduced OSL and SLO arousal polling while the value is stable, while still
-  reacting immediately when the arousal mod reports a change.
-- Avoided unnecessary physics evaluations when the arousal value has not
-  changed.
-
-## 1.9.2 changes
-
-- Made physics switching more reliable after loading a save, starting a new
-  game, equipping armour, removing armour, changing schlongs and rebuilding the
-  player mesh.
-- Added bounded verification and recovery so SPS can restore the selected SMP
-  or CBPC owner without creating an endless retry loop.
-- Fixed erect physics sometimes keeping SMP, losing its angle or visually
-  staying soft after an equipment change.
-- Fixed soft physics sometimes keeping an incorrect stretched pose until a
-  manual FSMP reset.
-- Made the troubleshooting test buttons hold their result for 10 seconds and
-  queue safely while the game is still loading.
-- Prevented disabled plugins such as SOS Physics Manager from being reported as
-  active conflicts.
-- Reorganised the MCM into Home, Appearance, Scenes, Advanced and
-  Troubleshooting pages without changing existing saved settings.
-- Added separate OSL installer choices: current OSL 2.9.3+ uses its native
-  arousal interface with **Enable SOS** disabled, while OSL 2.9.0 through 2.9.2
-  can use the optional legacy player-only compatibility script.
-- Added a repeatable local Windows build script and strengthened release-package
-  validation.
-
-## 1.9.1 changes
-
-- Fixed SPS sometimes missing OSL Aroused updates at high arousal.
-- Fixed the erect angle resetting to 0 after loading or changing equipment.
-- Improved recovery after armour, schlong and player mesh changes.
-- Fixed a severe slowdown when a soft-position update was rejected.
-- Added separate OSL installer choices: current OSL 2.9.3+ uses native arousal
-  with **Enable SOS** off, while OSL 2.9.0 through 2.9.2 can still use the
-  optional player-only legacy compatibility script.
-
-## 1.9.0 changes
-
-- Added optional experimental OStim Standalone scene support.
-- Added an optional flaccid-angle setting for SOS AE-NG that refreshes without
-  requiring a manual SMP reset.
-- Added optional erections that rise gradually with live arousal.
-- Added partial erections between the chosen starting and fully erect arousal.
-- Added separate rise and softening times, including gradual recovery when a
-  spontaneous erection is interrupted.
-- Added optional random erections with user-set minimum and maximum intervals.
-- Added an optional normal-gameplay guard for random erections.
-- Added an optional recovery delay between spontaneous erections.
-- Added optional erections after a long sleep or wait.
-- Added automatic soft SMP recovery after changing schlongs or equipment.
-- Kept subtle movement and follow-through in the supplied physics values rather
-  than making the erect state completely rigid.
-- Moved soft and erect position controls to Home and kept transition behaviour
-  on the clearer Appearance page.
-- Kept one DLL for Skyrim SE, AE and VR.
-- Made legacy SOS detection safer and added a clear warning for SOS Physics
-  Manager conflicts.
-- Kept OStim optional: users who do not select it install no OStim bridge.
-
-## 1.8.2 changes
-
-- Added Skyrim VR support to the universal SKSE plugin build.
-- Made OSL Aroused connect sooner after loading a save.
-- Fixed SOS AE-NG being mistaken for legacy SOS, while keeping Skyrim 1.5.97
-  on the safe legacy route.
-- Fixed the help page showing a false erect-angle error or reporting
-  `none - ready`.
-- Stopped gradual erection from trying to run when no compatible angle
-  controller is available.
-
-## 1.8.1 changes
-
-- Fixed the remaining Skyrim 1.5.97 crash when gradual erection was enabled.
-- Made every SOS AE bend call use the same safety check.
-
-## 1.8.0 changes
-
-- Added a small compatibility API so other mods can work with SPS safely.
-- Added protection and recovery for outside physics resets.
-- Improved SexLab scene switching so the physics do not fight each other.
-- Improved SLO Aroused NG and SexLab Aroused Redux support.
-- Added a manual FOMOD choice for OSL, SLO NG or Aroused Redux.
-- Fixed a crash on Skyrim 1.5.97 with legacy SOS.
-- Added safer handling while loading saves or when Papyrus is overloaded.
-
-## 1.7.2 changes
-
-- Rebuilt the menu around Home, Appearance, Scenes, Advanced and
-  Troubleshooting pages.
-- Moved SexLab options out of the general advanced page so scene behaviour is
-  easier to understand.
-- Reworded controls and status messages in normal language.
-- Changed millisecond sliders to seconds where people actually adjust them.
-- Hid rare timing, file and activity details inside optional sections.
-- Removed duplicate reset buttons, repeated status rows and technical clutter
-  from the everyday pages.
-- Simplified the troubleshooting flow and made support-report tools clearer.
-
-## 1.7.1 changes
-
-- Added player role-aware SexLab P+ switching: bottom/receiving keeps the state
-  from immediately before the scene, while top/penetrating uses CBPC.
-- Added selectable bottom behaviour: keep the entry state, follow live arousal,
-  always SMP, or always CBPC.
-- Added a safe unknown-role fallback that keeps the current physics owner by
-  default, plus Advanced-page controls.
-- Added current-stage refreshes for P+ start, stage, actor-change, relocation,
-  ending and cleanup events.
-- Added optional PPA V1 listener integration for live role updates.
-- Prevented all SPS bend/flaccid commands while PPA owns scene position, then
-  restored the selected position after the scene.
-- Added role bridge, PPA API and current role details to diagnostics.
-- Added an optional one-time player SMP reset 10 seconds after loading, followed
-  by an automatic restore of the correct SPS physics state.
-- Fixed bottom-role polling repeatedly sending the soft-position command and
-  fighting the active scene animation.
-
-## 1.7.0 changes
-
-- Initial player role-aware SexLab P+ and PPA compatibility test build.
-
-## 1.6.2 changes
-
-- Added The New Gentleman detection, six-bone physics support and SOS-style
-  position fallback.
-- Added gradual TNG erection using its available animation-event stages.
-- Added classic SexLab Aroused Redux as the lowest-priority arousal provider.
-- Added provider/body/backend details and conflict guidance to troubleshooting
-  reports.
-
-## 1.6.0 changes
-
-- Added official SLO Aroused NG support through its built-in OSL compatibility API.
-- Added SLO DLL detection and provider-specific troubleshooting status.
-- Added immediate refresh support for SLO's `sla_UpdateComplete` event.
-- Added a warning to leave SLO's **Use SOS** option disabled to prevent position conflicts.
-
-## 1.5.0 changes
-
-- Added Skyrim, SKSE, plugin and dependency version details to reports.
-- Added stable `SPS-xxx` problem codes with plain-language suggested fixes.
-- Added one-click soft/erect tests and a repair-physics action.
-- Added optional verbose logging and a guided 30-second debug capture.
-- Added privacy wording, support instructions, and a GitHub bug-report form.
+See the [GitHub releases](https://github.com/snowman12356/Schlong-Physics-Swapper/releases).
 
 ## Building
 
-The project requires Visual Studio 2022, CMake 3.24 or newer, vcpkg, and an
-[alandtse/CommonLibSSE-NG](https://github.com/alandtse/CommonLibSSE-NG)
-checkout at **v15.4.0 or newer**. Set `COMMONLIB_SSE_FOLDER` to that checkout,
-configure with the vcpkg toolchain, then build the `SchlongPhysicsSwapper`
-target. The Menu Framework SDK headers are fetched during configuration.
-
-`CMakeLists.txt` enforces the minimum and stops with a clear message if the
-checkout is older, so a stale dependency cannot silently produce a DLL. The
-`openvr` submodule is required for the VR target and is part of the v15.4.0
-release, so initialise submodules after cloning:
-
-```powershell
-git clone --recurse-submodules --branch v15.4.0 `
-    https://github.com/alandtse/CommonLibSSE-NG.git
-```
-
-The optional OSL 2.9.0-to-2.9.2 compatibility override is stored in
-`compat/OSL Aroused` with its patched Papyrus source and upstream Unlicense. It
-is not compiled by CMake and is placed only inside the release archive's legacy
-optional folder.
-
-### Reliable Windows build command
-
-Long OneDrive paths can make Ninja lock up or leave generated projects tied to
-a temporary drive that no longer exists. `tools/Build-Local.ps1` avoids both
-problems: it uses the Visual Studio generator, maps the workspace to a short
-temporary drive for configuration and compilation, then removes that mapping.
-
-Set `COMMONLIB_SSE_FOLDER` and `VCPKG_ROOT`, or pass their paths directly:
-
-```powershell
-.\tools\Build-Local.ps1 `
-    -CommonLib 'C:\path\to\CommonLibSSE-NG' `
-    -VcpkgRoot 'C:\path\to\vcpkg'
-```
-
-By default, the heavy CMake build cache is kept under
-`%LOCALAPPDATA%\SPSBuild` instead of OneDrive. The script reuses that cache,
-skips a full configure when possible, and builds with four parallel jobs.
-The first build still has to compile CommonLib, but later builds should be
-much faster. CommonLibSSE-NG v15.4.0 also ships prebuilt bundles; a consumer
-pinned to the release tag can opt in with `-DCOMMONLIB_PREBUILT=ON` to skip
-compiling CommonLib entirely.
-
-The finished DLL is copied to `out\build\SchlongPhysicsSwapper.dll`, ready
-for testing or packaging. Useful optional switches are:
-
-```powershell
-.\tools\Build-Local.ps1 -Jobs 8
-.\tools\Build-Local.ps1 -Reconfigure
-```
-
-Set `SPS_BUILD_ROOT` if you want the persistent build cache on another fast
-local drive. To package this output, use:
-
-```powershell
-.\tools\New-ReleasePackage.ps1 -BuildDirectory out\build
-```
+See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).

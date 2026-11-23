@@ -47,8 +47,7 @@ Write-Check 'Visual Studio C++ tools' (-not [string]::IsNullOrWhiteSpace($vsPath
 $resolvedCommonLib = Resolve-SPSFirstDirectory @(
     $CommonLib,
     (Join-Path $dependencyRoot 'CommonLibSSE-NG'),
-    (Join-Path $referenceRoot 'native\CommonLibSSE-NG'),
-    (Join-Path $workspace '.research-commonlib-download\CommonLibSSE-NG-ng')
+    (Join-Path $referenceRoot 'native\CommonLibSSE-NG')
 )
 $commonLibReady = $resolvedCommonLib -and
     (Test-Path -LiteralPath (Join-Path $resolvedCommonLib 'CMakeLists.txt') -PathType Leaf)
@@ -74,9 +73,7 @@ Write-Check 'CommonLibSSE-NG' $commonLibReady $commonLibDetail
 try {
     $resolvedVcpkg = Resolve-SPSVcpkgRoot @(
         $VcpkgRoot,
-        (Join-Path $dependencyRoot 'vcpkg'),
-        (Join-Path $workspace '.research-vcpkg-download\vcpkg-master'),
-        'C:\vcpkg-master'
+        (Join-Path $dependencyRoot 'vcpkg')
     )
     Write-Check 'vcpkg dependencies' $true $resolvedVcpkg
 }
@@ -101,8 +98,7 @@ else {
 $mcpSource = Resolve-SPSFirstDirectory @(
     $MenuFramework,
     (Join-Path $dependencyRoot 'SKSE-Menu-Framework-3-Example'),
-    (Join-Path $referenceRoot 'native\SKSE-Menu-Framework-3-Example'),
-    (Join-Path $workspace '.research-mcp-example-download\SKSE-Menu-Framework-3-Example-master')
+    (Join-Path $referenceRoot 'native\SKSE-Menu-Framework-3-Example')
 )
 $mcpReady = $mcpSource -and (Test-Path -LiteralPath $mcpSource -PathType Container)
 Write-Check 'SKSE Menu Framework source' $mcpReady `

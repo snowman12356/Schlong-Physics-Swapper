@@ -7,8 +7,8 @@ The installed SPS build remains `bfee4c1`, with the artifact hashes recorded in
 with SMP enabled globally, but works with SMP disabled globally, while viewing
 the player in third person. Scenes have not yet been tested with this build.
 
-This investigation continues audit item 10 in
-`AUDIT_REPAIRS_2026-09-06.md`. It prepares a separate FSMP candidate; it does not
+This investigation continued audit item 10 of the 2026-09-06 audit (removed;
+in git history). It prepares a separate FSMP candidate; it does not
 change SPS ownership policy, bridges, XML, settings or its release package.
 No installed FSMP files or MO2 activation settings have been changed.
 
@@ -58,8 +58,8 @@ roots for which `ActorManager::skeletonNeedsParts` returns false. This uses
 FSMP's existing classification and keeps the owner check, locks, bone updates,
 reset queue, public Papyrus signatures and previous-state return values.
 
-The source patch is retained in `docs/patches/fsmp-4.1.1-actor-selection.patch`.
-It is an external dependency patch, not part of the SPS FOMOD.
+The source patch was removed from `docs/patches` on 2026-11-19 because changes to
+FSMP were rejected; it remains in git history. It was never part of the SPS FOMOD.
 
 **Fix risk: Medium for a local test.** The change is small, but rebuilding FSMP
 replaces the shared physics engine, and other mods can call these same APIs.

@@ -40,8 +40,8 @@ struct VersionProbe {
     }
 };
 VersionProbe arousalVersion{ 3 };
-VersionProbe positionVersion{ 4 };
-VersionProbe ostimVersion{ 2 };
+VersionProbe positionVersion{ 5 };
+VersionProbe ostimVersion{ 3 };
 
 class VersionCallback final : public RE::BSScript::IStackCallbackFunctor {
 public:
@@ -402,6 +402,31 @@ bool QueryActorScene(Controllers::ActorWorkLease lease, RE::Actor* actor,
     };
     if (DispatchStaticWithCallback("SPS_PositionBridge", "GetActorSceneState", allowedAfterMs, now,
             std::move(callback), RE::BSFixedString(token), sources->osl, sources->sexLab, sources->ostim)) return true;
+    requests.Discard(token);
+    return false;
+}
+
+bool QueryActorSceneRole(Controllers::ActorWorkLease lease, RE::Actor* actor,
+    std::int64_t allowedAfterMs, ActorSceneRoleCompletion completion)
+{
+    if (!completion || !TargetReady(lease, actor, allowedAfterMs)) return false;
+    const auto sources = AvailableSceneSources(allowedAfterMs);
+    if (!sources) return false;
+    // Only SexLab and OStim describe a role; OSL has no such concept.
+    if (!sources->sexLab && !sources->ostim) return false;
+    const auto now = NowMs();
+    const auto handle = actor->GetHandle();
+    const auto token = CreatePhysicsOperationToken();
+    if (!requests.Prepare(token, { lease, handle.native_handle(), Kind::scene, now + 10000, false, reinterpret_cast<std::uintptr_t>(actor->Get3D()) }, now)) return false;
+    RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> callback{
+        new ActorCallback(token, handle, Kind::scene,
+            [completion = std::move(completion)](auto ticket, float value) {
+                // -1 is a stale or failed bridge call and must not read as "no role".
+                completion(ticket, value == 1.0F ? 1 : value == 2.0F ? 2 : value == 0.0F ? 0 : -1);
+            })
+    };
+    if (DispatchStaticWithCallback("SPS_PositionBridge", "GetActorSceneRole", allowedAfterMs, now,
+            std::move(callback), RE::BSFixedString(token), sources->sexLab, sources->ostim)) return true;
     requests.Discard(token);
     return false;
 }

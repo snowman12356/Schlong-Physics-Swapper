@@ -1,5 +1,7 @@
 #pragma once
 
+#include <RE/Skyrim.h>
+
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -46,5 +48,7 @@ bool RequestFuta(std::uint32_t formID, bool futa);
 void ResetActorIdentities();
 // Called once from plugin load.
 void RegisterActorIdentitySerialization();
+// Papyrus registration: SPS_SexLabBridge.ResolveIdentityActor.
+bool RegisterActorIdentityNatives(RE::BSScript::IVirtualMachine* vm);
 
 }

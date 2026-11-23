@@ -1,7 +1,7 @@
 Scriptname SPS_PositionBridge Hidden
 
 Int Function GetSPSBridgeVersion() Global
-    Return 4
+    Return 5
 EndFunction
 
 Bool Function ActorRequestCurrent(String token, Actor targetActor) Global Native
@@ -36,6 +36,43 @@ Int Function ReadActorSceneState(Actor targetActor, Bool checkOSL, Bool checkSex
         EndIf
     EndIf
     Return 1
+EndFunction
+
+; Version 5: the role of an actor in a scene. 0 unknown, 1 receiving, 2
+; penetrating, -1 SexLab requested but unresolvable. OStim first, then SexLab
+; (SPS_SexLabBridge.ReadSexLabRole). Only the requested providers are touched.
+Int Function ReadActorSceneRole(Actor targetActor, Bool checkSexLab, Bool checkOStim) Global
+    If targetActor == None
+        Return 0
+    EndIf
+    If checkOStim
+        Int ostimRole = SPS_OStimBridge.GetActorRole(targetActor)
+        If ostimRole > 0
+            Return ostimRole
+        EndIf
+    EndIf
+    If checkSexLab
+        SexLabFramework sexLab = Game.GetFormFromFile(0xD62, "SexLab.esm") as SexLabFramework
+        If sexLab == None
+            ; Requested but unresolvable: failed, not "no role".
+            Return -1
+        EndIf
+        Return SPS_SexLabBridge.ReadSexLabRole(sexLab.GetActorController(targetActor), targetActor)
+    EndIf
+    Return 0
+EndFunction
+
+; -1 failed/stale, otherwise the ReadActorSceneRole value.
+Int Function GetActorSceneRole(String token, Bool checkSexLab, Bool checkOStim) Global
+    Actor targetActor = ResolveSceneRequest(token)
+    If targetActor == None || !SceneRequestCurrent(token, targetActor)
+        Return -1
+    EndIf
+    Int role = ReadActorSceneRole(targetActor, checkSexLab, checkOStim)
+    If !SceneRequestCurrent(token, targetActor)
+        Return -1
+    EndIf
+    Return role
 EndFunction
 
 Int Function GetActorSceneState(String token, Bool checkOSL, Bool checkSexLab, Bool checkOStim) Global
@@ -77,9 +114,9 @@ Int Function ApplyBasicActorPosition(String token, String eventName, Bool checkO
     Return 1
 EndFunction
 
-; Sends only the stage event. The angle itself is applied through
-; SPS_PoseAngle, which does not depend on any Schlongs of Skyrim native: SOS AE
-; 4.0.0 removed SOSAE_SKSE.SetSchlongBend.
+; Sends only the SOS/TNG stage event, which sets the angle. No Schlongs of
+; Skyrim native is called: SOS AE 4.0.0 removed SOSAE_SKSE.SetSchlongBend.
+; unusedNative is kept for the bridge contract.
 Bool Function ApplyActorPosition(String token, String eventName, Bool unusedNative) Global
     If !SPS_FSMPBridge.EnterOperation(token)
         Return False

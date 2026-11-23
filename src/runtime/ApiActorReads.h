@@ -13,6 +13,10 @@ enum class ApiActorRead { ready, notReady, unsupported };
 ApiActorRead ReadApiActorArousal(std::uint32_t formID, float* arousal);
 ApiActorRead ReadApiActorScene(std::uint32_t formID, bool* inScene,
     std::int64_t sceneEndDelayMs, std::int64_t allowedAfterMs);
+// V5. The actor's role in a SexLab/OStim scene: 0 unknown, 1 receiving, 2
+// penetrating. Same cache and rules as the scene read; the first call returns
+// notReady. Also valid for managed NPCs. The player is not handled here.
+ApiActorRead ReadApiActorSceneRole(std::uint32_t formID, int* role, std::int64_t allowedAfterMs);
 // Drops every cached probe (save load / new game boundary).
 void ResetApiActorReads();
 

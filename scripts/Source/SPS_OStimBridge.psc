@@ -1,7 +1,35 @@
 Scriptname SPS_OStimBridge Hidden
 
 Int Function GetSPSBridgeVersion() Global
-    Return 2
+    Return 3
+EndFunction
+
+; Version 3: the role of any actor in an OStim scene (used for the NPC API).
+; 0 unknown, 1 receiving/on the bottom, 2 dominant/on top. Called only from
+; inside the actor bridge after native target validation.
+Int Function GetActorRole(Actor targetActor) Global
+    If targetActor == None || !OActor.IsInOStim(targetActor)
+        Return 0
+    EndIf
+    Int threadID = OActor.GetThreadID(targetActor)
+    If threadID < 0
+        Return 0
+    EndIf
+    Int position = OThread.GetActorPosition(threadID, targetActor)
+    If position < 0
+        Return 0
+    EndIf
+    String sceneId = OThread.GetScene(threadID)
+    If sceneId == ""
+        Return 0
+    EndIf
+    If OMetadata.HasActorTag(sceneId, position, "dominant") || OMetadata.HasActorTag(sceneId, position, "ontop")
+        Return 2
+    EndIf
+    If OMetadata.HasActorTag(sceneId, position, "onbottom")
+        Return 1
+    EndIf
+    Return 0
 EndFunction
 
 ; Called only from inside the actor bridge after native target validation.
@@ -18,30 +46,8 @@ EndFunction
 
 ; Returns 0 when the current OStim scene cannot describe the player's role,
 ; 1 when the player is receiving/on the bottom, or 2 when the player is
-; dominant/on top. OStim's main player thread is thread 0.
+; dominant/on top. The player's thread is always ThreadID 0 (OThread.psc:3),
+; which GetActorRole resolves through OActor.GetThreadID.
 Int Function GetPlayerRole() Global
-    Actor player = Game.GetPlayer()
-    If player == None
-        Return 0
-    EndIf
-
-    Int position = OThread.GetActorPosition(0, player)
-    If position < 0
-        Return 0
-    EndIf
-
-    String sceneId = OThread.GetScene(0)
-    If sceneId == ""
-        Return 0
-    EndIf
-
-    If OMetadata.HasActorTag(sceneId, position, "dominant") || OMetadata.HasActorTag(sceneId, position, "ontop")
-        Return 2
-    EndIf
-
-    If OMetadata.HasActorTag(sceneId, position, "onbottom")
-        Return 1
-    EndIf
-
-    Return 0
+    Return GetActorRole(Game.GetPlayer())
 EndFunction

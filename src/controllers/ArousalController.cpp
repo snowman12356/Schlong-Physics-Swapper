@@ -51,12 +51,14 @@ void ArousalController::Configure(
     ReadyHook papyrusReady,
     RecordHook record,
     ActionHook clearError,
-    ActionHook evaluate)
+    ActionHook evaluate,
+    ActionHook changed)
 {
     papyrusReady_ = std::move(papyrusReady);
     record_ = std::move(record);
     clearError_ = std::move(clearError);
     evaluate_ = std::move(evaluate);
+    changed_ = std::move(changed);
 }
 
 void ArousalController::Query(bool force)
@@ -257,6 +259,11 @@ void ArousalController::QueueEvaluation()
     }
     if (auto* tasks = SKSE::GetTaskInterface()) {
         tasks->AddTask([this] {
+            // Listeners hear about the new value first, in the same task, so a
+            // rise hold they take is in place when the evaluation decides.
+            if (changed_) {
+                changed_();
+            }
             if (evaluate_) {
                 evaluate_();
             }

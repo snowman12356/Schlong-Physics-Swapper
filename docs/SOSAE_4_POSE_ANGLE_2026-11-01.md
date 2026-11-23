@@ -42,52 +42,6 @@ there is no supported way to ask SOS for an arbitrary angle, and the graph
 events are both coarser (ten stages) and relative (re-sending repeats the blend,
 so a polling tick produces mush rather than a held angle).
 
-## Design
-
-A new `Position/Method` value, `3 = SPS pose angle`, implemented in
-`src/runtime/SosPoseAngle.cpp` with the pure math in
-`src/controllers/PoseAngle.h`.
-
-- Writes `NPC GenitalsBase [GenBase]` only. That bone is declared without a rigid
-  body in the shipped SMP profiles, so it is kinematic and Faster HDT-SMP does
-  not absorb a direct write, unlike `Gen01`-`Gen06`. `Gen01` and `GenScrot` are
-  constrained to it, so the assembly follows.
-- Composes a rotation offset onto a base orientation captured before the first
-  SPS write. The write is therefore a pure function of bend: repeating it is
-  harmless, which is what allows the mode to run from a polling tick. `Clear`
-  restores the captured base exactly; `Recapture` re-reads whatever pose another
-  mod has established.
-- Never writes `Gen01`-`Gen06`. CBPC drives them directly and FSMP absorbs
-  direct writes to dynamic bones.
-- Needs no Papyrus dispatch and no SOS script. It is exposed to Papyrus through
-  `SPS_PoseAngle` for the physics bridge's soft-angle step.
-
-## Dispatch rules
-
-`ApplyPosition` in `src/runtime/PositionBackendAdapter.cpp`:
-
-1. Method 3, or method 2 with SOS AE present, tries the pose write first and
-   returns immediately on success.
-2. If the pose could not be written (no actor, no 3D yet, missing base bone) the
-   call falls through to the graph events. The caller is never told a pose was
-   applied when one was not.
-3. When neither channel exists the result is `-1`, meaning "no backend
-   required", rather than a failure.
-
-## Save safety
-
-Safe for existing saves. No forms, quests, aliases or scripts were removed, no
-serialized state was added, and the bone write is transient: it is re-derived
-from settings every tick and is not persisted. `SPS_PoseAngle.pex` is new, so the
-Papyrus VM resolves it on load; nothing references it from a save.
-
-## Still unverified
-
-The pitch axis and its sign. `GenBase`'s local axes come from the skeleton, so
-`PoseAngleDegrees` and the axis need one in-game pass. The plugin logs the
-resolved frame (`LogActorPoseFrame`, also a button under *Pose angle
-diagnostics*) and the angle can be tuned in the INI without a rebuild.
-
 ## Outcome: the premise was wrong (verified in game 2026-11-01)
 
 Reported by the user: **the angle does not change.** The cause is not the axis

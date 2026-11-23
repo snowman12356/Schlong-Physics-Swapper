@@ -9,6 +9,8 @@ struct Settings {
     // One fully managed NPC, per Stage 3. Separate from the basic bridge flag:
     // enrolling an NPC transfers responsibility rather than adding behaviour.
     bool managedNpcEnabled{ false };
+    // Raises the managed NPC limit from 1 to 8. Off by default.
+    bool managedNpcUpToEight{ false };
     float threshold{ 60.0F };
     float hysteresis{ 5.0F };
     int mode{ 0 };  // 0 automatic, 1 force SMP, 2 force CBPC

@@ -2,18 +2,9 @@
 
 Created: 2026-09-21. Branch: `codex/codebase-rework`.
 
-Status: started with user authorization on 2026-09-21. Initial API/baseline
-investigation and the first tested Stage 1 registry are recorded in
-[`NPC_SUPPORT_FOUNDATION_2026-09-21.md`](NPC_SUPPORT_FOUNDATION_2026-09-21.md).
-The actor-specific arousal/position increment and paired validation completed
-on 2026-09-22; see
-[`NPC_ACTOR_BRIDGES_2026-09-22.md`](NPC_ACTOR_BRIDGES_2026-09-22.md).
-The subsequent scene-deferral and basic SOS policy increment also passed its
-build, test and package checks on 2026-09-22; see
-[`NPC_BASIC_SOS_POLICY_2026-09-22.md`](NPC_BASIC_SOS_POLICY_2026-09-22.md).
-NPC runtime remains inactive; no installation or publication has occurred.
-Next: connect the bounded basic NPC update loop, eligibility and opt-in/provider
-coexistence controls. Managed physics handoff/controller wiring remains outstanding.
+Status: started with user authorization on 2026-09-21. The increment records
+for Stages 0-3 were removed on 2026-11-19 (they remain in git history); current
+status is in `PROJECT_DIRECTION.md`.
 
 Progress 2026-11-01: the managed physics handoff now has an actor-scoped bridge
 (`SPS_FSMPBridge` v8, `SetActorOwnerV3`), and `ManagedNpcRuntime` drives one
@@ -327,23 +318,12 @@ Record build/hash, runtime, providers, actor/mesh setup and evidence location.
 
 ## Progress and resumption
 
-| Stage | Status | Evidence / next action |
-| --- | --- | --- |
-| Workflow | Complete | Created 2026-09-21; user subsequently authorized starting |
-| 0 - baseline and feasibility | Initial map recorded; provider checks remain | User confirmed the queried player checks. CommonLib/OSL/SOS API findings recorded; generic SOS fallback and other provider details remain unverified |
-| 1 - actor isolation | In progress; basic runtime connected | Guarded endpoints and globally distinct basic/managed lifetimes are tested. Full managed physics/controller wiring remains |
-| 2 - basic arousal-to-SOS bridge | Live pass reported by the user on 2026-10-31 | Eight nearby actors, separate lifetimes, scene policy, opt-in/confirmation and menu status connected. Player/per-tracked-NPC sliders use OSL's real SetArousal contract for controlled live testing. User observed the player slider below and above threshold, two tracked NPCs on opposite OSL values posing independently, scene entry/exit deferral, unload/reload, save/load and disable/re-enable. Command counters and successful OSL writes were not accepted as motion evidence by themselves. No log or capture was attached. Native, Papyrus, package and installed-file verification passed. See `NPC_BASIC_RUNTIME_2026-10-03.md` and `OSL_AROUSAL_CONTROLS_2026-10-10.md`. Generic SOS fallback, non-OSL providers and per-runtime SE/AE/VR runs remain pending |
-| 3 - one managed NPC | Installed 2.2.0.0 test build 2026-11-01; awaiting in-game evidence | Removed the player-only blocker: `SPS_FSMPBridge` v8 adds actor-scoped `SetActorOwnerV3` plus `OwnershipRequestCurrent`/`ResolveOwnershipRequest`, so a managed NPC handoff can never resolve to the player. Ownership shares `PapyrusOperationGate` and takes one ledger mutation slot per actor. `ManagedNpcRuntime` adds crosshair Add/Remove, its own arousal/scene polling, player-rule physics decisions, and clean removal back to the basic bridge. Basic discovery excludes enrolled actors so the two paths never compete. Build/tests/contracts/package guards pass. 2.2.0.0 installed into `D:\Modding\mods\Schlong Physics Swapper` with INI, `meta.ini` and all three XML physics configs preserved; previous 2.1.0.3 DLL backed up. **No in-game evidence yet.** Next: verify independent switching/angles, removal, unload/reload |
-| 4 - lifecycle and multiple NPCs | Not started | Depends on Stage 3 |
-| 5 - scenes and recovery | Not started | Depends on Stage 4 |
-| 6 - controls and performance | Not started | Depends on Stage 5; basic diagnostics begin with the bridge |
-| 7 - release gate | 2.2.0.0 test package built, validated and installed 2026-11-01 | DLL + all five bridges compiled together; `Test-ReleasePackage` and `Test-PackageGuards` passed; ZIP and DLL hashes recorded. Installed into `D:\Modding\mods\Schlong Physics Swapper` with INI, `meta.ini` and XML physics configs preserved. Published 2.0.1 and the 2.1.0.3 ZIP remain unchanged. No publication |
+Current stage status is kept in `PROJECT_DIRECTION.md` (Current status and Open
+items), not here.
 
 At each stop, record completed work, exact candidate identity, checks run,
 outstanding evidence and the next concrete action. Preserve partial changes;
 do not restart a stage or rerun unchanged checks without a reason.
 
-References: `PROJECT_DIRECTION.md`, `docs/CODEBASE_REWORK.md`,
-`docs/IMPLEMENTATION.md`, `docs/DEVELOPMENT.md`, `docs/MOD_AUTHOR_API.md`,
-`docs/RELIABILITY_AUDIT_2026-08-25.md` and `docs/AUDIT_REPAIRS_2026-09-06.md`.
-Stage 3 increment: `docs/NPC_MANAGED_OWNERSHIP_2026-11-01.md`.
+References: `PROJECT_DIRECTION.md`, `docs/IMPLEMENTATION.md`,
+`docs/DEVELOPMENT.md` and `docs/MOD_AUTHOR_API.md`.

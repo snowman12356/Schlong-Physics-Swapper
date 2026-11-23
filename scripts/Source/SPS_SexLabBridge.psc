@@ -1,8 +1,13 @@
 Scriptname SPS_SexLabBridge Hidden
 
 Int Function GetSPSBridgeVersion() Global
-    Return 4
+    Return 5
 EndFunction
+
+; Version 5: FormID to Actor through the SPS DLL. Game.GetForm returns None for
+; FormIDs >= 0x80000000 (light-plugin FE and runtime-created FF references), and
+; Game.GetFormEx does not compile against this project's script sources.
+Actor Function ResolveIdentityActor(Int formID) Global Native
 
 Bool Function IsPlayerActive() Global
     Actor player = Game.GetPlayer()
@@ -23,20 +28,50 @@ Int Function GetPlayerRole() Global
         Return 0
     EndIf
 
-    sslThreadController thread = sexLab.GetActorController(player)
-    If thread == None || !thread.HasActor(player) || !thread.IsInteractionRegistered()
+    Return ReadSexLabRole(sexLab.GetActorController(player), player)
+EndFunction
+
+; Shared by GetPlayerRole and SPS_PositionBridge.ReadActorSceneRole.
+; 0 unknown, 1 receiving, 2 penetrating. Uses P+'s
+; sslThreadModel.HasActiveInteractionAny(Actor akPosition, int[] aiInterTypes).
+; Type IDs are the SexLabThread.psc constants as of P+ 2.19.0, which renumbered
+; them and removed HasInteractionType; re-check them after a P+ update.
+; Penetrating wins if a complex stage registers both directions.
+; Grinding: P+'s property comments call aGrinding the buttocks side, but P+'s
+; own code treats it as the penis side (sslActorAlias.psc:122-128 and
+; sslThreadModel.psc:2008, aVaginal || aGrinding), so SPS follows the code.
+Int Function ReadSexLabRole(sslThreadController thread, Actor target) Global
+    If thread == None || target == None || !thread.HasActor(target) || !thread.IsInteractionRegistered()
         Return 0
     EndIf
 
-    ; In P+'s directional interaction API, None/player means the player is the
-    ; partner supplying the active penis or grinding action. Penetrating wins
-    ; if a complex stage happens to register both directions.
-    If thread.HasInteractionType(1, None, player) || thread.HasInteractionType(2, None, player) || thread.HasInteractionType(3, None, player) || thread.HasInteractionType(5, None, player) || thread.HasInteractionType(6, None, player) || thread.HasInteractionType(7, None, player) || thread.HasInteractionType(8, None, player) || thread.HasInteractionType(9, None, player) || thread.HasInteractionType(11, None, player) || thread.HasInteractionType(4, None, player)
+    Int[] penetrating = new Int[10]
+    penetrating[0] = 23 ; aVaginal
+    penetrating[1] = 25 ; aAnal
+    penetrating[2] = 21 ; aSkullfuck
+    penetrating[3] = 20 ; pDeepthroat
+    penetrating[4] = 18 ; pOral
+    penetrating[5] = 16 ; pLickingShaft
+    penetrating[6] = 12 ; pBoobJob
+    penetrating[7] = 10 ; pFootJob
+    penetrating[8] = 8  ; pHandJob
+    penetrating[9] = 3  ; aGrinding (see above)
+    If thread.HasActiveInteractionAny(target, penetrating)
         Return 2
     EndIf
 
-    ; player/None means the player is the penetrated or servicing position.
-    If thread.HasInteractionType(1, player, None) || thread.HasInteractionType(2, player, None) || thread.HasInteractionType(3, player, None) || thread.HasInteractionType(5, player, None) || thread.HasInteractionType(6, player, None) || thread.HasInteractionType(7, player, None) || thread.HasInteractionType(8, player, None) || thread.HasInteractionType(9, player, None) || thread.HasInteractionType(11, player, None) || thread.HasInteractionType(4, player, None)
+    Int[] receiving = new Int[10]
+    receiving[0] = 24 ; pVaginal
+    receiving[1] = 26 ; pAnal
+    receiving[2] = 22 ; pSkullfuck
+    receiving[3] = 19 ; aDeepthroat
+    receiving[4] = 17 ; aOral
+    receiving[5] = 15 ; aLickingShaft
+    receiving[6] = 11 ; aBoobJob
+    receiving[7] = 9  ; aFootJob
+    receiving[8] = 7  ; aHandJob
+    receiving[9] = 4  ; pGrinding
+    If thread.HasActiveInteractionAny(target, receiving)
         Return 1
     EndIf
 
@@ -59,14 +94,14 @@ Int Function GetPlayerThreadID() Global
 EndFunction
 
 ; Version 4: identity and futa override for the player and managed NPCs.
-; The actor is resolved from its FormID here; the native side only asks for
-; actors it is already tracking (the player and managed NPCs).
+; The actor is resolved from its FormID through ResolveIdentityActor; the native
+; side only asks for actors it is already tracking (the player and managed NPCs).
 ;
 ; Returns "<addon>|<rank>|<baseSex>|<sex>". addon is "" when SOS AE reports no
 ; schlong or was not read; the sex fields are -1 when SexLab was not read.
 ; Returns "" when the FormID does not resolve to an actor.
 String Function DescribeActor(Int formID, Bool readSos, Bool readSexLab) Global
-    Actor target = Game.GetForm(formID) as Actor
+    Actor target = ResolveIdentityActor(formID)
     If target == None
         Return ""
     EndIf
@@ -86,12 +121,13 @@ String Function DescribeActor(Int formID, Bool readSos, Bool readSexLab) Global
     Return addon + "|" + rank + "|" + baseSex + "|" + sex
 EndFunction
 
-; futa = True: SexLab treats a male or female (base sex 0 or 1) as futa. futa = False clears
+; futa = True: SexLab treats the actor as futa whatever its base sex (the menu decides
+; when to offer this; a creature base sex is a deliberate "force"). futa = False clears
 ; the SexLab override. Both use SexLab P+'s own TreatAsFuta / ClearForcedSex,
 ; stored by SexLab as a faction rank on the actor.
-; Returns 1 applied, 0 not eligible or SexLab unavailable, -1 actor not found.
+; Returns 1 applied, 0 SexLab unavailable, -1 actor not found.
 Int Function SetActorFuta(Int formID, Bool futa) Global
-    Actor target = Game.GetForm(formID) as Actor
+    Actor target = ResolveIdentityActor(formID)
     If target == None
         Return -1
     EndIf
@@ -100,10 +136,6 @@ Int Function SetActorFuta(Int formID, Bool futa) Global
         Return 0
     EndIf
     If futa
-        Int baseSex = SexLabRegistry.GetSex(target, True)
-        If baseSex != 0 && baseSex != 1
-            Return 0
-        EndIf
         sexLab.TreatAsFuta(target)
     Else
         sexLab.ClearForcedSex(target)

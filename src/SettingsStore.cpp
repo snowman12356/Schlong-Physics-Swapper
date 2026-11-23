@@ -15,6 +15,7 @@ Settings ReadSettings(CSimpleIniA& ini)
     settings.basicNpcEnabled = ini.GetBoolValue("NPCs", "BasicSOSEnabled", false);
     settings.basicNpcProviderSosDisabled = ini.GetBoolValue("NPCs", "ProviderSOSDisabledConfirmed", false);
     settings.managedNpcEnabled = ini.GetBoolValue("NPCs", "ManagedNPCEnabled", false);
+    settings.managedNpcUpToEight = ini.GetBoolValue("NPCs", "ManagedNPCUpToEight", false);
     settings.threshold = std::clamp(static_cast<float>(ini.GetDoubleValue("General", "ArousalThreshold", 60)), 0.0F, 100.0F);
     settings.hysteresis = std::clamp(static_cast<float>(ini.GetDoubleValue("General", "Hysteresis", 5)), 0.0F, 25.0F);
     settings.mode = std::clamp(static_cast<int>(ini.GetLongValue("General", "Mode", 0)), 0, 2);
@@ -134,6 +135,7 @@ void ApplySettingsToIni(CSimpleIniA& ini, const Settings& settings)
     setBool("NPCs", "BasicSOSEnabled", settings.basicNpcEnabled);
     setBool("NPCs", "ProviderSOSDisabledConfirmed", settings.basicNpcProviderSosDisabled);
     setBool("NPCs", "ManagedNPCEnabled", settings.managedNpcEnabled);
+    setBool("NPCs", "ManagedNPCUpToEight", settings.managedNpcUpToEight);
     setBool("Compatibility", "SexLabPPlusOverride", settings.sexLabOverride);
     setBool("Compatibility", "SexLabRoleSwitching", settings.sexLabRoleSwitching);
     setLong("Compatibility", "SexLabBottomBehavior", settings.sexLabBottomBehavior);

@@ -54,8 +54,8 @@ under the per-user `SPSBuild` cache rather than in the source tree.
 .\tools\Build-PapyrusBridge.ps1 -GameRoot '<Skyrim installation>'
 ```
 
-This compiles the FSMP ownership, SexLab, position, arousal and optional OStim
-bridges from `scripts\Source` using only the tracked declarations in
+This compiles the six bridges (FSMP ownership, SexLab, position, pose angle,
+arousal and optional OStim) from `scripts\Source` using only the tracked declarations in
 `scripts\BuildStubs`.
 The compiler writes the paired PEX files back to `scripts`, where release
 validation parses their actual signatures, global/native flags and version
@@ -68,13 +68,13 @@ Update the version in `CMakeLists.txt`, `src/plugin.cpp`, `fomod/info.xml` and
 `fomod/ModuleConfig.xml`, then run:
 
 ```powershell
-.\tools\Build-Release.ps1 -Version 2.0.0
+.\tools\Build-Release.ps1 -Version <version>
 ```
 
 The release command checks all version declarations and the environment,
 recompiles every Papyrus bridge, builds the DLL, creates the FOMOD ZIP, expands
 the ZIP into a temporary folder, validates compiled bridge contracts and contents,
-and verifies all eleven DLL/PEX/PSC hashes against `SPSBuildManifest.json`.
+and verifies all thirteen DLL/PEX/PSC hashes against `SPSBuildManifest.json`.
 Failure-case tests reject incompatible version values, signatures/native flags,
 and mismatched DLL, compiled script or source files. `New-ReleasePackage.ps1`
 requires the receipt from `Build-Release.ps1`; changing any recorded input
@@ -83,6 +83,25 @@ is not installed into the game by the FOMOD.
 The ZIP uses sorted entries and fixed timestamps, so identical inputs produce
 the same archive hash on repeated runs. Local DLLs are placed in `out\build`;
 release staging and ZIP files are placed in `out\release`.
+
+### Optional script checks (pex)
+
+`D:\Modding\codex-references\tools\skqe-pex\pex.exe` (a locally built copy of
+github.com/cecell/skqe-papyrus-decompiler, GPL-3.0; commit in `SOURCE_COMMIT.txt`).
+Run it on copies only. It is a second opinion, not a replacement for the official
+compiler or the package guards.
+
+```powershell
+pex audit scripts\SPS_*.pex          # loops, update timers, None calls; 0 findings on 2026-11-16
+pex diff <installed>.pex scripts\<new>.pex   # what a rebuilt bridge changes (functions, properties)
+pex info scripts\<name>.pex          # shows the compile user and computer stored in the header
+```
+
+Use `pex diff` against the installed PEX whenever a bridge script changes, to confirm
+only the intended functions changed and to judge save safety. Compiled PEX headers
+store the Windows user and computer name; `pex recompile <file> --user <name>
+--computer <name>` rewrites them, but it changes the PEX hash the package guards pair
+with the DLL, so rebuild through `Build-Release.ps1` afterwards.
 
 GitHub publication remains a separate deliberate step so running a local build
 cannot accidentally push a commit, tag or release.
@@ -104,6 +123,4 @@ that is not on GitHub's `main` branch, and never overwrites an existing release.
 
 ## Code structure
 
-The staged modularisation plan and its regression rules are documented in
-[`CODEBASE_REWORK.md`](CODEBASE_REWORK.md). New ownership policy should go into
-the testable core instead of adding more global decisions to `plugin.cpp`.
+New ownership policy should go into the testable core instead of adding more global decisions to `plugin.cpp`.

@@ -6,7 +6,8 @@ The active repository contains only SPS-owned source and project metadata:
 - `scripts/Source` - Papyrus source owned by SPS
 - `scripts/BuildStubs` - compile-only dependency declarations; never packaged
 - `scripts/*.pex` - compiled bridge components paired with the DLL
-- `compat` - the supported optional OSL legacy compatibility component
+- `compat` - optional compatibility components (OSL legacy script, bundled XML
+  physics configs, SOFTBODY SPS Natural)
 - `config` and `fomod` - runtime configuration and installer declarations
 - `tests` - game-independent C++ regression tests and API smoke-test source
 - `tools` - environment, build, Papyrus, package and publication commands

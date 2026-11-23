@@ -31,6 +31,7 @@
 #include "runtime/PapyrusGateway.h"
 #include "runtime/PhysicsOwnershipAdapter.h"
 #include "runtime/PositionBackendAdapter.h"
+#include "runtime/ShaftPoseTracker.h"
 #include "runtime/SosPoseAngle.h"
 #include "controllers/PoseTargets.h"
 
@@ -91,6 +92,11 @@ std::string skseVersion{ "unknown" };
 std::mutex debugCaptureLock;
 std::vector<std::string> debugCaptureLines;
 SPS::APIControl::ExternalControlRegistry apiRegistry;
+// V4: a GetActorSceneRole call keeps the scene role queries running for 30 s even
+// when the user's own role switching is off, so the answer is not always Unknown.
+std::atomic<std::int64_t> apiSceneRoleInterestUntilMs{ 0 };
+// Last scene state sent to V4 actor listeners (packed: bit 0 inScene, bits 1-2 role).
+std::atomic<int> apiLastSceneEventState{ -1 };
 
 SPS::Controllers::ArousalController arousalController;
 SPS::Controllers::ActorWorkOwner playerArousalWriteOwner{ SPS::API::kPlayerFormID, {}, true };
@@ -103,6 +109,9 @@ std::atomic<bool> polling{ false };
 std::atomic<bool> tickQueued{ false };
 std::atomic<std::int64_t> diagnosticsRefreshDueMs{ 0 };
 std::atomic<std::int64_t> playerBonesRefreshDueMs{ 0 };
+// Set by an armour change; the equipment follow-up spends it on one more soft
+// SMP reset after the late genital-node rebuild some outfits cause.
+std::atomic<bool> equipSecondResetPending{ false };
 // The angle the player held when a node refresh reset the applied bend. A
 // morph update (for example an arousal morph addon) raises the same player
 // NiNode event as a real mesh change, and the reconnect that follows used to
@@ -158,6 +167,7 @@ std::int64_t NowMs();
 void Record(std::string message, bool error = false);
 std::optional<SPS::APIControl::Request> ActiveAPIRequest();
 void ClearAPIRequests();
+void ClearNpcEventState();
 void ScheduleExternalOwnerRepair(int delayMs, std::string_view reason);
 bool SetOwner(bool cbpc, bool force = false);
 bool QueueOwnershipHandoff(
@@ -208,7 +218,9 @@ std::optional<SPS::APIControl::Request> ActiveAPIRequest() {
 }
 
 void ClearAPIRequests() {
-    const auto cleared = apiRegistry.Clear();
+    const auto cleared = apiRegistry.Clear() + apiRegistry.ClearRiseHolds();
+    apiLastSceneEventState.store(-1);
+    ClearNpcEventState();
     if (cleared > 0) {
         Record(fmt::format("Compatibility API released {} request(s) for the new game session", cleared));
     }
@@ -324,19 +336,43 @@ SPS::API::Result __cdecl APIGetActorArousal(std::uint32_t actorFormID, float* ar
     }
 }
 
-// V3. True during a SexLab/OStim scene and for the scene-end delay afterwards.
+// True during a SexLab/OStim scene, while Accurate Penetration is reporting one,
+// and for the scene-end delay afterwards. Reads only scene state: it does not
+// depend on who controls physics, so a rise hold, a RequestPhysics hold or an
+// SPS-owned handoff never hides a scene.
+bool PlayerInSceneForAPI(int delayMs) {
+    const auto now = NowMs();
+    const auto& state = sceneController.State();
+    const auto recent = [&](std::int64_t endedMs) {
+        return endedMs > 0 && now - endedMs < delayMs;
+    };
+    const bool ppaScene = state.ppa.sceneActive.load() && now - state.ppa.lastUpdateMs.load() < 3000;
+    return state.sexLab.active.load() || state.ostim.active.load() || ppaScene ||
+        recent(state.sexLab.endedMs.load()) || recent(state.ostim.endedMs.load());
+}
+
+SPS::API::SceneRole PlayerSceneRoleForAPI() {
+    using SPS::API::SceneRole;
+    const auto toRole = [](int value) {
+        return value == 1 ? SceneRole::Receiving : value == 2 ? SceneRole::Penetrating : SceneRole::Unknown;
+    };
+    const auto now = NowMs();
+    const auto& state = sceneController.State();
+    if (state.ostim.active.load() && state.ostim.roleValid.load()) return toRole(state.ostim.role.load());
+    if (state.sexLab.active.load() && state.sexLab.roleValid.load()) return toRole(state.sexLab.role.load());
+    if (state.ppa.sceneActive.load() && state.ppa.sceneRoleValid.load() &&
+        now - state.ppa.lastUpdateMs.load() < 3000)
+        return toRole(state.ppa.sceneRole.load());
+    return SceneRole::Unknown;
+}
+
+// V3. True during a scene and for the scene-end delay afterwards.
 SPS::API::Result __cdecl APIIsActorInScene(std::uint32_t actorFormID, bool* inScene) {
     if (!inScene) return SPS::API::Result::InvalidArgument;
     int delayMs;
     { std::scoped_lock lock(settingsLock); delayMs = settings.sceneEndDelayMs; }
     if (actorFormID == SPS::API::kPlayerFormID) {
-        const auto now = NowMs();
-        const auto& state = sceneController.State();
-        const auto recent = [&](std::int64_t endedMs) {
-            return endedMs > 0 && now - endedMs < delayMs;
-        };
-        *inScene = state.sexLab.active.load() || state.ostim.active.load() ||
-            recent(state.sexLab.endedMs.load()) || recent(state.ostim.endedMs.load());
+        *inScene = PlayerInSceneForAPI(delayMs);
         return SPS::API::Result::Success;
     }
     switch (SPS::Runtime::ReadApiActorScene(actorFormID, inScene, delayMs,
@@ -345,6 +381,281 @@ SPS::API::Result __cdecl APIIsActorInScene(std::uint32_t actorFormID, bool* inSc
     case SPS::Runtime::ApiActorRead::notReady: return SPS::API::Result::NotReady;
     default: return SPS::API::Result::UnsupportedActor;
     }
+}
+
+std::uint32_t __cdecl APIGetCapabilitiesV4() {
+    return APIGetCapabilitiesV3() | SPS::API::kCapabilitySceneRoleReadback |
+        SPS::API::kCapabilityRiseHold | SPS::API::kCapabilityActorEvents;
+}
+
+// V4. Player only. Asking keeps the scene role queries running for 30 s, so the
+// answer does not depend on the user's own role-switching setting.
+SPS::API::Result __cdecl APIGetActorSceneRole(std::uint32_t actorFormID, SPS::API::SceneRole* role) {
+    if (!role) return SPS::API::Result::InvalidArgument;
+    if (actorFormID != SPS::API::kPlayerFormID) return SPS::API::Result::UnsupportedActor;
+    apiSceneRoleInterestUntilMs.store(NowMs() + 30000);
+    *role = PlayerSceneRoleForAPI();
+    return SPS::API::Result::Success;
+}
+
+bool ApiWantsSceneRole() {
+    return apiRegistry.HasActorListeners() || NowMs() < apiSceneRoleInterestUntilMs.load();
+}
+
+void DispatchActorEvent(SPS::API::ActorEventKind kind) {
+    const auto listeners = apiRegistry.ActorListeners();
+    if (listeners.empty()) return;
+    int delayMs;
+    { std::scoped_lock lock(settingsLock); delayMs = settings.sceneEndDelayMs; }
+    SPS::API::ActorEvent event;
+    event.kind = kind;
+    const auto reading = arousalController.Reading();
+    event.arousalValid = reading ? 1u : 0u;
+    event.arousal = reading ? *reading : 0.0F;
+    event.inScene = PlayerInSceneForAPI(delayMs) ? 1u : 0u;
+    event.role = PlayerSceneRoleForAPI();
+    for (const auto& listener : listeners) {
+        if (!listener.callback) continue;
+        try {
+            listener.callback(&event, listener.userData);
+        } catch (...) {
+            Record("SPS-API-002: A compatibility API actor listener threw an exception", true);
+        }
+    }
+}
+
+int PackedSceneStateForAPI() {
+    int delayMs;
+    { std::scoped_lock lock(settingsLock); delayMs = settings.sceneEndDelayMs; }
+    return (PlayerInSceneForAPI(delayMs) ? 1 : 0) | (static_cast<int>(PlayerSceneRoleForAPI()) << 1);
+}
+
+// Called from the poll. Sends SceneChanged when inScene or the role differs from
+// what listeners were last told.
+void NotifyAPISceneChangeIfNeeded() {
+    if (!apiRegistry.HasActorListeners()) {
+        apiLastSceneEventState.store(-1);
+        return;
+    }
+    const int packed = PackedSceneStateForAPI();
+    const int previous = apiLastSceneEventState.exchange(packed);
+    if (previous != -1 && previous != packed) DispatchActorEvent(SPS::API::ActorEventKind::SceneChanged);
+}
+
+// V4. Runs on the game thread just before SPS evaluates a changed arousal value.
+void NotifyAPIArousalChanged() {
+    DispatchActorEvent(SPS::API::ActorEventKind::ArousalChanged);
+}
+
+SPS::API::RequestHandle __cdecl APIRequestRiseHold(const SPS::API::RiseHoldRequest* request) {
+    if (!request || request->apiVersion != SPS::API::kVersionV4 ||
+        request->size < sizeof(SPS::API::RiseHoldRequest) ||
+        !APIIsActorSupported(request->actorFormID) || request->durationMilliseconds == 0)
+        return 0;
+    {
+        std::scoped_lock lock(settingsLock);
+        if (!settings.enabled) return 0;
+    }
+    const auto stored = apiRegistry.AddRiseHold(*request, NowMs());
+    logger::info("Compatibility API: {} asked SPS to wait before the CBPC rise for up to {} ms",
+        stored.requester,
+        (std::min)(request->durationMilliseconds, SPS::API::kMaxRiseHoldMilliseconds));
+    return stored.handle;
+}
+
+SPS::API::Result __cdecl APIReleaseRiseHold(SPS::API::RequestHandle request) {
+    if (request == 0) return SPS::API::Result::InvalidArgument;
+    const auto requester = apiRegistry.ReleaseRiseHold(request);
+    if (!requester) return SPS::API::Result::NotFound;
+    logger::info("Compatibility API: {} released its rise hold", *requester);
+    // The rise the hold was delaying can start now.
+    QueueAPIEvaluation(false);
+    return SPS::API::Result::Success;
+}
+
+SPS::API::ListenerHandle __cdecl APIRegisterActorEventListener(
+    SPS::API::ActorEventCallback callback, void* userData) {
+    const auto handle = apiRegistry.RegisterActorListener(callback, userData);
+    // Baseline for SceneChanged: the listener reads the current scene itself.
+    if (handle != 0) apiLastSceneEventState.store(PackedSceneStateForAPI());
+    return handle;
+}
+
+SPS::API::Result __cdecl APIUnregisterActorEventListener(SPS::API::ListenerHandle listener) {
+    if (listener == 0) return SPS::API::Result::InvalidArgument;
+    return apiRegistry.UnregisterActorListener(listener) ?
+        SPS::API::Result::Success : SPS::API::Result::NotFound;
+}
+
+// ---- V5: read-only NPC state, scene role and events -------------------------
+
+std::uint32_t __cdecl APIGetCapabilitiesV5() {
+    return APIGetCapabilitiesV4() | SPS::API::kCapabilityActorState |
+        SPS::API::kCapabilityActorSceneRole | SPS::API::kCapabilityNpcEvents;
+}
+
+SPS::API::SceneRole ApiRoleFromInt(int value) {
+    return value == 1 ? SPS::API::SceneRole::Receiving :
+        value == 2 ? SPS::API::SceneRole::Penetrating : SPS::API::SceneRole::Unknown;
+}
+
+// V5. The player, or a loaded NPC (cached; the first NPC call is NotReady).
+SPS::API::Result __cdecl APIGetAnyActorSceneRole(std::uint32_t actorFormID, SPS::API::SceneRole* role) {
+    if (!role) return SPS::API::Result::InvalidArgument;
+    if (actorFormID == SPS::API::kPlayerFormID) return APIGetActorSceneRole(actorFormID, role);
+    int value = 0;
+    switch (SPS::Runtime::ReadApiActorSceneRole(actorFormID, &value, papyrusDispatchAllowedAfterMs.load())) {
+    case SPS::Runtime::ApiActorRead::ready:
+        *role = ApiRoleFromInt(value);
+        return SPS::API::Result::Success;
+    case SPS::Runtime::ApiActorRead::notReady: return SPS::API::Result::NotReady;
+    default: return SPS::API::Result::UnsupportedActor;
+    }
+}
+
+// V5. Player or any loaded actor. validFlags says which fields were readable.
+SPS::API::Result __cdecl APIGetActorState(std::uint32_t actorFormID, SPS::API::ActorStateSnapshot* snapshot) {
+    using namespace SPS::API;
+    if (!snapshot || snapshot->apiVersion != kVersionV5 || snapshot->size < sizeof(ActorStateSnapshot))
+        return Result::InvalidArgument;
+    ActorStateSnapshot out;
+    out.actorFormID = actorFormID;
+    int delayMs;
+    { std::scoped_lock lock(settingsLock); delayMs = settings.sceneEndDelayMs; }
+    if (actorFormID == kPlayerFormID) {
+        out.managed = 1;
+        if (playerContext.physics.known.load()) {
+            out.state = playerContext.physics.usingCBPC.load() ? PhysicsState::CBPC : PhysicsState::SMP;
+            out.validFlags |= kStatePhysicsValid;
+        }
+        out.source = CurrentAPIControlSource();
+        if (const auto reading = arousalController.Reading()) {
+            out.arousal = *reading;
+            out.validFlags |= kStateArousalValid;
+        }
+        out.inScene = PlayerInSceneForAPI(delayMs) ? 1u : 0u;
+        out.role = PlayerSceneRoleForAPI();
+        out.validFlags |= kStateSceneValid | kStateRoleValid;
+    } else {
+        auto* actor = RE::TESForm::LookupByID<RE::Actor>(actorFormID);
+        if (!actor || actor->IsDeleted() || actor->IsDisabled() || !actor->Is3DLoaded())
+            return Result::UnsupportedActor;
+        if (const auto managed = SPS::Runtime::ReadManagedNpcApiState(actorFormID)) {
+            out.managed = 1;
+            if (managed->physicsKnown) {
+                out.state = managed->usingCBPC ? PhysicsState::CBPC : PhysicsState::SMP;
+                out.source = ControlSource::SPS;
+                out.validFlags |= kStatePhysicsValid;
+            }
+            if (managed->arousal) {
+                out.arousal = *managed->arousal;
+                out.validFlags |= kStateArousalValid;
+            }
+        }
+        if (!(out.validFlags & kStateArousalValid)) {
+            float arousal = 0.0F;
+            if (SPS::Runtime::ReadApiActorArousal(actorFormID, &arousal) == SPS::Runtime::ApiActorRead::ready) {
+                out.arousal = arousal;
+                out.validFlags |= kStateArousalValid;
+            }
+        }
+        bool inScene = false;
+        if (SPS::Runtime::ReadApiActorScene(actorFormID, &inScene, delayMs,
+                papyrusDispatchAllowedAfterMs.load()) == SPS::Runtime::ApiActorRead::ready) {
+            out.inScene = inScene ? 1u : 0u;
+            out.validFlags |= kStateSceneValid;
+        }
+        int role = 0;
+        if (SPS::Runtime::ReadApiActorSceneRole(actorFormID, &role,
+                papyrusDispatchAllowedAfterMs.load()) == SPS::Runtime::ApiActorRead::ready) {
+            out.role = ApiRoleFromInt(role);
+            out.validFlags |= kStateRoleValid;
+        }
+    }
+    *snapshot = out;
+    return Result::Success;
+}
+
+struct NpcEventLast {
+    bool arousalValid{ false };
+    float arousal{ 0.0F };
+    int scene{ -1 };  // packed inScene | role << 1; -1 until first read
+};
+std::unordered_map<std::uint32_t, NpcEventLast> npcEventLast;
+
+void ClearNpcEventState() {
+    npcEventLast.clear();
+}
+
+void DispatchNpcEvent(const std::vector<SPS::APIControl::ActorListener>& listeners,
+    const SPS::API::ActorEvent& event) {
+    for (const auto& listener : listeners) {
+        if (!listener.callback) continue;
+        try {
+            listener.callback(&event, listener.userData);
+        } catch (...) {
+            Record("SPS-API-003: A compatibility API NPC listener threw an exception", true);
+        }
+    }
+}
+
+// Runs once per service tick for each managed NPC while NPC listeners exist.
+// Game thread. Raises ArousalChanged and SceneChanged.
+void NpcEventTick(std::uint32_t formID, std::optional<float> arousal, std::int64_t allowedAfterMs) {
+    const auto listeners = apiRegistry.NpcListeners();
+    if (listeners.empty()) return;
+    int delayMs;
+    { std::scoped_lock lock(settingsLock); delayMs = settings.sceneEndDelayMs; }
+    auto& last = npcEventLast[formID];
+
+    bool inScene = false;
+    const bool sceneReady = SPS::Runtime::ReadApiActorScene(formID, &inScene, delayMs, allowedAfterMs) ==
+        SPS::Runtime::ApiActorRead::ready;
+    int role = 0;
+    // A scene with no SexLab/OStim has no role; treat that as Unknown, not pending.
+    const bool roleReady = SPS::Runtime::ReadApiActorSceneRole(formID, &role, allowedAfterMs) ==
+        SPS::Runtime::ApiActorRead::ready;
+    if (!roleReady) role = 0;
+
+    SPS::API::ActorEvent event;
+    event.actorFormID = formID;
+    event.arousalValid = arousal ? 1u : 0u;
+    event.arousal = arousal ? *arousal : 0.0F;
+    event.inScene = (sceneReady && inScene) ? 1u : 0u;
+    event.role = ApiRoleFromInt(role);
+
+    if (arousal && (!last.arousalValid || std::fabs(*arousal - last.arousal) >= 0.5F)) {
+        last.arousalValid = true;
+        last.arousal = *arousal;
+        event.kind = SPS::API::ActorEventKind::ArousalChanged;
+        DispatchNpcEvent(listeners, event);
+    }
+    if (sceneReady) {
+        const int packed = (inScene ? 1 : 0) | (role << 1);
+        const int previous = last.scene;
+        last.scene = packed;
+        if (previous != -1 && previous != packed) {
+            event.kind = SPS::API::ActorEventKind::SceneChanged;
+            DispatchNpcEvent(listeners, event);
+        }
+    }
+}
+
+SPS::API::ListenerHandle __cdecl APIRegisterNpcEventListener(
+    SPS::API::ActorEventCallback callback, void* userData) {
+    const auto handle = apiRegistry.RegisterNpcListener(callback, userData);
+    if (handle != 0) SPS::Runtime::SetManagedNpcTickSink(NpcEventTick);
+    return handle;
+}
+
+SPS::API::Result __cdecl APIUnregisterNpcEventListener(SPS::API::ListenerHandle listener) {
+    if (listener == 0) return SPS::API::Result::InvalidArgument;
+    if (!apiRegistry.UnregisterNpcListener(listener)) return SPS::API::Result::NotFound;
+    if (!apiRegistry.HasNpcListeners()) {
+        SPS::Runtime::SetManagedNpcTickSink({});
+        npcEventLast.clear();
+    }
+    return SPS::API::Result::Success;
 }
 
 SPS::API::Result __cdecl APIGetErectThreshold(float* threshold) {
@@ -529,7 +840,8 @@ void ConfigureControllers() {
         [] { return PapyrusReadyForDispatch(); },
         [](std::string message, bool error) { Record(std::move(message), error); },
         [] { ClearArousalError(); },
-        [] { Evaluate(); });
+        [] { Evaluate(); },
+        [] { NotifyAPIArousalChanged(); });
     sceneController.Configure(
         [] { return PapyrusReadyForDispatch(); },
         [](std::string message, bool error) { Record(std::move(message), error); },
@@ -576,6 +888,44 @@ bool CoreReady(const Diagnostics& d, const Settings& copy) {
     return d.menuFrameworkLoaded && arousalReady && d.fsmpModuleLoaded && d.fsmpActorApiAvailable && d.fsmpBridgePresent && d.cbpcModuleLoaded &&
         d.playerBonesFound == 6 && d.compatibleXmlFiles > 0 && d.compatibleCbpcMaps > 0 &&
         d.compatibleCbpcParameters > 0 && !d.sosPhysicsManagerLoaded;
+}
+
+std::atomic<std::int64_t> shaftSampleStartMs{0};
+
+// Diagnostic: after an SMP reset, log the local rotation (degrees, XYZ) of the six
+// shaft bones once per poll for 15 s, to show whether the bones move after the reset.
+void SampleShaftAfterReset() {
+    const auto start = shaftSampleStartMs.load();
+    if (start <= 0) return;
+    const auto elapsed = NowMs() - start;
+    if (elapsed > 15000) { shaftSampleStartMs.store(0); return; }
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    auto* root = player ? player->Get3D() : nullptr;
+    if (!root) return;
+    static constexpr const char* names[6] = {
+        "NPC Genitals01 [Gen01]", "NPC Genitals02 [Gen02]", "NPC Genitals03 [Gen03]",
+        "NPC Genitals04 [Gen04]", "NPC Genitals05 [Gen05]", "NPC Genitals06 [Gen06]" };
+    std::string line = fmt::format("Shaft sample +{:.1f}s:", elapsed / 1000.0);
+    for (int i = 0; i < 6; ++i) {
+        auto* node = root->GetObjectByName(RE::BSFixedString(names[i]));
+        if (!node) { line += fmt::format(" G{}=none", i + 1); continue; }
+        float x = 0, y = 0, z = 0;
+        node->local.rotate.ToEulerAnglesXYZ(x, y, z);
+        constexpr float deg = 57.2957795f;
+        line += fmt::format(" G{}=({:.1f},{:.1f},{:.1f}) s={:.2f}", i + 1, x * deg, y * deg, z * deg, node->local.scale);
+    }
+    Record(line);
+}
+
+// True when the six shaft bones' local rotations have changed by less than
+// 0.5 degrees since the previous call (at least ~400 ms apart) twice in a row.
+// SMP rebuilds its bodies from the skeleton as it is at reset time, so a reset
+// issued while the resting clip is still blending bakes a half-blended pose.
+// Returns true when the bones cannot be read, so a missing node never blocks it.
+bool ShaftPoseStable() {
+    static SPS::Runtime::ShaftPoseTracker tracker;
+    auto* player = RE::PlayerCharacter::GetSingleton();
+    return tracker.Stable(player ? player->Get3D() : nullptr, NowMs());
 }
 
 void CaptureState(std::string_view reason) {
@@ -1426,8 +1776,11 @@ bool RefreshSMPAfterPlayerMeshChange() {
     return true;
 }
 
+std::int64_t stableWaitStartMs = 0;
+
 void RunSoftHandoffSMPReset() {
     if (playerContext.physics.known.load() && playerContext.physics.usingCBPC.load()) {
+        stableWaitStartMs = 0;
         playerContext.recovery.softHandoffResetDueMs.store(0);
         playerContext.recovery.softHandoffResetUntilMs.store(0);
         return;
@@ -1472,6 +1825,20 @@ void RunSoftHandoffSMPReset() {
         Record("SPS-019: Soft SMP pose refresh could not find Faster HDT-SMP", true);
         return;
     }
+
+    // Wait (at most 6 s) for the shaft bones to stop moving before the rebuild,
+    // so SMP does not bake a pose that is still blending. After the cap the reset
+    // runs anyway, so this can only delay it.
+    if (stableWaitStartMs == 0) stableWaitStartMs = now;
+    if (now - stableWaitStartMs < 6000 && !ShaftPoseStable()) {
+        playerContext.recovery.softHandoffResetDueMs.store(now + 500);
+        logger::debug("Soft SMP pose refresh is waiting for the shaft pose to settle");
+        return;
+    }
+    Record(now - stableWaitStartMs >= 6000
+        ? "Soft SMP reset: shaft pose still moving after 6 s, resetting anyway"
+        : fmt::format("Soft SMP reset: shaft pose stable after {} ms", now - stableWaitStartMs));
+    stableWaitStartMs = 0;
 
     // The actor reset reloads meshes but does not run the global button's
     // physics-world reset. The guarded soft reset also lets the six managed
@@ -1594,7 +1961,14 @@ void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& comp
         completion.purpose == Purpose::reconnectMesh) {
         ClearResolvedRefreshError();
         playerContext.recovery.ignoreNodeEventsUntilMs.store(now + 2000);
-        playerContext.position.appliedBend.store(-1);
+        // A post-fall soft reset follows a resting pose that was already sent and
+        // has had time to blend. Sending SOSFlaccid again would replay the clip
+        // after the reset and move the bones the reset just settled, so that one
+        // case keeps the recorded pose and does not resend it.
+        const bool restingPoseAlreadyApplied = completion.purpose == Purpose::resetSoft &&
+            !completion.targetCBPC && playerContext.position.appliedBend.load() >= 0;
+        if (!restingPoseAlreadyApplied) playerContext.position.appliedBend.store(-1);
+        if (!completion.targetCBPC) shaftSampleStartMs.store(now);
         if (completion.purpose == Purpose::resetLoad) {
             playerContext.recovery.lastLoadSmpResetMs.store(now);
             ++playerContext.recovery.loadSmpResets;
@@ -1612,8 +1986,10 @@ void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& comp
                 playerContext.position.settleDueMs.store(now + copy.settleDelayMs);
                 playerContext.position.confirmationDueMs.store(now + copy.settleDelayMs + 1500);
             }
-        } else ApplyRequestedSoftBend(true, true);
-        Record("Player physics preparation and owner handoff executed; pose update requested");
+        } else if (!restingPoseAlreadyApplied) ApplyRequestedSoftBend(true, true);
+        Record(restingPoseAlreadyApplied
+            ? "Player SMP reset executed; resting pose kept (not replayed)"
+            : "Player physics preparation and owner handoff executed; pose update requested");
         return;
     }
     if (completion.purpose == SPS::Controllers::OwnershipPurpose::confirmSoft) {
@@ -1756,12 +2132,13 @@ bool QueueOwnershipHandoff(
     const bool reset = purpose == Purpose::resetLoad ||
         purpose == Purpose::resetAngle || purpose == Purpose::resetMesh;
     const int preparation = purpose == Purpose::maintainCBPC ? 3 :
-        (purpose == Purpose::resetSoft ? 1 :
+        (purpose == Purpose::resetSoft ? 5 :
             (reset ? 1 : (purpose == Purpose::reconnectMesh ? 2 : 0)));
-    // resetSoft used preparation 4, which only toggled SMP off and on. That left
-    // the shaft settled against the old pose; preparation 1 runs the actor's full
-    // DynamicHDT.ResetPhysics (the FSMP reset the user ran by hand to make the
-    // resting pose settle) before SMP is re-enabled.
+    // resetSoft used preparation 4, which only toggled SMP off and on and left the
+    // shaft settled against the old pose. It now uses 5: the actor's
+    // DynamicHDT.ResetPhysics (the FSMP reset the user ran by hand) and nothing
+    // after it, because the CBPC stop and SMP re-enable that preparation 1 ends
+    // with moved the bones again about a second after the reset.
     // softBend >= 0 makes SPS_FSMPBridge send SOSFlaccid before its reset.
     // That clip is not the lowest pose, so it is no longer requested on the
     // graph path: the soft stage (SOSBend-9 or FlaccidBend) is sent natively by
@@ -1978,6 +2355,16 @@ void Evaluate(bool force) {
         cbpc = NormalSettingsWantCBPC(copy);
     }
 
+    // An addon asked SPS to wait before the arousal-driven rise (V4 rise hold),
+    // so the addon's own SMP request can arrive first. Only the everyday rise
+    // waits: a scene's own request (normalControl is false) is never delayed, and
+    // neither is a rise already under way (CBPC already owns the bones).
+    if (normalControl && cbpc && apiRegistry.RiseHoldActive(NowMs()) &&
+        !(playerContext.physics.known.load() && playerContext.physics.usingCBPC.load())) {
+        logger::debug("CBPC rise is waiting for a compatibility API rise hold");
+        return;
+    }
+
     // A manual troubleshooting test should remain visible long enough for the
     // user to inspect it. Scene requests still take control immediately.
     if (normalControl && !force && SPS::Core::ManualPhysicsTestHoldsControl(
@@ -2061,8 +2448,10 @@ void Tick() {
     else
         ClearArousalError();
     if (copy.sexLabOverride) QuerySexLab();
-    if (copy.sexLabOverride && copy.sexLabRoleSwitching && sceneController.State().sexLab.active.load()) QuerySexLabRole();
-    if (copy.ostimOverride && copy.ostimRoleSwitching && sceneController.State().ostim.active.load()) QueryOStimRole();
+    const bool apiRoleWanted = ApiWantsSceneRole();
+    if (copy.sexLabOverride && (copy.sexLabRoleSwitching || apiRoleWanted) && sceneController.State().sexLab.active.load()) QuerySexLabRole();
+    if (copy.ostimOverride && (copy.ostimRoleSwitching || apiRoleWanted) && sceneController.State().ostim.active.load()) QueryOStimRole();
+    NotifyAPISceneChangeIfNeeded();
     UpdateRandomErection(copy);
     bool forceStartupDecision = false;
     auto startupDue = playerContext.recovery.startupReconcileDueMs.load();
@@ -2104,6 +2493,7 @@ void Tick() {
     if (!waitingForInitialArousal)
         Evaluate(forceStartupDecision);
     CaptureState("poll");
+    SampleShaftAfterReset();
 
     if (playerContext.recovery.startupReconcileDueMs.load() > 0 && playerContext.physics.known.load()) {
         playerContext.recovery.startupReconcileDueMs.store(0);
@@ -2327,8 +2717,14 @@ void Tick() {
             playerContext.position.appliedBend.store(-1);
             if (playerContext.physics.usingCBPC.load() && copy.positionControl)
                 playerContext.recovery.erectMeshReplayDueMs.store(now + 1000);
-            else if (!playerContext.physics.usingCBPC.load())
-                playerContext.recovery.softConfirmationDueMs.store(now + 500);
+            else if (!playerContext.physics.usingCBPC.load()) {
+                // One more guarded reset for outfits whose nodes finish
+                // rebuilding after the first reset ran. Soft shaft only.
+                if (equipSecondResetPending.exchange(false) && RefreshSMPAfterPlayerMeshChange())
+                    Record("Equipment change: second SMP reset queued after the late rebuild");
+                else
+                    playerContext.recovery.softConfirmationDueMs.store(now + 500);
+            }
         }
     }
 
@@ -2983,6 +3379,16 @@ void __stdcall RenderNPCs() {
     changed |= ImGuiMCP::Checkbox("Enable managed NPCs", &copy.managedNpcEnabled);
     ImGuiMCP::TextWrapped("A managed NPC gets full SPS physics: soft or erect depending on its own arousal. "
         "The list is forgotten when you close the game.");
+    ImGuiMCP::BeginDisabled(!copy.managedNpcEnabled);
+    changed |= ImGuiMCP::Checkbox("Allow up to 8 managed NPCs (default is 1)", &copy.managedNpcUpToEight);
+    ImGuiMCP::EndDisabled();
+    if (copy.managedNpcUpToEight) {
+        ImGuiMCP::TextColored(amber, "Warning: every managed NPC runs its own SMP/CBPC handoffs and Papyrus checks. "
+            "Several at once can cost frame rate and script time, especially in busy scenes. Not tested with more than two.");
+    } else if (managed.actors.size() > managed.capacity) {
+        ImGuiMCP::TextColored(amber, "%zu NPCs are managed but the limit is %zu. Remove the extras; "
+            "none can be added until you do.", managed.actors.size(), managed.capacity);
+    }
     ImGuiMCP::Spacing();
 
     if (managed.actors.empty()) {
@@ -3192,7 +3598,9 @@ void __stdcall RenderNPCs() {
                 fmt::format("{} (size {})", identity->addon, identity->rank);
             std::string sex = !identity->sexLabRead ? "SexLab not detected" :
                 fmt::format("SexLab: {}{}", SPS::Runtime::SexLabSexName(identity->sex),
-                    identity->sex == 2 && identity->baseSex != 2 ? " (forced)" : "");
+                    identity->sex == 2 && identity->baseSex != 2 ? " (forced)" :
+                    identity->baseSex != identity->sex ?
+                        fmt::format(" (base: {})", SPS::Runtime::SexLabSexName(identity->baseSex)) : "");
             ImGuiMCP::TextColored(green, "%s", name.c_str());
             ImGuiMCP::Text("%s, %s%s", schlong.c_str(), sex.c_str(),
                 identity->rememberedFuta ? ", remembered in this save" : "");
@@ -3205,7 +3613,12 @@ void __stdcall RenderNPCs() {
                 if (ImGuiMCP::Button(fmt::format("Undo futa###sps-unfuta-{:08X}", formID).c_str()))
                     SPS::Runtime::RequestFuta(formID, false);
             } else if (identity->baseSex != 0 && identity->baseSex != 1) {
-                Hint("No futa button: SexLab lists this character as futa or a creature already.");
+                if (identity->sex != 2) {
+                    if (ImGuiMCP::Button(fmt::format("Force futa in SexLab###sps-forcefuta-{:08X}", formID).c_str()))
+                        SPS::Runtime::RequestFuta(formID, true);
+                    Hint(fmt::format("SexLab's base sex for this character is {}. Forcing futa overrides it; creature animations may no longer match.",
+                        SPS::Runtime::SexLabSexName(identity->baseSex)).c_str());
+                }
             } else if (identity->sosRead && identity->addon.empty()) {
                 Hint("No futa button: give them a schlong in SOS first.");
             }
@@ -3850,7 +4263,10 @@ public:
             // Some armour managers replace the genital mesh without emitting
             // an SKSE NiNode update. Debounce paired equip/unequip events and
             // run the same owner recovery after the replacement nodes settle.
-            playerContext.recovery.nodeRefreshDueMs.store(NowMs() + 1000);
+            // Unequipping rebuilds the body nodes later than equipping, so it
+            // waits longer. The latest event always wins the debounce.
+            playerContext.recovery.nodeRefreshDueMs.store(NowMs() + (event->equipped ? 2000 : 2500));
+            equipSecondResetPending.store(true);
         }
         return RE::BSEventNotifyControl::kContinue;
     }
@@ -3894,6 +4310,7 @@ void ResetTransientTimers() {
     recoveryController.ResetTransient();
     diagnosticsRefreshDueMs.store(0);
     playerBonesRefreshDueMs.store(0);
+    equipSecondResetPending.store(false);
     manualPhysicsTestUntilMs.store(0);
     activeManualPhysicsTest.store(-1);
     pendingQuickAction.store(-1);
@@ -4064,6 +4481,62 @@ SchlongPhysicsSwapper_GetAPI_V3() {
     return &api;
 }
 
+extern "C" __declspec(dllexport) const SPS::API::InterfaceV4* __cdecl
+SchlongPhysicsSwapper_GetAPI_V4() {
+    static const SPS::API::InterfaceV4 api{
+        SPS::API::kVersionV4,
+        sizeof(SPS::API::InterfaceV4),
+        Mod::APIGetCapabilitiesV4,
+        Mod::APIIsActorSupported,
+        Mod::APIGetState,
+        Mod::APIRequestPhysics,
+        Mod::APIReleasePhysics,
+        Mod::APINotifyPhysicsReset,
+        Mod::APIRegisterStateListener,
+        Mod::APIUnregisterStateListener,
+        Mod::APIGetArousal,
+        Mod::APIGetErectThreshold,
+        Mod::APIGetActorArousal,
+        Mod::APIIsActorInScene,
+        Mod::APIGetActorSceneRole,
+        Mod::APIRequestRiseHold,
+        Mod::APIReleaseRiseHold,
+        Mod::APIRegisterActorEventListener,
+        Mod::APIUnregisterActorEventListener
+    };
+    return &api;
+}
+
+extern "C" __declspec(dllexport) const SPS::API::InterfaceV5* __cdecl
+SchlongPhysicsSwapper_GetAPI_V5() {
+    static const SPS::API::InterfaceV5 api{
+        SPS::API::kVersionV5,
+        sizeof(SPS::API::InterfaceV5),
+        Mod::APIGetCapabilitiesV5,
+        Mod::APIIsActorSupported,
+        Mod::APIGetState,
+        Mod::APIRequestPhysics,
+        Mod::APIReleasePhysics,
+        Mod::APINotifyPhysicsReset,
+        Mod::APIRegisterStateListener,
+        Mod::APIUnregisterStateListener,
+        Mod::APIGetArousal,
+        Mod::APIGetErectThreshold,
+        Mod::APIGetActorArousal,
+        Mod::APIIsActorInScene,
+        Mod::APIGetActorSceneRole,
+        Mod::APIRequestRiseHold,
+        Mod::APIReleaseRiseHold,
+        Mod::APIRegisterActorEventListener,
+        Mod::APIUnregisterActorEventListener,
+        Mod::APIGetActorState,
+        Mod::APIGetAnyActorSceneRole,
+        Mod::APIRegisterNpcEventListener,
+        Mod::APIUnregisterNpcEventListener
+    };
+    return &api;
+}
+
 SKSEPluginLoad(const SKSE::LoadInterface* skse) {
     Mod::runtimeVersion = skse->RuntimeVersion().string(".");
     Mod::skseVersion = REL::Version::unpack(skse->SKSEVersion()).string(".");
@@ -4092,7 +4565,8 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse) {
     SPS::Runtime::RegisterActorIdentitySerialization();
     if (!SKSE::GetPapyrusInterface()->Register([](RE::BSScript::IVirtualMachine* vm) {
             return SPS::Runtime::RegisterPhysicsBridge(vm) && SPS::Runtime::RegisterActorBridgeGuards(vm) &&
-                SPS::Runtime::SosPose::RegisterPoseAngleNatives(vm);
+                SPS::Runtime::SosPose::RegisterPoseAngleNatives(vm) &&
+                SPS::Runtime::RegisterActorIdentityNatives(vm);
         })) {
         logger::critical("SPS physics bridge registration failed");
         return false;

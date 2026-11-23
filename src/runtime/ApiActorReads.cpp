@@ -39,6 +39,11 @@ struct Probe {
     std::int64_t lastActiveAt{ -1 };
     std::int64_t lastCalledAt{ 0 };
     std::int64_t inFlight{ -1 };
+    // Scene role (0 unknown, 1 receiving, 2 penetrating). Refreshed on its own
+    // slot so a role query never competes with the scene query.
+    int role{ 0 };
+    std::int64_t roleSampledAt{ -1 };
+    std::int64_t roleInFlight{ -1 };
 };
 
 // Reuses the registry only for its leases, which the scene bridge requires.
@@ -144,6 +149,45 @@ ApiActorRead ReadApiActorScene(std::uint32_t formID, bool* inScene,
         now - probe->sampledAt > kStaleMs) return ApiActorRead::notReady;
     const bool held = probe->lastActiveAt >= 0 && now - probe->lastActiveAt < sceneEndDelayMs;
     *inScene = probe->status == ActorSceneStatus::active || held;
+    return ApiActorRead::ready;
+}
+
+ApiActorRead ReadApiActorSceneRole(std::uint32_t formID, int* role, std::int64_t allowedAfterMs)
+{
+    const auto now = NowMs();
+    auto* actor = LiveActor(formID);
+    if (!actor) {
+        Drop(formID);
+        return ApiActorRead::unsupported;
+    }
+    SweepIdle(now);
+    auto* probe = Acquire(formID, now);
+    if (!probe) return ApiActorRead::notReady;
+
+    if (probe->roleInFlight >= 0 && now - probe->roleInFlight > kInFlightMs) probe->roleInFlight = -1;
+    // Never overlap the scene query: both use the actor's scene request slot.
+    if (probe->roleInFlight < 0 && probe->inFlight < 0 &&
+        (probe->roleSampledAt < 0 || now - probe->roleSampledAt >= kRefreshMs)) {
+        probe->roleInFlight = now;
+        const auto ticket = probe->ticket;
+        const auto started = now;
+        const bool queued = QueryActorSceneRole(registry.Lease(ticket), actor, allowedAfterMs,
+            [formID, ticket, started](ActorWorkTicket, int value) {
+                const auto found = probes.find(formID);
+                if (found == probes.end() || found->second.ticket.generation != ticket.generation ||
+                    found->second.roleInFlight != started) return;
+                auto& tracked = found->second;
+                tracked.roleInFlight = -1;
+                // A stale or failed call keeps the previous answer.
+                if (value < 0) return;
+                tracked.role = value;
+                tracked.roleSampledAt = started;
+            });
+        if (!queued) probe->roleInFlight = -1;
+    }
+
+    if (probe->roleSampledAt < 0 || now - probe->roleSampledAt > kStaleMs) return ApiActorRead::notReady;
+    *role = probe->role;
     return ApiActorRead::ready;
 }
 

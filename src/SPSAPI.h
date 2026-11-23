@@ -197,4 +197,203 @@ struct InterfaceV3 {
 static_assert(offsetof(InterfaceV3, GetErectThreshold) == offsetof(InterfaceV2, GetErectThreshold));
 
 using GetAPIV3Fn = const InterfaceV3*(__cdecl*)();
+
+// ---------------------------------------------------------------------------
+// V4: scene role, "wait before going erect", and push notifications.
+//
+// All V4 calls are player-only (actorFormID 0x14); any other actor returns
+// UnsupportedActor (RequestRiseHold returns 0). Call them, and expect the actor
+// listener callbacks, on the game thread. Nothing here changes how V1-V3 behave
+// except that IsActorInScene (V3) now also reports a scene that only Accurate
+// Penetration is describing.
+// ---------------------------------------------------------------------------
+inline constexpr auto kGetAPIFunctionNameV4 = "SchlongPhysicsSwapper_GetAPI_V4";
+inline constexpr std::uint32_t kVersionV4 = 4;
+// The longest a rise hold lasts. A longer request is clamped to this, so an
+// addon that crashes or forgets to release cannot keep the shaft soft for long.
+inline constexpr std::uint32_t kMaxRiseHoldMilliseconds = 10000;
+
+enum class SceneRole : std::uint32_t {
+    Unknown = 0,
+    Receiving = 1,
+    Penetrating = 2
+};
+
+enum class ActorEventKind : std::uint32_t {
+    // The accepted arousal value moved by at least 0.5 (or became valid).
+    ArousalChanged = 1,
+    // inScene or role changed.
+    SceneChanged = 2
+};
+
+// V4 capability bits continue the Capability enum (values 1u<<9 and up).
+inline constexpr std::uint32_t kCapabilitySceneRoleReadback = 1u << 9;
+inline constexpr std::uint32_t kCapabilityRiseHold = 1u << 10;
+inline constexpr std::uint32_t kCapabilityActorEvents = 1u << 11;
+
+struct RiseHoldRequest {
+    std::uint32_t apiVersion{ kVersionV4 };
+    std::uint32_t size{ sizeof(RiseHoldRequest) };
+    std::uint32_t actorFormID{ kPlayerFormID };
+    // 1 to kMaxRiseHoldMilliseconds. Zero is rejected: a hold must always end.
+    std::uint32_t durationMilliseconds{ 0 };
+    // Optional diagnostic label. SPS copies this string during the call.
+    const char* requesterName{ nullptr };
+};
+
+struct ActorEvent {
+    std::uint32_t apiVersion{ kVersionV4 };
+    std::uint32_t size{ sizeof(ActorEvent) };
+    std::uint32_t actorFormID{ kPlayerFormID };
+    ActorEventKind kind{ ActorEventKind::ArousalChanged };
+    // The accepted arousal at the time of the event; 0 while arousalValid is 0.
+    float arousal{ 0.0F };
+    // Same meaning as IsActorInScene: a scene, plus SPS's scene-end delay.
+    // Independent of who controls physics (a rise hold or RequestPhysics does
+    // not hide it).
+    std::uint32_t inScene{ 0 };
+    SceneRole role{ SceneRole::Unknown };
+    std::uint32_t arousalValid{ 0 };
+};
+
+// GetActorSceneRole: the player's role in the current scene, or Unknown when no
+// scene is active, the scene framework has not reported a role yet, or the role
+// could not be identified. Sources, in order: OStim, SexLab, then Accurate
+// Penetration. Works without Accurate Penetration. Success is returned whenever
+// the call itself worked, including for Unknown.
+//
+// RequestRiseHold: ask SPS to delay the CBPC rise that arousal alone would
+// start. While any hold is active and SMP (or an unknown owner) has the bones,
+// SPS does not hand them to CBPC for arousal. It does NOT delay a scene's own
+// request, and does not stop a rise already under way. Release with
+// ReleaseRiseHold; it also ends on its own after durationMilliseconds, when the
+// game is loaded, and when SPS is disabled. Returns 0 if rejected. The handle is
+// not valid for ReleasePhysics.
+//
+// Actor listeners are called on the game thread, in order, with no SPS lock
+// held, so a callback may call RequestRiseHold or any read function. On an
+// ArousalChanged event the callbacks run before SPS evaluates the new value, so
+// a hold taken inside the callback is in place when SPS decides.
+using GetActorSceneRoleFn = Result(__cdecl*)(std::uint32_t actorFormID, SceneRole* role);
+using RequestRiseHoldFn = RequestHandle(__cdecl*)(const RiseHoldRequest* request);
+using ReleaseRiseHoldFn = Result(__cdecl*)(RequestHandle request);
+using ActorEventCallback = void(__cdecl*)(const ActorEvent*, void* userData);
+using RegisterActorEventListenerFn = ListenerHandle(__cdecl*)(ActorEventCallback callback, void* userData);
+using UnregisterActorEventListenerFn = Result(__cdecl*)(ListenerHandle listener);
+
+// V4 repeats the complete V3 layout unchanged and appends five members.
+struct InterfaceV4 {
+    std::uint32_t version{ kVersionV4 };
+    std::uint32_t size{ sizeof(InterfaceV4) };
+    GetCapabilitiesFn GetCapabilities{ nullptr };
+    IsActorSupportedFn IsActorSupported{ nullptr };
+    GetStateFn GetState{ nullptr };
+    RequestPhysicsFn RequestPhysics{ nullptr };
+    ReleasePhysicsFn ReleasePhysics{ nullptr };
+    NotifyPhysicsResetFn NotifyPhysicsReset{ nullptr };
+    RegisterStateListenerFn RegisterStateListener{ nullptr };
+    UnregisterStateListenerFn UnregisterStateListener{ nullptr };
+    GetArousalFn GetArousal{ nullptr };
+    GetErectThresholdFn GetErectThreshold{ nullptr };
+    GetActorArousalFn GetActorArousal{ nullptr };
+    IsActorInSceneFn IsActorInScene{ nullptr };
+    GetActorSceneRoleFn GetActorSceneRole{ nullptr };
+    RequestRiseHoldFn RequestRiseHold{ nullptr };
+    ReleaseRiseHoldFn ReleaseRiseHold{ nullptr };
+    RegisterActorEventListenerFn RegisterActorEventListener{ nullptr };
+    UnregisterActorEventListenerFn UnregisterActorEventListener{ nullptr };
+};
+
+static_assert(offsetof(InterfaceV4, IsActorInScene) == offsetof(InterfaceV3, IsActorInScene));
+
+using GetAPIV4Fn = const InterfaceV4*(__cdecl*)();
+
+// ---------------------------------------------------------------------------
+// V5: read-only NPC state, scene role and events.
+//
+// Everything here is read-only. None of it controls NPC physics: RequestPhysics,
+// GetState and the V4 rise hold still accept only the player. Call on the game
+// thread. "Managed" means the actor is enrolled in SPS's NPC management (at most
+// one at a time by default, up to eight if the user allows it); other loaded actors can still be asked about scene and role.
+// ---------------------------------------------------------------------------
+inline constexpr auto kGetAPIFunctionNameV5 = "SchlongPhysicsSwapper_GetAPI_V5";
+inline constexpr std::uint32_t kVersionV5 = 5;
+
+inline constexpr std::uint32_t kCapabilityActorState = 1u << 12;
+inline constexpr std::uint32_t kCapabilityActorSceneRole = 1u << 13;
+inline constexpr std::uint32_t kCapabilityNpcEvents = 1u << 14;
+
+// ActorStateSnapshot::validFlags: which fields hold a real reading. A field whose
+// bit is clear holds its default and must be ignored.
+inline constexpr std::uint32_t kStatePhysicsValid = 1u << 0;
+inline constexpr std::uint32_t kStateArousalValid = 1u << 1;
+inline constexpr std::uint32_t kStateSceneValid = 1u << 2;
+inline constexpr std::uint32_t kStateRoleValid = 1u << 3;
+
+struct ActorStateSnapshot {
+    std::uint32_t apiVersion{ kVersionV5 };
+    std::uint32_t size{ sizeof(ActorStateSnapshot) };
+    std::uint32_t actorFormID{ kPlayerFormID };
+    std::uint32_t validFlags{ 0 };
+    // The owner SPS selected (command state, not proof of visible motion).
+    PhysicsState state{ PhysicsState::Unknown };
+    // SPS for a managed NPC, the usual source for the player, None otherwise.
+    ControlSource source{ ControlSource::None };
+    float arousal{ 0.0F };
+    // Same meaning as IsActorInScene.
+    std::uint32_t inScene{ 0 };
+    SceneRole role{ SceneRole::Unknown };
+    // 1 when SPS manages this actor's physics (the player always, a managed NPC).
+    std::uint32_t managed{ 0 };
+};
+
+// GetActorState: the player or any loaded actor. Success whenever the actor is
+// loaded; check validFlags for what could be read. Physics is only valid for the
+// player and managed NPCs. An actor that is not loaded returns UnsupportedActor.
+//
+// GetAnyActorSceneRole: like V4 GetActorSceneRole but also for loaded NPCs. For an
+// NPC the first call returns NotReady while SPS asks SexLab/OStim (about a second),
+// and the answer is cached like IsActorInScene. Unknown is a successful answer.
+//
+// NPC listeners receive the same ActorEvent as the V4 listeners, with actorFormID set
+// to the NPC, for managed NPCs only: ArousalChanged when the NPC's arousal moves by
+// 0.5 or more, SceneChanged when its inScene or role changes. They are raised on the
+// game thread from SPS's NPC service tick (about once a second), not instantly. The
+// V4 listeners still hear only the player.
+using GetActorStateFn = Result(__cdecl*)(std::uint32_t actorFormID, ActorStateSnapshot* snapshot);
+using GetAnyActorSceneRoleFn = Result(__cdecl*)(std::uint32_t actorFormID, SceneRole* role);
+using RegisterNpcEventListenerFn = ListenerHandle(__cdecl*)(ActorEventCallback callback, void* userData);
+using UnregisterNpcEventListenerFn = Result(__cdecl*)(ListenerHandle listener);
+
+// V5 repeats the complete V4 layout unchanged and appends four members.
+struct InterfaceV5 {
+    std::uint32_t version{ kVersionV5 };
+    std::uint32_t size{ sizeof(InterfaceV5) };
+    GetCapabilitiesFn GetCapabilities{ nullptr };
+    IsActorSupportedFn IsActorSupported{ nullptr };
+    GetStateFn GetState{ nullptr };
+    RequestPhysicsFn RequestPhysics{ nullptr };
+    ReleasePhysicsFn ReleasePhysics{ nullptr };
+    NotifyPhysicsResetFn NotifyPhysicsReset{ nullptr };
+    RegisterStateListenerFn RegisterStateListener{ nullptr };
+    UnregisterStateListenerFn UnregisterStateListener{ nullptr };
+    GetArousalFn GetArousal{ nullptr };
+    GetErectThresholdFn GetErectThreshold{ nullptr };
+    GetActorArousalFn GetActorArousal{ nullptr };
+    IsActorInSceneFn IsActorInScene{ nullptr };
+    GetActorSceneRoleFn GetActorSceneRole{ nullptr };
+    RequestRiseHoldFn RequestRiseHold{ nullptr };
+    ReleaseRiseHoldFn ReleaseRiseHold{ nullptr };
+    RegisterActorEventListenerFn RegisterActorEventListener{ nullptr };
+    UnregisterActorEventListenerFn UnregisterActorEventListener{ nullptr };
+    GetActorStateFn GetActorState{ nullptr };
+    GetAnyActorSceneRoleFn GetAnyActorSceneRole{ nullptr };
+    RegisterNpcEventListenerFn RegisterNpcEventListener{ nullptr };
+    UnregisterNpcEventListenerFn UnregisterNpcEventListener{ nullptr };
+};
+
+static_assert(offsetof(InterfaceV5, UnregisterActorEventListener) ==
+              offsetof(InterfaceV4, UnregisterActorEventListener));
+
+using GetAPIV5Fn = const InterfaceV5*(__cdecl*)();
 }

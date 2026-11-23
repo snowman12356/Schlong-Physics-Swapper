@@ -42,7 +42,11 @@ normal, soft and anal collision profiles. Its merged `MaleGenitals` shape must
 remain unique and retain both SOFTBODY's weight thresholds and SPS's collision
 exclusions.
 
-## Test procedure
+If only part of the chain moves, a rigid-body name is missing. If the chain
+vibrates or stretches violently, both engines still own at least one dynamic
+bone or the two configs use different parent transforms.
+
+## Scene roles and recovery
 
 When SexLab provides a valid role result, that result is authoritative for the
 physics decision. This includes its temporary `Not identified` result, which
@@ -83,7 +87,7 @@ previous save/process cannot enter a new operation. A queued SKSE barrier
 follows FSMP's reset task; only then does the 750 ms settling delay begin.
 Equipment release, settling and reacquisition use the same operation. Older
 global bridge entry points remain for compatibility; SPS no longer calls them.
-The bridge version must return 3 before this DLL dispatches ownership work.
+The FSMP bridge version must match the DLL (currently 9) before it dispatches ownership work.
 
 An execution clock excludes game inactivity, frozen-VM periods and paused
 menus. It is used consistently by queries, ownership, recovery and timed
@@ -128,8 +132,9 @@ re-asserts SMP purely to sample it. `smpConnected` and `cbpcConnected` are now
 set separately from the selected owner instead of from one shared boolean, which
 previously reported SMP as ready after an SMP-off handoff.
 
-Bridge version 7 returns `Int[4]` (validity, dynamic-bone count, bone-array
-length, reserved) and requires the paired DLL. CBPC exposes no state at all:
+The bridge returns `Int[4]`: validity, disable-sample dynamic count, bone-array
+length, and (since version 9) the post-enable dynamic count, which is the only
+SMP proof. It requires the paired DLL. CBPC exposes no state at all:
 `CBPCPluginScript.StartPhysics`/`StopPhysics` are void native calls, so "CBPC
 attached" remains an accepted command, never a verified condition.
 
@@ -140,9 +145,10 @@ explicitly managed NPCs. It returns the same `Int[4]` read-back as the player
 path, so NPC switching has the same evidence and the same limits: only the
 disable direction proves anything, and CBPC attachment stays an accepted command.
 
-It deliberately omits the player-only steps in `SetPlayerOwnerV3` -- the SOS
-flaccid event, the soft-pose bend and the full `ResetPhysics`. Those follow player
-settings and would overwrite an NPC's own configured pose.
+It deliberately omits the player-only SOS flaccid event and soft-pose bend in
+`SetPlayerOwnerV3`; those follow player settings and would overwrite an NPC's own
+configured pose. `ResetPhysics` runs only for preparation 5, which the plugin
+requests once after a CBPC to SMP handoff.
 
 `OwnershipRequestCurrent` and `ResolveOwnershipRequest` are actor-scoped guards.
 A token resolves to exactly one actor and is re-checked after every engine
@@ -152,19 +158,34 @@ player. Ownership shares `PapyrusOperationGate` with the player and position
 paths, so an NPC handoff can never overlap a player handoff; the caller's ledger
 slot is released only when the real stack returns.
 
-The audit regression list and save compatibility assessment are in
-[`AUDIT_REPAIRS_2026-09-06.md`](AUDIT_REPAIRS_2026-09-06.md).
+## Engine and dependency facts
 
-1. Disable CBPC handling of the chain temporarily and verify visible SMP motion
-   below the threshold.
-2. Re-enable CBPC. Set manual mode to `Force CBPC` and verify that movement is
-   controlled only by CBPC.
-3. Set manual mode to `Force SMP` and verify SMP resumes without a jump.
-4. Return to `Automatic`; set arousal just below and above the threshold.
-5. Stand near the boundary for at least 30 seconds and confirm hysteresis
-   prevents repeated switching.
-6. Save in each mode, reload, and confirm the first update reapplies the mode.
+These were found during development and are not visible from the code.
 
-If only part of the chain moves, a rigid-body name is missing. If the chain
-vibrates or stretches violently, both engines still own at least one dynamic
-bone or the two configs use different parent transforms.
+- SOS AE `GetWinningAddon` is not a read-only query: it assigns addon data when
+  an actor has none. Do not use it for discovery that claims to be read-only.
+- The CommonLibSSE-NG copy in `codex-references` differs from the build copy in
+  `.sps-deps`. The build copy has a VR-aware `CrosshairPickData::GetActiveTarget()`;
+  do not copy the reference version's flat-runtime field access into
+  multi-runtime code.
+- `Game.GetFormEx` appears in the reference library but did not compile against
+  the real compiler source set. Actor bridges resolve actors through registered
+  native handle resolvers instead.
+- `Game.GetForm` returns None for FormIDs >= 0x80000000 (`Game.psc` note on
+  `GetFormEx`): every runtime-created (`FF`) and light-plugin (`FE`) actor. Never
+  resolve an actor FormID with `Game.GetForm` in a bridge; use
+  `SPS_SexLabBridge.ResolveIdentityActor` or a token resolver. This left managed
+  NPCs such as a spawned Cicero (`FF001FA9`) on "reading..." with no futa button
+  until 2026-11-19.
+- 2.0.0 crashed at startup (`std::system_error`, Windows error 1113) when any TXT
+  file in `SKSE\Plugins` had a name not representable in the ANSI code page,
+  because the diagnostics scan converted every filename to `std::string`. Keep
+  filesystem paths wide (fixed in 2.0.1).
+- SexLab P+ 2.19.0 removed `HasInteractionType` and renumbered the interaction
+  types. SPS now uses `sslThreadModel.HasActiveInteractionAny(Actor, int[])`
+  with the 2.19.0 `SexLabThread.psc` constants hard-coded (reading them as
+  thread properties would add about 20 cross-script calls per role poll). Every
+  SexLab role read failed from the 2.19.0 upgrade (2026-11-13) until the
+  2026-11-19 fix. Re-check the constants after any P+ update.
+- OStim NG: the thread containing the player is always ThreadID 0
+  (`OThread.psc` header).

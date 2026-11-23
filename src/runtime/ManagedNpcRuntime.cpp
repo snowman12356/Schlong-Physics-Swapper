@@ -7,6 +7,7 @@
 #include "PhysicsOwnershipAdapter.h"
 #include "PositionBackendAdapter.h"
 #include "SPSAPI.h"
+#include "ShaftPoseTracker.h"
 #include "SosPoseAngle.h"
 #include "controllers/ManagedActorRegistry.h"
 #include "controllers/PhysicsOwnershipController.h"
@@ -18,6 +19,7 @@
 #include <algorithm>
 #include <cmath>
 #include <mutex>
+#include <set>
 #include <unordered_map>
 
 namespace SPS::Runtime {
@@ -33,6 +35,7 @@ ManagedActorRegistry registry{ kManagedNpcCapacity };
 constexpr int kUnknownIndex = -100;   // no SOS stage has been sent yet
 constexpr int kBottomIndex = -9;      // SOSBend-9, where a fall releases CBPC
 constexpr std::int64_t kFallHoldMaxMs = 15000;
+constexpr std::int64_t kRisePrimeMaxMs = 3000;  // never delay a rise longer than this
 
 struct Driver {
     std::optional<float> arousal;
@@ -52,10 +55,24 @@ struct Driver {
     int sentIndex{ kUnknownIndex };
     std::int64_t lastStepMs{ 0 };
     bool positionInFlight{ false };
+    // Latched erect state for the angle's hysteresis band.
+    bool erectHeld{ false };
     // When CBPC owner is held until the angle has been lowered to the bottom.
     std::int64_t fallHoldSinceMs{ -1 };
     // Next time the soft (SMP) pose may be re-sent after a failed attempt.
     std::int64_t softPoseRetryAt{ 0 };
+    // The graph was put on the ramp's first stage (SOSBend-9) before a soft to
+    // CBPC switch, so the rise does not snap up to the erect pose first.
+    bool risePrimed{ false };
+    std::int64_t risePrimeStartedAt{ 0 };
+    // After a real CBPC to SMP handoff the shaft gets one FSMP reset (what the
+    // user otherwise runs by hand), like the player. It waits until the resting
+    // pose has been sent and the shaft bones have stopped moving, so SMP does not
+    // bake a pose that is still blending. 0 means no reset is scheduled.
+    std::int64_t softResetDueAt{ 0 };
+    std::int64_t softResetUntil{ 0 };
+    std::int64_t stableWaitStart{ 0 };
+    ShaftPoseTracker shaftPose;
     std::uint64_t switched{ 0 }, applied{ 0 }, deferred{ 0 }, failed{ 0 }, blocked{ 0 };
     // Log throttling: changes are always logged; repeats of the same request or
     // the same blocked reason at most every kRepeatLogMs.
@@ -75,6 +92,7 @@ struct Driver {
     std::int64_t lastWriteDoneAt{ -1 };
 };
 std::unordered_map<std::uint64_t, Driver> drivers;
+ManagedNpcTickSink tickSink;
 constexpr std::int64_t kRepeatLogMs = 10000;
 std::string lastLoggedState;
 
@@ -91,6 +109,12 @@ std::mutex statusLock;
 ManagedNpcStatus status;
 std::vector<std::uint32_t> pendingAdds;
 std::vector<std::uint32_t> pendingRemoves;
+// The membership kept in the save's SPSW co-save (record MNPC). The registry is
+// rebuilt on every game load, so this list is what survives: it is filled by the
+// co-save load and by successful Add, and shrinks only on an explicit Remove or a
+// save revert. Both guarded by statusLock.
+std::set<std::uint32_t> memberIds;
+bool restorePending{ false };
 std::string lastRejection;
 bool configuredEnabled{ false };
 
@@ -336,16 +360,40 @@ void Remove(ActorWorkTicket ticket)
 
 void ApplyQueuedMembership(std::int64_t allowedAfterMs)
 {
-    std::vector<std::uint32_t> adds, removes;
+    std::vector<std::uint32_t> adds, removes, restore;
     std::string rejection;
     {
         std::scoped_lock lock(statusLock);
         adds.swap(pendingAdds);
         removes.swap(pendingRemoves);
         rejection.swap(lastRejection);
+        if (restorePending) {
+            restorePending = false;
+            restore.assign(memberIds.begin(), memberIds.end());
+        }
     }
-    if (!adds.empty() || !removes.empty()) nearbyScanAtMs = 0;  // Refresh the list now.
+    if (!adds.empty() || !removes.empty() || !restore.empty()) nearbyScanAtMs = 0;  // Refresh the list now.
+    // Members remembered by the save. No NPC-eligibility check: the NPC may be in
+    // another cell right now, and the tick already keeps membership for an actor
+    // that is not loaded and starts work when it is. Only an actor that no longer
+    // exists is dropped.
+    for (const auto formID : restore) {
+        if (registry.Find(formID)) continue;
+        const auto actor = RE::TESForm::LookupByID<RE::Actor>(formID);
+        const auto added = actor ? registry.Add(formID) : ActorRegistrationResult{};
+        if (added.status == ActorRegistrationStatus::added) {
+            SKSE::log::info("Managed NPC {} ({:08X}) restored from this save",
+                ActorName(actor), formID);
+        } else if (added.status == ActorRegistrationStatus::capacityReached) {
+            SKSE::log::info("Managed NPC {:08X} not restored: the managed NPC limit is reached; kept in the save", formID);
+        } else if (added.status != ActorRegistrationStatus::alreadyRegistered) {
+            SKSE::log::warn("Managed NPC {:08X} dropped from this save's list: the actor no longer exists", formID);
+            std::scoped_lock lock(statusLock);
+            memberIds.erase(formID);
+        }
+    }
     for (const auto formID : removes) {
+        { std::scoped_lock lock(statusLock); memberIds.erase(formID); }
         const auto found = registry.Find(formID);
         if (found) {
             Remove(found->ticket);
@@ -365,7 +413,11 @@ void ApplyQueuedMembership(std::int64_t allowedAfterMs)
             case ActorRegistrationStatus::capacityReached:
                 reason = "The managed NPC limit is reached. Remove one first."; break;
             case ActorRegistrationStatus::generationExhausted: reason = "SPS could not create a new session for that NPC."; break;
-            case ActorRegistrationStatus::added: break;
+            case ActorRegistrationStatus::added: {
+                std::scoped_lock lock(statusLock);
+                memberIds.insert(formID);
+                break;
+            }
             }
         }
         const auto name = ActorName(RE::TESForm::LookupByID<RE::Actor>(formID));
@@ -390,7 +442,7 @@ void Publish(const char* state)
     }
     ManagedNpcStatus next;
     next.state = state;
-    next.capacity = kManagedNpcCapacity;
+    next.capacity = registry.Capacity();
     next.rejection = lastRejection;
     next.nearby = nearbyCache;
     for (const auto& snapshot : registry.Snapshot()) {
@@ -419,7 +471,8 @@ void Publish(const char* state)
     status = std::move(next);
 }
 
-void QueueOwnership(Driver& driver, RE::Actor* actor,
+// Returns true when the request was queued (or one was already pending).
+bool QueueOwnership(Driver& driver, RE::Actor* actor,
     const ActorWorkLease& lease, bool wantCBPC, OwnershipPurpose purpose,
     std::int64_t allowedAfterMs, std::int64_t now, ActorWorkTicket ticket,
     PhysicsOwnershipController& controller)
@@ -434,11 +487,13 @@ void QueueOwnership(Driver& driver, RE::Actor* actor,
     if (begin.status == OwnershipBeginStatus::blocked) {
         ++driver.blocked;
         logBlocked("the NPC's ownership controller refused it (retry cooldown or invalid state)");
-        return;
+        return false;
     }
-    if (begin.status == OwnershipBeginStatus::alreadyPending) return;
+    if (begin.status == OwnershipBeginStatus::alreadyPending) return true;
     const int requested = wantCBPC ? 1 : 0;
-    if (driver.loggedRequestCBPC != requested || driver.requestLoggedAt < 0 ||
+    if (purpose == OwnershipPurpose::resetSoft) {
+        SKSE::log::info("Managed NPC {} ({:08X}) requesting a soft SMP reset", ActorName(actor), ticket.formID);
+    } else if (driver.loggedRequestCBPC != requested || driver.requestLoggedAt < 0 ||
         now - driver.requestLoggedAt >= kRepeatLogMs) {
         driver.loggedRequestCBPC = requested;
         driver.requestLoggedAt = now;
@@ -447,8 +502,12 @@ void QueueOwnership(Driver& driver, RE::Actor* actor,
             wantCBPC ? "CBPC (erect)" : "SMP (soft)");
     }
     const auto generation = begin.generation;
+    // Preparation 1 stops both engines first; 5 is the reset-only soft refresh
+    // (SPS_FSMPBridge.SetActorOwnerV3).
+    const int preparation = purpose == OwnershipPurpose::resetLoad ? 1 :
+        (purpose == OwnershipPurpose::resetSoft ? 5 : 0);
     const auto result = SetActorPhysicsOwner(lease, actor, wantCBPC,
-        purpose == OwnershipPurpose::resetLoad ? 1 : 0, FsmpActorApiAvailable(),
+        preparation, FsmpActorApiAvailable(),
         allowedAfterMs, now, [ticket, generation, wantCBPC](OwnershipReadback readback) {
             // The Papyrus callback runs on a script thread, but the registry and
             // drivers are game-thread-only (as on the player path, which also
@@ -468,8 +527,31 @@ void QueueOwnership(Driver& driver, RE::Actor* actor,
                     NowMs());
                 if (!completion.matched) return;
                 const auto name = ActorName(RE::TESForm::LookupByID<RE::Actor>(ticket.formID));
+                if (completion.purpose == OwnershipPurpose::resetSoft) {
+                    // Reset only: ownership is unchanged, so this is not a switch.
+                    state.softResetDueAt = 0;
+                    if (completion.success)
+                        SKSE::log::info("Managed NPC {} ({:08X}) soft SMP reset done; SMP proof {}/{}",
+                            name, ticket.formID, readback.dynamicBonesAfter, readback.boneCount);
+                    else {
+                        ++state.failed;
+                        SKSE::log::warn("Managed NPC {} ({:08X}) soft SMP reset did not complete",
+                            name, ticket.formID);
+                    }
+                    return;
+                }
                 if (completion.success) {
                     ++state.switched;
+                    // A real CBPC to SMP handoff: schedule the one soft reset. The
+                    // resting pose is sent by Service after this; the reset waits
+                    // for it and for the shaft to settle.
+                    if (!wantCBPC && completion.previousKnown && completion.previousCBPC) {
+                        const auto done = NowMs();
+                        state.softResetDueAt = done + 2500;
+                        state.softResetUntil = done + 12000;
+                        state.stableWaitStart = 0;
+                        state.shaftPose.Reset();
+                    }
                     if (!wantCBPC && readback.boneCount > 0 && readback.dynamicBonesAfter == readback.boneCount)
                         SKSE::log::info("Managed NPC {} ({:08X}) switched to SMP; SMP proof {}/{}",
                             name, ticket.formID, readback.dynamicBonesAfter, readback.boneCount);
@@ -485,10 +567,16 @@ void QueueOwnership(Driver& driver, RE::Actor* actor,
             });
         });
     if (result != OwnershipDispatchResult::queued) {
-        (void)controller.Complete(generation, false, now);
+        // A reset that never ran changed nothing, so it must not mark the owner
+        // unknown (a failed completion would force a full re-handoff). The reset
+        // is simply retried while its window lasts.
+        if (purpose == OwnershipPurpose::resetSoft) controller.ResetPending();
+        else (void)controller.Complete(generation, false, now);
         ++driver.blocked;
         logBlocked("the physics script was busy or unavailable (player work, another handoff, or bridge not ready)");
+        return false;
     }
+    return true;
 }
 
 void Service(ActorWorkTicket ticket, ActorContext& context, RE::Actor* actor, const ActorWorkLease& lease,
@@ -575,13 +663,22 @@ void Service(ActorWorkTicket ticket, ActorContext& context, RE::Actor* actor, co
                 tracked.scene = value;
                 tracked.sceneAt = started;
             })) {
+                // A query that could not be dispatched says nothing about the
+                // scene. Marking it unknown made the pose logic below forget the
+                // angle and replay the whole rise every time the script engine
+                // was busy, so keep the last known scene and try again next poll.
                 (void)sceneSlot.Finish(started);
-                driver.scene = ActorSceneStatus::unknown;
-                driver.sceneAt = now;
                 ++driver.blocked;
+                if (driver.blockedLoggedAt < 0 || now - driver.blockedLoggedAt >= kRepeatLogMs) {
+                    driver.blockedLoggedAt = now;
+                    SKSE::log::info("Managed NPC {} ({:08X}): scene check not sent (script engine busy); keeping the last known scene",
+                        ActorName(actor), ticket.formID);
+                }
             }
         }
     }
+
+    if (tickSink) tickSink(ticket.formID, driver.arousal, allowedAfterMs);
 
     // A scene owns positioning: never send a background ownership change.
     if (driver.scene != ActorSceneStatus::clear) {
@@ -620,6 +717,35 @@ void Service(ActorWorkTicket ticket, ActorContext& context, RE::Actor* actor, co
     // An unknown owner must be established before this actor can be trusted to
     // hold a pose, so the first decision always dispatches.
     if (!ownership.known || ownership.usingCBPC != wantCBPC) {
+        // Like the player (PrimeLowestStageForRise): a soft actor rests on the
+        // flaccid clip, and CBPC then follows the graph's erect pose until the
+        // ramp's first event, which showed as a snap up then back down. Put the
+        // graph on SOSBend-9 first and switch once it is applied. Bounded, so an
+        // unavailable position bridge never holds a rise.
+        if (wantCBPC && ownership.known && !ownership.usingCBPC && eventChannel &&
+            settings.gradualErection && !driver.risePrimed) {
+            if (driver.risePrimeStartedAt == 0) driver.risePrimeStartedAt = now;
+            if (now - driver.risePrimeStartedAt < kRisePrimeMaxMs) {
+                if (!driver.positionInFlight) {
+                    const std::string primeEvent =
+                        std::string(SPS::Core::PoseTargets::EventName(0, TngLoaded()));
+                    driver.positionInFlight = true;
+                    if (!QueueActorPosition(lease, actor, primeEvent, std::nullopt, allowedAfterMs,
+                            [ticket](ActorWorkTicket, bool applied) {
+                                const auto found = drivers.find(Key(ticket));
+                                if (found == drivers.end()) return;
+                                found->second.positionInFlight = false;
+                                if (applied) found->second.risePrimed = true;
+                            })) {
+                        driver.positionInFlight = false;
+                        ++driver.blocked;
+                    }
+                }
+                return;
+            }
+        }
+        driver.risePrimed = false;
+        driver.risePrimeStartedAt = 0;
         driver.appliedEvent.clear();
         // The new owner may rebuild the node, so the recorded pose is no longer
         // evidence that the current bone matches it.
@@ -628,11 +754,15 @@ void Service(ActorWorkTicket ticket, ActorContext& context, RE::Actor* actor, co
         driver.curBend = 0.0F;
         driver.lastStepMs = 0;
         driver.fallHoldSinceMs = -1;
-        QueueOwnership(driver, actor, lease, wantCBPC,
+        driver.softResetDueAt = 0;
+        driver.stableWaitStart = 0;
+        (void)QueueOwnership(driver, actor, lease, wantCBPC,
             OwnershipPurpose::switchOwner, allowedAfterMs, now, ticket, controller);
         return;
     }
     if (!wantCBPC) {
+        driver.risePrimed = false;
+        driver.risePrimeStartedAt = 0;
         // SMP owns the physics, but the graph keeps whatever bend was last sent,
         // and the handoff or a finished scene can leave it above the bottom. Like
         // the player (ApplyRequestedSoftBend after each soft handoff), put the
@@ -662,6 +792,32 @@ void Service(ActorWorkTicket ticket, ActorContext& context, RE::Actor* actor, co
                 ++driver.blocked;
             }
         }
+        if (driver.softResetDueAt > 0 && now >= driver.softResetDueAt) {
+            if (now >= driver.softResetUntil) {
+                driver.softResetDueAt = 0;
+                driver.stableWaitStart = 0;
+                SKSE::log::warn("Managed NPC {} ({:08X}) soft SMP reset skipped: it could not run in time",
+                    ActorName(actor), ticket.formID);
+            } else if (!driver.positionInFlight && (!eventChannel || driver.sentIndex == kBottomIndex)) {
+                // Reset only once the resting pose has been sent and the shaft has
+                // stopped moving, so SMP does not bake a half-blended pose. The
+                // wait is capped at 6 s; after that the reset runs anyway.
+                if (driver.stableWaitStart == 0) driver.stableWaitStart = now;
+                const auto waited = now - driver.stableWaitStart;
+                if (waited >= 6000 || driver.shaftPose.Stable(actor->Get3D(), now)) {
+                    if (waited >= 6000)
+                        SKSE::log::info("Managed NPC {} ({:08X}) soft SMP reset: shaft pose still moving after 6 s, resetting anyway",
+                            ActorName(actor), ticket.formID);
+                    else
+                        SKSE::log::info("Managed NPC {} ({:08X}) soft SMP reset: shaft pose stable after {} ms",
+                            ActorName(actor), ticket.formID, waited);
+                    driver.stableWaitStart = 0;
+                    if (!QueueOwnership(driver, actor, lease, false, OwnershipPurpose::resetSoft,
+                            allowedAfterMs, now, ticket, controller))
+                        driver.softResetDueAt = now + 1000;
+                }
+            }
+        }
         return;
     }
 
@@ -687,8 +843,19 @@ void Service(ActorWorkTicket ticket, ActorContext& context, RE::Actor* actor, co
     // shrinks (full travel 0 to the erect bend takes exactly that time), with
     // gradual erection off jumping straight to the target. One verified SOS
     // event is sent per visible stage change.
+    // The same hysteresis band the physics owner already has: once erect, stay
+    // erect until arousal falls hysteresis points below the threshold. Without it
+    // an NPC whose arousal hovers around the threshold flips target every few
+    // seconds and replays the angle over and over. A gradient (rise with arousal)
+    // is continuous, so it needs none.
+    float effectiveThreshold = settings.threshold;
+    if (!settings.arousalBasedErection) {
+        if (*driver.arousal >= settings.threshold) driver.erectHeld = true;
+        else if (*driver.arousal < settings.threshold - settings.hysteresis) driver.erectHeld = false;
+        if (driver.erectHeld) effectiveThreshold = settings.threshold - settings.hysteresis;
+    }
     const int target = Controllers::ManagedPoseBend(*driver.arousal,
-        { settings.threshold, settings.erectBend, settings.arousalBasedErection,
+        { effectiveThreshold, settings.erectBend, settings.arousalBasedErection,
             settings.erectionStartArousal });
     if (target < 0) return;
     const float elapsedMs = driver.lastStepMs > 0 ?
@@ -746,6 +913,8 @@ void Service(ActorWorkTicket ticket, ActorContext& context, RE::Actor* actor, co
 void TickManagedNpcs(bool enabled, const ManagedNpcSettings& settings,
     std::int64_t allowedAfterMs, bool playerBusy)
 {
+    // Lowering the limit keeps NPCs that are already managed; it only refuses new ones.
+    registry.SetCapacity(settings.managedNpcUpToEight ? kManagedNpcMaxCapacity : kManagedNpcCapacity);
     if (!enabled) {
         if (registry.Size() != 0) ResetManagedNpcs();
         Publish("Off");
@@ -788,7 +957,13 @@ void TickManagedNpcs(bool enabled, const ManagedNpcSettings& settings,
             SKSE::log::info("Managed NPC {} ({:08X}) {}", ActorName(actorRef), ticket.formID,
                 eligible ? "loaded; physics state will be re-established" :
                     "not available (unloaded, disabled or dead); membership kept, no work queued");
-            if (!registry.SetLoaded(ticket, eligible)) { Remove(ticket); continue; }
+            if (!registry.SetLoaded(ticket, eligible)) {
+                // The registry no longer knows this actor, so it must not come
+                // back from the saved list after the next load either.
+                { std::scoped_lock lock(statusLock); memberIds.erase(ticket.formID); }
+                Remove(ticket);
+                continue;
+            }
             DropDriver(ticket);
             continue;
         }
@@ -815,6 +990,34 @@ void ResetManagedNpcs()
     lastCrosshairFormID = 0;
     std::scoped_lock lock(statusLock);
     status = {};
+    // Only the live registry was dropped (a game load, or the feature switched
+    // off or changed). The saved membership stays and is re-added on the next
+    // enabled tick.
+    restorePending = !memberIds.empty();
+}
+
+std::vector<std::uint32_t> ReadManagedNpcMembership()
+{
+    std::scoped_lock lock(statusLock);
+    return { memberIds.begin(), memberIds.end() };
+}
+
+void RestoreManagedNpcMembership(const std::vector<std::uint32_t>& formIDs)
+{
+    std::scoped_lock lock(statusLock);
+    memberIds.clear();
+    for (const auto formID : formIDs) {
+        if (memberIds.size() >= kManagedNpcMaxCapacity) break;
+        if (formID != 0 && formID != SPS::API::kPlayerFormID) memberIds.insert(formID);
+    }
+    restorePending = !memberIds.empty();
+}
+
+void ClearManagedNpcMembership()
+{
+    std::scoped_lock lock(statusLock);
+    memberIds.clear();
+    restorePending = false;
 }
 
 bool QueueManagedNpcAdd(std::uint32_t formID)
@@ -891,6 +1094,26 @@ void InvalidateManagedNpc(std::uint32_t formID)
 bool IsManagedNpc(std::uint32_t formID)
 {
     return registry.Find(formID).has_value();
+}
+
+std::optional<ManagedNpcApiState> ReadManagedNpcApiState(std::uint32_t formID)
+{
+    const auto found = registry.Find(formID);
+    if (!found) return std::nullopt;
+    ManagedNpcApiState state;
+    if (auto* context = registry.Resolve(found->ticket)) {
+        const auto ownership = PhysicsOwnershipController{ context->physics }.Read();
+        state.physicsKnown = ownership.known && !ownership.pending;
+        state.usingCBPC = ownership.usingCBPC;
+    }
+    if (const auto driver = drivers.find(Key(found->ticket)); driver != drivers.end() && driver->second.arousal)
+        state.arousal = driver->second.arousal;
+    return state;
+}
+
+void SetManagedNpcTickSink(ManagedNpcTickSink sink)
+{
+    tickSink = std::move(sink);
 }
 
 ManagedNpcStatus ReadManagedNpcStatus()

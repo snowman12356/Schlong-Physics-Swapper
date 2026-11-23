@@ -44,6 +44,18 @@ int main()
     Expect(registry.Add(0x9000).status == Status::capacityReached,
         "unloaded membership still counts toward the hard limit");
 
+    // The limit can be raised and lowered at run time (the "up to 8" toggle).
+    // Lowering it keeps enrolled NPCs and only refuses new ones.
+    registry.SetCapacity(1);
+    Expect(registry.Capacity() == 1 && registry.Size() == 2 && registry.Add(0x9001).status == Status::capacityReached,
+        "lowering the limit keeps existing NPCs and refuses new ones");
+    registry.SetCapacity(8);
+    Expect(registry.Add(0x9001).status == Status::added && registry.Size() == 3,
+        "raising the limit allows more NPCs");
+    registry.SetCapacity(2);
+    Expect(registry.Remove(registry.Find(0x9001)->ticket) && registry.Size() == 2,
+        "the extra test NPC is removed again");
+
     const auto firstLoaded = registry.SetLoaded(first.ticket, true);
     const auto secondLoaded = registry.SetLoaded(second.ticket, true);
     if (!firstLoaded || !secondLoaded) {

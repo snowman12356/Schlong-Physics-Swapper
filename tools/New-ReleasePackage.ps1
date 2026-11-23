@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '2.0.1',
+    [string]$Version = '',
     [string]$BuildDirectory = 'out\build',
     [string]$OutputDirectory = 'out\release',
     [switch]$CreateZip
@@ -8,6 +8,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+if (-not $Version) {
+    $cmakeText = Get-Content -LiteralPath (Join-Path $repo 'CMakeLists.txt') -Raw
+    if ($cmakeText -notmatch 'project\(SchlongPhysicsSwapper VERSION (\d+(?:\.\d+){2,3})') { throw 'Cannot read the version from CMakeLists.txt; pass -Version.' }
+    $Version = $Matches[1]
+}
 $build = (Resolve-Path -LiteralPath (Join-Path $repo $BuildDirectory)).Path
 $manifest = Join-Path $build 'SPSBuildManifest.json'
 if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
@@ -140,6 +145,10 @@ Copy-ReleaseFile 'compat\SOFTBODY SPS\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGen
 Copy-ReleaseFile 'compat\SOFTBODY SPS\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsSoft.xml' 'Optional\SOFTBODY SPS\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsSoft.xml'
 Copy-ReleaseFile 'compat\SOFTBODY SPS\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsToAnus.xml' 'Optional\SOFTBODY SPS\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsToAnus.xml'
 Copy-ReleaseFile 'compat\SOFTBODY SPS\README.md' 'Optional\SOFTBODY SPS\README.md'
+Copy-ReleaseFile 'compat\SOFTBODY SPS Natural\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml' 'Optional\SOFTBODY SPS Natural\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml'
+Copy-ReleaseFile 'compat\SOFTBODY SPS Natural\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsSoft.xml' 'Optional\SOFTBODY SPS Natural\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsSoft.xml'
+Copy-ReleaseFile 'compat\SOFTBODY SPS Natural\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsToAnus.xml' 'Optional\SOFTBODY SPS Natural\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsToAnus.xml'
+Copy-ReleaseFile 'compat\SOFTBODY SPS Natural\README.md' 'Optional\SOFTBODY SPS Natural\README.md'
 Copy-ReleaseFile 'compat\Personal Physics\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml' 'Optional\Personal Physics\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml'
 Copy-ReleaseFile 'compat\Personal Physics\README.md' 'Optional\Personal Physics\README.md'
 Copy-ReleaseFile 'LICENSE' 'LICENSE'

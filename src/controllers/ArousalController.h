@@ -17,7 +17,10 @@ public:
     using ActionHook = std::function<void()>;
     using ReadyHook = std::function<bool()>;
 
-    void Configure(ReadyHook papyrusReady, RecordHook record, ActionHook clearError, ActionHook evaluate);
+    // `changed` (optional) runs on the game thread, in the same task as and just
+    // before `evaluate`, whenever an accepted reading changed by 0.5 or more.
+    void Configure(ReadyHook papyrusReady, RecordHook record, ActionHook clearError, ActionHook evaluate,
+        ActionHook changed = {});
     void Query(bool force = false);
     void Invalidate();
     void ResetReading();
@@ -49,6 +52,7 @@ private:
     RecordHook record_;
     ActionHook clearError_;
     ActionHook evaluate_;
+    ActionHook changed_;
 };
 
 }

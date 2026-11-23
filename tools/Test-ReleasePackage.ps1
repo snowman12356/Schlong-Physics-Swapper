@@ -36,6 +36,10 @@ $requiredFiles = @(
     'Optional\SOFTBODY SPS\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsSoft.xml',
     'Optional\SOFTBODY SPS\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsToAnus.xml',
     'Optional\SOFTBODY SPS\README.md',
+    'Optional\SOFTBODY SPS Natural\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml',
+    'Optional\SOFTBODY SPS Natural\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsSoft.xml',
+    'Optional\SOFTBODY SPS Natural\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsToAnus.xml',
+    'Optional\SOFTBODY SPS Natural\README.md',
     'Optional\Personal Physics\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml',
     'Optional\Personal Physics\README.md',
     'Licenses\OSL-Aroused-Unlicense.txt',
@@ -98,7 +102,8 @@ $physicsChoices = @($module.SelectNodes('//installStep[@name="Physics XML compat
 $expectedPhysicsChoices = @(
     'I have my own compatible physics',
     'Use my personal physics',
-    'Use my SOFTBODY physics'
+    'Use my SOFTBODY physics',
+    'Use my SOFTBODY physics (natural hang)'
 )
 if (($physicsChoices -join '|') -ne ($expectedPhysicsChoices -join '|')) {
     throw 'The FOMOD physics choices or their order do not match the supported first-person wording.'
@@ -128,7 +133,8 @@ foreach ($xmlFile in $smpXmlFiles) {
     }
 }
 
-$softbodySpsRoot = Join-Path $resolvedPackage 'Optional\SOFTBODY SPS\SKSE\Plugins\hdtSkinnedMeshConfigs'
+foreach ($softbodyOption in @('SOFTBODY SPS', 'SOFTBODY SPS Natural')) {
+$softbodySpsRoot = Join-Path $resolvedPackage "Optional\$softbodyOption\SKSE\Plugins\hdtSkinnedMeshConfigs"
 foreach ($fileName in @('MaleGenitals.xml', 'MaleGenitalsSoft.xml', 'MaleGenitalsToAnus.xml')) {
     [xml]$combined = Get-Content -LiteralPath (Join-Path $softbodySpsRoot $fileName) -Raw
     $maleShapes = @($combined.system.'per-triangle-shape' | Where-Object { $_.name -eq 'MaleGenitals' })
@@ -148,6 +154,7 @@ foreach ($fileName in @('MaleGenitals.xml', 'MaleGenitalsSoft.xml', 'MaleGenital
         throw "$fileName still contains SOFTBODY's rigid genital lag chain."
     }
 }
+}
 
 $personalPhysicsPath = Join-Path $resolvedPackage 'Optional\Personal Physics\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml'
 [xml]$personalPhysics = Get-Content -LiteralPath $personalPhysicsPath -Raw
@@ -165,4 +172,4 @@ Write-Output "Release package passed validation: $resolvedPackage"
 Write-Output "FOMOD source entries checked: $($sourceNodes.Count)"
 Write-Output "Bundled SMP XML files checked: $($smpXmlFiles.Count)"
 
-Write-Output "Compiled bridge ABIs, version values and 11 paired-build hashes checked."
+Write-Output "Compiled bridge ABIs, version values and 13 paired-build hashes checked."

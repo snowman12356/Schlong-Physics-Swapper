@@ -3,6 +3,7 @@
 #include "Settings.h"
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -61,7 +62,10 @@ inline constexpr std::size_t kManagedNpcNearbyLimit = 8;
 
 // One fully managed NPC alongside the player, per the Stage 3 milestone. The
 // player is never counted against this limit and is never a target here.
-inline constexpr std::size_t kManagedNpcCapacity = 2;
+inline constexpr std::size_t kManagedNpcCapacity = 1;
+// The limit when the user turns on "Allow up to 8 managed NPCs". Each managed NPC
+// runs its own SMP/CBPC handoffs and Papyrus polls, so this is opt-in.
+inline constexpr std::size_t kManagedNpcMaxCapacity = 8;
 
 // Game-thread entry point. `playerBusy` keeps managed work behind the player's
 // own pending handoff because both share one engine operation gate.
@@ -84,12 +88,33 @@ bool QueueManagedNpcArousalWrite(std::uint32_t formID, float value);
 // `save` false applies it now without writing the file (used while dragging).
 bool SetManagedNpcOptions(std::uint32_t formID, const ManagedNpcOptions& options, bool save = true);
 
+// Per-save membership, stored by ActorIdentity's SPSW co-save (record MNPC). The
+// live registry is rebuilt on every game load, so the saved list is re-added on
+// the next enabled tick. Thread-safe. An actor that no longer exists is dropped.
+std::vector<std::uint32_t> ReadManagedNpcMembership();
+void RestoreManagedNpcMembership(const std::vector<std::uint32_t>& formIDs);
+void ClearManagedNpcMembership();
+
 // Thread-safe invalidation, mirroring the basic bridge's event hook.
 void InvalidateManagedNpc(std::uint32_t formID);
 
 // True when this actor is enrolled in full management. The basic bridge must
 // skip these actors so the two paths never command the same target.
 bool IsManagedNpc(std::uint32_t formID);
+
+// Public API V5. Game thread. The physics owner SPS currently selected for a
+// managed NPC and its last accepted arousal. Nullopt when the actor is not managed.
+struct ManagedNpcApiState {
+    bool physicsKnown{ false };
+    bool usingCBPC{ false };
+    std::optional<float> arousal;
+};
+std::optional<ManagedNpcApiState> ReadManagedNpcApiState(std::uint32_t formID);
+// Called once per service tick for every managed NPC while set, so the public
+// API can raise NPC events without ManagedNpcRuntime knowing about listeners.
+using ManagedNpcTickSink = std::function<void(std::uint32_t formID, std::optional<float> arousal,
+    std::int64_t allowedAfterMs)>;
+void SetManagedNpcTickSink(ManagedNpcTickSink sink);
 
 ManagedNpcStatus ReadManagedNpcStatus();
 // Game-thread helper resolving the current crosshair actor, or 0.

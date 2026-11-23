@@ -10,11 +10,7 @@ Bool Function IsActorActive(Actor akActor)
     Return False
 EndFunction
 
-; P+ SexLabFramework.psc:226 / :246 / :251. Mapping: 0 male, 1 female, 2 futa.
-Int Function GetSex(Actor akActor)
-    Return 0
-EndFunction
-
+; P+ SexLabFramework.psc:246 / :251.
 Function TreatAsFuta(Actor ActorRef)
 EndFunction
 

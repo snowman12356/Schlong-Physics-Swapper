@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
-  <moduleName>Schlong Physics Swapper 2.3.0.0 - SPS pose angle</moduleName>
+  <moduleName>Schlong Physics Swapper 2.3.0.0</moduleName>
   <requiredInstallFiles>
     <file source="SKSE\Plugins\SchlongPhysicsSwapper.dll" destination="SKSE\Plugins\SchlongPhysicsSwapper.dll" priority="0" />
     <file source="SKSE\Plugins\CBPCMasterConfig_ZZZ_SchlongPhysicsSwapper.txt" destination="SKSE\Plugins\CBPCMasterConfig_ZZZ_SchlongPhysicsSwapper.txt" priority="0" />
@@ -44,6 +44,15 @@
                 <file source="Optional\SOFTBODY SPS\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml" destination="SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml" priority="10" />
                 <file source="Optional\SOFTBODY SPS\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsSoft.xml" destination="SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsSoft.xml" priority="10" />
                 <file source="Optional\SOFTBODY SPS\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsToAnus.xml" destination="SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsToAnus.xml" priority="10" />
+              </files>
+              <typeDescriptor><type name="Optional" /></typeDescriptor>
+            </plugin>
+            <plugin name="Use my SOFTBODY physics (natural hang)">
+              <description>Same as "Use my SOFTBODY physics" but looser: the balls hang freely under gravity and the shaft curves along its length instead of moving as one stiff piece. Choose it instead of the standard SOFTBODY option, not in addition, and make SPS win conflicts for the three MaleGenitals XML files. There is no shaft-to-thigh or ground collision.</description>
+              <files>
+                <file source="Optional\SOFTBODY SPS Natural\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml" destination="SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml" priority="10" />
+                <file source="Optional\SOFTBODY SPS Natural\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsSoft.xml" destination="SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsSoft.xml" priority="10" />
+                <file source="Optional\SOFTBODY SPS Natural\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsToAnus.xml" destination="SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsToAnus.xml" priority="10" />
               </files>
               <typeDescriptor><type name="Optional" /></typeDescriptor>
             </plugin>
