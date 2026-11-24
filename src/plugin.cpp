@@ -60,7 +60,7 @@ namespace Mod {
 namespace fs = std::filesystem;
 
 constexpr auto kName = "Schlong Physics Swapper";
-constexpr auto kVersion = "2.3.0.1";
+constexpr auto kVersion = "2.3.0.2";
 constexpr auto kIni = "Data/SKSE/Plugins/SchlongPhysicsSwapper.ini";
 constexpr auto kLegacyIni = "Data/SKSE/Plugins/UBEPhysicsSwitch.ini";
 constexpr auto kReport = "Data/SKSE/Plugins/SchlongPhysicsSwapper_Diagnostics.txt";
@@ -1882,7 +1882,9 @@ void ReportSmpHandoffProof(const SPS::Controllers::OwnershipCompletion& completi
 // callback. A crash report (2.3.0, TNG, a few seconds after loading) shows the
 // engine faulting when this path dispatched SPS_PositionBridge.SendPlayerAnimationEvent
 // from inside that callback. Run the soft bend on the next game-thread task
-// instead, after the VM has finished returning the stack.
+// instead, after the VM has finished returning the stack. A 2.3.0.1 report
+// showed the same fault from this task, so the deferral was not the cure; the
+// angle now goes native first for TNG too (PositionBackendAdapter.cpp).
 void QueueSoftBendAfterCompletion() {
     if (auto* tasks = SKSE::GetTaskInterface()) {
         tasks->AddTask([] { ApplyRequestedSoftBend(true, true); });

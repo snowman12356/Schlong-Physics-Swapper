@@ -21,9 +21,9 @@ namespace {
 constexpr bool kSosAeNativeBendRemoved = true;
 
 // The Papyrus fallback below is held back for a while after a load or a player
-// mesh rebuild. A crash report (2.3.0, SendPlayerAnimationEvent from this
-// fallback a few seconds after loading) shows the engine dispatch is not safe
-// while the player is being rebuilt. The native route is not affected.
+// mesh rebuild, for SOS and TNG alike. Crash reports (2.3.0 and 2.3.0.1, TNG,
+// SendPlayerAnimationEvent a few seconds after loading) fault inside the
+// engine's dispatch of that call. The native route is not affected.
 std::atomic<std::int64_t> fallbackHoldUntilMs{ 0 };
 
 bool HasPositionBridge()
@@ -73,22 +73,21 @@ bool SendPositionEvent(
     if (!actor || actor != RE::PlayerCharacter::GetSingleton()) {
         return false;
     }
-    if (tngBackend) {
-        if (!PapyrusReady(allowedAfterMs, nowMs) || !HasPositionBridge()) {
-            return false;
-        }
-        return DispatchStatic(
-            "SPS_PositionBridge", "SendPlayerAnimationEvent",
-            allowedAfterMs, nowMs, eventName);
-    }
-    // Native graph dispatch for SOS: no Papyrus round trip, so the angle can be
-    // re-asserted from a polling tick without consuming the dispatch budget.
+    (void)tngBackend;
+    // Native graph dispatch first for every backend (SOS and TNG): no Papyrus
+    // round trip, so the angle can be re-asserted from a polling tick without
+    // consuming the dispatch budget. Debug.SendAnimationEvent, which the
+    // Papyrus route below calls, delivers the same graph event.
     //
-    // NotifyAnimationGraph is the primary route because it is free. It is not
-    // guaranteed to accept an event on every SOS AE build, though, so the proven
-    // Papyrus route is used when it refuses. Without this fallback a refused
-    // native call was indistinguishable from "no backend at all", and the angle
-    // silently never moved while the physics swap kept working.
+    // TNG used to go straight to Papyrus. A 2.3.0.1 crash report (UBE + TNG,
+    // a few seconds after loading) faulted inside the engine's
+    // DispatchStaticCall for SPS_PositionBridge.SendPlayerAnimationEvent, called
+    // from an SKSE task, so the routine TNG angle no longer takes that route.
+    //
+    // NotifyAnimationGraph is not guaranteed to accept an event on every build,
+    // though, so the Papyrus route is kept for a refusal. Without this fallback a
+    // refused native call was indistinguishable from "no backend at all", and
+    // the angle silently never moved while the physics swap kept working.
     if (actor->NotifyAnimationGraph(eventName)) {
         return true;
     }

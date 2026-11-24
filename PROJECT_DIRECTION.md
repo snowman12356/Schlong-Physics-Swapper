@@ -62,6 +62,22 @@ requiring users to repair the state manually.
   commit `738b2ee`, tag `v2.0.0`) and 2.0.1 (2026-09-15, commit `7aa9f80`, tag
   `v2.0.1`, Unicode-filename startup crash hotfix). Nexus page (mod 188174) was
   updated for 2.0.0. 2.3.0.0 is unpublished.
+- **2.3.0.2 TNG load crash fix (built 2026-11-24, installed 2026-11-24 19:06 with Skyrim closed,
+  not checked in game, uncommitted; 15 files hash-verified, INI/`meta.ini`/XMLs/CBPC configs
+  untouched; rollback `out/backups/testmod-before-tngnative-20261124-190621`, 52 files):**
+  a Nexus report (UBE + TNG, 1.6.1170) crashes on 2.3.0 and 2.3.0.1, not 2.0.1, a few seconds
+  after loading. The disassembled 2.3.0.1 DLL puts the fault inside the engine's
+  `DispatchStaticCall` (Address Library ID 104802, BSScript range) for
+  `SPS_PositionBridge.SendPlayerAnimationEvent`, called from the SKSE task that 2.3.0.1 added,
+  so the 2.3.0.1 theory (VM callback re-entrancy) is refuted, and its fallback hold never
+  applied to the TNG branch. The exact engine null is unconfirmed (the report's log was an AI
+  summary without engine frames); leading suspect is the 2.3 bridge script's much larger
+  dependency set (SexLab, OSL, OStim/SexLab bridges) versus 2.0.1. Fix: `SendPositionEvent`
+  now tries native `NotifyAnimationGraph` first for TNG as well as SOS, and the Papyrus
+  fallback (and its hold) applies to both. DLL only, safe for existing saves. Unverified: that
+  TNG's graph accepts the native event (if refused, the old Papyrus route runs). Build 0
+  warnings, tests and package validation pass. DLL `45A8826E...5C96`, ZIP `C0F6C850...1540`.
+  Still wanted from the reporter: the full crash log and `Papyrus.0.log`.
 - **Installed in the test mod** (`D:\Modding\mods\Schlong Physics Swapper`), latest first:
   the 2026-11-23 evening build, DLL `00FB6947B27B938411C06601532EF239FD273FF706AD42C25B9B8A34438EA0B1`
   (rollback `out/backups/testmod-before-riseprime-*`), adding the equipment-change second soft SMP
