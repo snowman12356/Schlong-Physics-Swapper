@@ -206,7 +206,7 @@ NPC events come from SPS's NPC service tick (about once a second), on the game t
 so they are not instant. The role comes from OStim first, then SexLab's directional
 interactions (the same test the player role uses). A scene that only OSL Aroused
 reports has no role, so `role` stays `Unknown`. NPC reads need the matching SPS Papyrus
-bridges (`SPS_PositionBridge` v6; `SPS_SexLabBridge` v6 or newer for SexLab; the optional
+bridges (`SPS_PositionBridge` v6; `SPS_SexLabBridge` v6 for SexLab; the optional
 `SPS_OStimBridge` v3 for OStim). With an
 older bridge, NPC scene and role reads stay `NotReady`.
 

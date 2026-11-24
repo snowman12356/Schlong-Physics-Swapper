@@ -73,24 +73,6 @@ private:
     std::uint64_t generation_;
 };
 
-// Logs SPS_SexLabBridge.GetPlayerInteractionString (diagnostic only; the role
-// decision never waits for it). spdlog is thread-safe, so no task is needed.
-class SexLabInteractionLogCallback final : public RE::BSScript::IStackCallbackFunctor {
-public:
-    explicit SexLabInteractionLogCallback(const char* role) : role_(role) {}
-    void operator()(RE::BSScript::Variable result) override
-    {
-        if (!result.IsString()) return;
-        const auto text = result.GetString();
-        logger::info("SexLab P+ interactions for the player ({}): {}", role_,
-            text.empty() ? std::string("none reported") : std::string(text));
-    }
-    void SetObject(const RE::BSTSmartPointer<RE::BSScript::Object>&) override {}
-
-private:
-    const char* role_;
-};
-
 class OStimRoleCallback final : public RE::BSScript::IStackCallbackFunctor {
 public:
     OStimRoleCallback(SceneController& owner, std::uint64_t generation) :
@@ -395,9 +377,6 @@ void SceneController::AcceptSexLabRoleResult(std::uint64_t generation, int resul
     state_.sexLab.roleQueryPending.store(false);
     if (valid && (!wasValid || previous != role)) {
         Record(std::string("SexLab role: ") + RoleName(role));
-        Runtime::DispatchStaticWithCallback("SPS_SexLabBridge", "GetPlayerInteractionString", 0, now,
-            RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor>{
-                new SexLabInteractionLogCallback(RoleName(role)) });
     }
     if (!valid) {
         logger::warn("SexLab role bridge returned an invalid value");
