@@ -62,6 +62,23 @@ requiring users to repair the state manually.
   commit `738b2ee`, tag `v2.0.0`) and 2.0.1 (2026-09-15, commit `7aa9f80`, tag
   `v2.0.1`, Unicode-filename startup crash hotfix). Nexus page (mod 188174) was
   updated for 2.0.0. 2.3.0.0 is unpublished.
+- **2.3.0.3 bridge crash fix (built 2026-11-24, installed 2026-11-24 19:49 with Skyrim closed, 15 files hash-verified, rollback `out/backups/testmod-before-bridgev6-20261124-194938`; not checked in game):**
+  the same reporter on 2.3.0.2: no load crash, but the same engine crash (ID 104802+0xAE inside
+  `DispatchStaticCall`, called directly from SPS `DispatchStatic`) when arousal was raised to 80,
+  on the first rise step (`SOSBend-9`): TNG's graph refused `NotifyAnimationGraph`, so the Papyrus
+  fallback ran. The full Crash Logger log shows the reporter has **no SexLab** (no `SexLab.esm`,
+  no `SexLabUtil.dll`). Since `993d8ec` (after 2.0.1) `SPS_PositionBridge` declared
+  `SexLabFramework` locals (and an `sslThreadController` expression); 2.0.1's bridge had none,
+  and the SexLab bridge itself is only ever dispatched when SexLab is present. Every crash was the
+  first call into `SPS_PositionBridge`. Leading cause (Papyrus log not yet seen): the script cannot
+  link without SexLab and the engine faults dispatching into it. Fix: `SPS_PositionBridge` v6 holds
+  no optional-mod types; its SexLab reads call new `SPS_SexLabBridge` v6 globals
+  `ReadActorSceneState(Actor)` / `ReadActorRole(Actor)` (same return values). C++ expects position
+  v6 and SexLab v6; contracts updated. Rule: never declare an optional mod's script type in a
+  bridge that is called without that mod. 2.3.0.2's native-first angle stays. Build 0 warnings,
+  6 scripts compile, tests and package guards pass. After the Papyrus and save-safety reviews, `SPS_PositionBridge` also returns 0 (state) or -1 (role) when `SPS_SexLabBridge` is missing or older than v6, so a stale SexLab bridge cannot read as "no role"; API doc updated. Reviews: probably safe for existing saves (global-only Hidden scripts, no co-save/INI change), test one load. DLL `92112FEE...DE56`, ZIP `02A4AE86...F8AD`.
+  The reporter also says idle bones look worse than 2.0.1 (their log: SMP proof 0/6 for ~20 s
+  after load, then 6/6 with repeated `Player mesh changed` refreshes; open item 2); not addressed.
 - **2.3.0.2 TNG load crash fix (built 2026-11-24, installed 2026-11-24 19:06 with Skyrim closed,
   not checked in game; pushed, `main` fast-forwarded to `4d2bacf`, tag and GitHub release
   `v2.3.0.2` published 2026-11-24 (Nexus upload left to the owner); 15 files hash-verified, INI/`meta.ini`/XMLs/CBPC configs

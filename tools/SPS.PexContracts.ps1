@@ -117,12 +117,13 @@ function Get-SPSBridgeContracts {
             SetPlayerOwnerV2 = 'Bool(Bool):1'; SetPlayerOwner = 'None(Bool):1'
             ReleasePlayerPhysics = 'None():1'; ResetPlayerPhysics = 'None(Bool):1'
         }}
-        @{ Name = 'SPS_SexLabBridge'; Version = 5; Prefix = ''; Signatures = @{
+        @{ Name = 'SPS_SexLabBridge'; Version = 6; Prefix = ''; Signatures = @{
             GetPlayerThreadID = 'Int():1'; IsPlayerActive = 'Bool():1'; GetPlayerRole = 'Int():1'
             ResolveIdentityActor = 'Actor(Int):3'
             DescribeActor = 'String(Int,Bool,Bool):1'; SetActorFuta = 'Int(Int,Bool):1'
+            ReadActorSceneState = 'Int(Actor):1'; ReadActorRole = 'Int(Actor):1'
         }}
-        @{ Name = 'SPS_PositionBridge'; Version = 5; Prefix = ''; Signatures = @{
+        @{ Name = 'SPS_PositionBridge'; Version = 6; Prefix = ''; Signatures = @{
             GetActorSceneRole = 'Int(String,Bool,Bool):1'
             ReadActorSceneRole = 'Int(Actor,Bool,Bool):1'
             SendPlayerAnimationEvent = 'Bool(String):1'; SetPlayerPoseAngle = 'Bool(Int,Float):1'

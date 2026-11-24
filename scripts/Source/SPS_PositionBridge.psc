@@ -1,8 +1,15 @@
 Scriptname SPS_PositionBridge Hidden
 
 Int Function GetSPSBridgeVersion() Global
-    Return 5
+    Return 6
 EndFunction
+
+; Version 6: no variable, parameter or cast in this script may use a SexLab (or
+; other optional mod) script type. The player's angle event is sent through
+; this script for every user, and 2.3.0 to 2.3.0.2 crashed on the first call
+; into it when SexLab was not installed and SexLabFramework could not be
+; linked. SexLab reads go through SPS_SexLabBridge, which is only called when
+; SexLab is present; calls to other scripts' global functions are fine.
 
 Bool Function ActorRequestCurrent(String token, Actor targetActor) Global Native
 Actor Function ResolveActorRequest(String token) Global Native
@@ -21,12 +28,14 @@ Int Function ReadActorSceneState(Actor targetActor, Bool checkOSL, Bool checkSex
         EndIf
     EndIf
     If checkSexLab
-        SexLabFramework sexLab = Game.GetFormFromFile(0xD62, "SexLab.esm") as SexLabFramework
-        If sexLab == None
+        ; Via SPS_SexLabBridge: this script must not declare SexLab types (v6).
+        ; A missing or older SexLab bridge returns 0 here: unavailable.
+        If SPS_SexLabBridge.GetSPSBridgeVersion() < 6
             Return 0
         EndIf
-        If sexLab.IsActorActive(targetActor)
-            Return 2
+        Int sexLabState = SPS_SexLabBridge.ReadActorSceneState(targetActor)
+        If sexLabState != 1
+            Return sexLabState
         EndIf
     EndIf
     If checkOStim
@@ -40,7 +49,7 @@ EndFunction
 
 ; Version 5: the role of an actor in a scene. 0 unknown, 1 receiving, 2
 ; penetrating, -1 SexLab requested but unresolvable. OStim first, then SexLab
-; (SPS_SexLabBridge.ReadSexLabRole). Only the requested providers are touched.
+; (SPS_SexLabBridge.ReadActorRole). Only the requested providers are touched.
 Int Function ReadActorSceneRole(Actor targetActor, Bool checkSexLab, Bool checkOStim) Global
     If targetActor == None
         Return 0
@@ -52,12 +61,12 @@ Int Function ReadActorSceneRole(Actor targetActor, Bool checkSexLab, Bool checkO
         EndIf
     EndIf
     If checkSexLab
-        SexLabFramework sexLab = Game.GetFormFromFile(0xD62, "SexLab.esm") as SexLabFramework
-        If sexLab == None
-            ; Requested but unresolvable: failed, not "no role".
+        ; A missing or older SexLab bridge would answer 0 ("no role"); report
+        ; it as failed instead.
+        If SPS_SexLabBridge.GetSPSBridgeVersion() < 6
             Return -1
         EndIf
-        Return SPS_SexLabBridge.ReadSexLabRole(sexLab.GetActorController(targetActor), targetActor)
+        Return SPS_SexLabBridge.ReadActorRole(targetActor)
     EndIf
     Return 0
 EndFunction

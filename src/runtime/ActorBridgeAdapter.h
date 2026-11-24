@@ -34,7 +34,7 @@ bool QueueActorPosition(Controllers::ActorWorkLease lease, RE::Actor* actor,
     std::int64_t allowedAfterMs, ActorPositionCompletion completion);
 bool QueryActorScene(Controllers::ActorWorkLease lease, RE::Actor* actor,
     std::int64_t allowedAfterMs, ActorSceneCompletion completion);
-// The actor's role in a SexLab or OStim scene (SPS_PositionBridge v5).
+// The actor's role in a SexLab or OStim scene (SPS_PositionBridge v6).
 bool QueryActorSceneRole(Controllers::ActorWorkLease lease, RE::Actor* actor,
     std::int64_t allowedAfterMs, ActorSceneRoleCompletion completion);
 // Store request-start time with arousal/scene samples; callback arrival is not

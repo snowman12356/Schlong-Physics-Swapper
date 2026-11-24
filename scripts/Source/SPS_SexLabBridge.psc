@@ -1,7 +1,31 @@
 Scriptname SPS_SexLabBridge Hidden
 
 Int Function GetSPSBridgeVersion() Global
-    Return 5
+    Return 6
+EndFunction
+
+; Version 6: actor-level SexLab reads for SPS_PositionBridge, which must not
+; declare SexLab types itself (see the note there).
+; 0 unavailable, 1 clear, 2 active.
+Int Function ReadActorSceneState(Actor target) Global
+    SexLabFramework sexLab = Game.GetFormFromFile(0xD62, "SexLab.esm") as SexLabFramework
+    If target == None || sexLab == None
+        Return 0
+    EndIf
+    If sexLab.IsActorActive(target)
+        Return 2
+    EndIf
+    Return 1
+EndFunction
+
+; -1 when SexLab cannot be resolved (failed, not "no role"), otherwise the
+; ReadSexLabRole value.
+Int Function ReadActorRole(Actor target) Global
+    SexLabFramework sexLab = Game.GetFormFromFile(0xD62, "SexLab.esm") as SexLabFramework
+    If target == None || sexLab == None
+        Return -1
+    EndIf
+    Return ReadSexLabRole(sexLab.GetActorController(target), target)
 EndFunction
 
 ; Version 5: FormID to Actor through the SPS DLL. Game.GetForm returns None for
@@ -31,7 +55,7 @@ Int Function GetPlayerRole() Global
     Return ReadSexLabRole(sexLab.GetActorController(player), player)
 EndFunction
 
-; Shared by GetPlayerRole and SPS_PositionBridge.ReadActorSceneRole.
+; Shared by GetPlayerRole and ReadActorRole (used by SPS_PositionBridge v6).
 ; 0 unknown, 1 receiving, 2 penetrating. Uses P+'s
 ; sslThreadModel.HasActiveInteractionAny(Actor akPosition, int[] aiInterTypes).
 ; Type IDs are the SexLabThread.psc constants as of P+ 2.19.0, which renumbered

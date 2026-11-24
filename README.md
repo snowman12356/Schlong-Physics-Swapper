@@ -1,4 +1,4 @@
-# Schlong Physics Swapper 2.3.0.2
+# Schlong Physics Swapper 2.3.0.3
 
 Local development build, not a published release; the latest release is 2.0.1.
 Optional NPC support is on the **NPCs** page and is off by default.
