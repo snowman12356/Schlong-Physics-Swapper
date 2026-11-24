@@ -63,7 +63,8 @@ requiring users to repair the state manually.
   `v2.0.1`, Unicode-filename startup crash hotfix). Nexus page (mod 188174) was
   updated for 2.0.0. 2.3.0.0 is unpublished.
 - **2.3.0.2 TNG load crash fix (built 2026-11-24, installed 2026-11-24 19:06 with Skyrim closed,
-  not checked in game, committed `0463281`, not pushed; 15 files hash-verified, INI/`meta.ini`/XMLs/CBPC configs
+  not checked in game; pushed, `main` fast-forwarded to `4d2bacf`, tag and GitHub release
+  `v2.3.0.2` published 2026-11-24 (Nexus upload left to the owner); 15 files hash-verified, INI/`meta.ini`/XMLs/CBPC configs
   untouched; rollback `out/backups/testmod-before-tngnative-20261124-190621`, 52 files):**
   a Nexus report (UBE + TNG, 1.6.1170) crashes on 2.3.0 and 2.3.0.1, not 2.0.1, a few seconds
   after loading. The disassembled 2.3.0.1 DLL puts the fault inside the engine's
