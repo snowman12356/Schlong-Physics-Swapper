@@ -35,10 +35,7 @@ SOFTBODY is detected automatically. SPS waits for its SexLab/OStim genital XML
 reloads to finish and then restores the selected physics owner. Most users
 should keep **I have my own compatible physics**. Alternatively choose **Use my
 personal physics** for the supplied general six-bone profile, or **Use my
-SOFTBODY physics** when GT SOFTBODY 3.37.2 is also installed. **Use my SOFTBODY
-physics (natural hang)** is a looser alternative to the standard SOFTBODY choice
-(choose one, not both): the balls hang under gravity and the shaft curves, with no
-shaft-to-thigh or ground collision. All supplied choices support compatible SOS, TNG and UBE six-bone meshes. For either SOFTBODY
+SOFTBODY physics** when GT SOFTBODY 3.37.2 is also installed. **Use my SOFTBODY physics (no body collision)** is the same profile without shaft and ball collision against the thighs, pelvis and virtual ground (choose one, not both). All supplied choices support compatible SOS, TNG and UBE six-bone meshes. For the SOFTBODY
 choice, make SPS win MO2 conflicts for
 `MaleGenitals.xml`, `MaleGenitalsSoft.xml` and `MaleGenitalsToAnus.xml`; another
 winning copy can make the soft shaft rigid or prevent the erect angle from

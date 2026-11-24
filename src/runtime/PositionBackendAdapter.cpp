@@ -5,6 +5,7 @@
 #include "SosPoseAngle.h"
 #include "controllers/PoseTargets.h"
 
+#include <atomic>
 #include <filesystem>
 
 namespace SPS::Runtime {
@@ -18,6 +19,12 @@ namespace {
 // The graph events and AnimObjects that the same update uses for its own keys
 // are unaffected, which is what the event fallback below relies on.
 constexpr bool kSosAeNativeBendRemoved = true;
+
+// The Papyrus fallback below is held back for a while after a load or a player
+// mesh rebuild. A crash report (2.3.0, SendPlayerAnimationEvent from this
+// fallback a few seconds after loading) shows the engine dispatch is not safe
+// while the player is being rebuilt. The native route is not affected.
+std::atomic<std::int64_t> fallbackHoldUntilMs{ 0 };
 
 bool HasPositionBridge()
 {
@@ -35,6 +42,12 @@ bool EventChannelAvailable(bool tngBackend)
     return TngLoaded() || LegacySosLoaded() || SosAeNativeLoaded();
 }
 
+}
+
+void HoldPositionPapyrusFallback(std::int64_t untilMs)
+{
+    auto current = fallbackHoldUntilMs.load();
+    while (untilMs > current && !fallbackHoldUntilMs.compare_exchange_weak(current, untilMs)) {}
 }
 
 int AnimationEventBend(int bend, bool tngBackend)
@@ -78,6 +91,9 @@ bool SendPositionEvent(
     // silently never moved while the physics swap kept working.
     if (actor->NotifyAnimationGraph(eventName)) {
         return true;
+    }
+    if (nowMs < fallbackHoldUntilMs.load()) {
+        return false;
     }
     if (!PapyrusReady(allowedAfterMs, nowMs) || !HasPositionBridge()) {
         return false;

@@ -32,6 +32,10 @@ int AnimationEventBend(int bend, bool tngBackend);
 // when the caller passes the flaccid flag for an SMP-owned rest.
 const char* SosBendEventName(int bend, bool tngBackend);
 
+// Blocks only the Papyrus fallback of SendPositionEvent until untilMs (execution
+// clock). Thread-safe; later calls can only extend the hold.
+void HoldPositionPapyrusFallback(std::int64_t untilMs);
+
 bool SendPositionEvent(
     RE::Actor* actor,
     const RE::BSFixedString& eventName,

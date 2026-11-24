@@ -1,4 +1,4 @@
-# Schlong Physics Swapper 2.3.0.0
+# Schlong Physics Swapper 2.3.0.1
 
 Local development build, not a published release; the latest release is 2.0.1.
 Optional NPC support is on the **NPCs** page and is off by default.
@@ -205,8 +205,7 @@ The Nexus archive includes a simple FOMOD. You manually choose OSL Aroused,
 SLO Aroused NG, SexLab Aroused Redux, or no arousal mod for manual-only use,
 so the installer does not have to guess.
 The physics page offers **I have my own compatible physics**, **Use my personal
-physics**, **Use my SOFTBODY physics**, and **Use my SOFTBODY physics (natural hang)**
-(looser balls and shaft, same SOFTBODY collisions). The supplied profiles work with
+physics**, **Use my SOFTBODY physics**, and **Use my SOFTBODY physics (no body collision)**\r\n(the same hang, but the shaft and balls ignore the thighs, pelvis and virtual ground). The supplied profiles work with
 compatible SOS, TNG and UBE six-bone meshes; only choose the SOFTBODY profile
 when GT SOFTBODY 3.37.2 is installed.
 The current OSL, SLO NG and Redux choices install no extra SPS compatibility

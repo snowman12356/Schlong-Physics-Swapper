@@ -36,10 +36,10 @@ $requiredFiles = @(
     'Optional\SOFTBODY SPS\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsSoft.xml',
     'Optional\SOFTBODY SPS\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsToAnus.xml',
     'Optional\SOFTBODY SPS\README.md',
-    'Optional\SOFTBODY SPS Natural\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml',
-    'Optional\SOFTBODY SPS Natural\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsSoft.xml',
-    'Optional\SOFTBODY SPS Natural\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsToAnus.xml',
-    'Optional\SOFTBODY SPS Natural\README.md',
+    'Optional\SOFTBODY SPS No Body Collision\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml',
+    'Optional\SOFTBODY SPS No Body Collision\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsSoft.xml',
+    'Optional\SOFTBODY SPS No Body Collision\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsToAnus.xml',
+    'Optional\SOFTBODY SPS No Body Collision\README.md',
     'Optional\Personal Physics\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml',
     'Optional\Personal Physics\README.md',
     'Licenses\OSL-Aroused-Unlicense.txt',
@@ -103,7 +103,7 @@ $expectedPhysicsChoices = @(
     'I have my own compatible physics',
     'Use my personal physics',
     'Use my SOFTBODY physics',
-    'Use my SOFTBODY physics (natural hang)'
+    'Use my SOFTBODY physics (no body collision)'
 )
 if (($physicsChoices -join '|') -ne ($expectedPhysicsChoices -join '|')) {
     throw 'The FOMOD physics choices or their order do not match the supported first-person wording.'
@@ -133,7 +133,7 @@ foreach ($xmlFile in $smpXmlFiles) {
     }
 }
 
-foreach ($softbodyOption in @('SOFTBODY SPS', 'SOFTBODY SPS Natural')) {
+foreach ($softbodyOption in @('SOFTBODY SPS', 'SOFTBODY SPS No Body Collision')) {
 $softbodySpsRoot = Join-Path $resolvedPackage "Optional\$softbodyOption\SKSE\Plugins\hdtSkinnedMeshConfigs"
 foreach ($fileName in @('MaleGenitals.xml', 'MaleGenitalsSoft.xml', 'MaleGenitalsToAnus.xml')) {
     [xml]$combined = Get-Content -LiteralPath (Join-Path $softbodySpsRoot $fileName) -Raw
@@ -142,10 +142,13 @@ foreach ($fileName in @('MaleGenitals.xml', 'MaleGenitalsSoft.xml', 'MaleGenital
         throw "$fileName must contain exactly one combined MaleGenitals collision shape."
     }
     $maleShape = $maleShapes[0]
-    foreach ($tag in @('Genitals', 'MaleHands', 'MaleBody', 'Malehands', 'penis', 'VirtualFeet', 'VirtualLegs', 'VirtualPenis')) {
+    foreach ($tag in @('Genitals', 'MaleHands', 'Malehands', 'penis', 'VirtualFeet', 'VirtualLegs', 'VirtualPenis')) {
         if ($tag -notin @($maleShape.'no-collide-with-tag')) {
             throw "$fileName is missing the SPS collision exclusion: $tag"
         }
+    }
+    if ($softbodyOption -eq 'SOFTBODY SPS No Body Collision' -and 'MaleBody' -notin @($maleShape.'no-collide-with-tag')) {
+        throw "$fileName must keep the MaleBody exclusion in the no-body-collision profile."
     }
     if (@($maleShape.'weight-threshold').Count -eq 0) {
         throw "$fileName is missing SOFTBODY's MaleGenitals weight thresholds."

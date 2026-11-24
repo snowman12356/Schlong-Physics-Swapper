@@ -60,7 +60,7 @@ namespace Mod {
 namespace fs = std::filesystem;
 
 constexpr auto kName = "Schlong Physics Swapper";
-constexpr auto kVersion = "2.3.0.0";
+constexpr auto kVersion = "2.3.0.1";
 constexpr auto kIni = "Data/SKSE/Plugins/SchlongPhysicsSwapper.ini";
 constexpr auto kLegacyIni = "Data/SKSE/Plugins/UBEPhysicsSwitch.ini";
 constexpr auto kReport = "Data/SKSE/Plugins/SchlongPhysicsSwapper_Diagnostics.txt";
@@ -1769,6 +1769,7 @@ bool RefreshSMPAfterPlayerMeshChange() {
 
     const auto now = NowMs();
     playerContext.recovery.ignoreNodeEventsUntilMs.store(now + 3000);
+    SPS::Runtime::HoldPositionPapyrusFallback(now + 6000);
     const bool dispatched = QueueOwnershipHandoff(false, SPS::Controllers::OwnershipPurpose::resetMesh);
     if (!dispatched) return false;
 
@@ -1845,6 +1846,7 @@ void RunSoftHandoffSMPReset() {
     // bones follow the skeleton briefly after rebuilding, then resumes SMP.
     // Command completion still cannot prove the visible resting length.
     playerContext.recovery.ignoreNodeEventsUntilMs.store(now + 3000);
+    SPS::Runtime::HoldPositionPapyrusFallback(now + 6000);
     const bool dispatched = QueueOwnershipHandoff(false, SPS::Controllers::OwnershipPurpose::resetSoft);
     if (!dispatched) {
         retry("Faster HDT-SMP");
@@ -1874,6 +1876,19 @@ void ReportSmpHandoffProof(const SPS::Controllers::OwnershipCompletion& completi
         return;
     }
     Record("SMP not proven: the handoff returned no bone sample", true);
+}
+
+// The ownership completion runs inside the Papyrus VM's own stack-return
+// callback. A crash report (2.3.0, TNG, a few seconds after loading) shows the
+// engine faulting when this path dispatched SPS_PositionBridge.SendPlayerAnimationEvent
+// from inside that callback. Run the soft bend on the next game-thread task
+// instead, after the VM has finished returning the stack.
+void QueueSoftBendAfterCompletion() {
+    if (auto* tasks = SKSE::GetTaskInterface()) {
+        tasks->AddTask([] { ApplyRequestedSoftBend(true, true); });
+        return;
+    }
+    ApplyRequestedSoftBend(true, true);
 }
 
 void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& completion) {
@@ -1986,7 +2001,7 @@ void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& comp
                 playerContext.position.settleDueMs.store(now + copy.settleDelayMs);
                 playerContext.position.confirmationDueMs.store(now + copy.settleDelayMs + 1500);
             }
-        } else if (!restingPoseAlreadyApplied) ApplyRequestedSoftBend(true, true);
+        } else if (!restingPoseAlreadyApplied) QueueSoftBendAfterCompletion();
         Record(restingPoseAlreadyApplied
             ? "Player SMP reset executed; resting pose kept (not replayed)"
             : "Player physics preparation and owner handoff executed; pose update requested");
@@ -1994,7 +2009,7 @@ void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& comp
     }
     if (completion.purpose == SPS::Controllers::OwnershipPurpose::confirmSoft) {
         playerContext.recovery.softConfirmationUntilMs.store(0);
-        ApplyRequestedSoftBend(true, true);
+        QueueSoftBendAfterCompletion();
         Record("Soft ownership commands executed; live motion requires in-game verification");
         return;
     }
@@ -2077,7 +2092,7 @@ void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& comp
         } else {
             playerContext.position.settleDueMs.store(0);
             playerContext.position.confirmationDueMs.store(0);
-            if (!PPAOwnsPosition()) ApplyRequestedSoftBend(true, true);
+            if (!PPAOwnsPosition()) QueueSoftBendAfterCompletion();
         }
     }
     if (cbpc && previousState == SPS::API::PhysicsState::Unknown) {
@@ -4374,6 +4389,7 @@ void OnMessage(SKSE::MessagingInterface::Message* message) {
         // query and physics decision.
         SPS::Runtime::UpdateExecutionClock();
         InvalidatePapyrusQueries(1000);
+        SPS::Runtime::HoldPositionPapyrusFallback(NowMs() + 10000);
         sceneController.ResetSession();
         ClearAPIRequests();
         ResetTransientTimers();

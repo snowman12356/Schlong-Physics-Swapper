@@ -111,7 +111,7 @@ compat/OSL Aroused/Scripts/Source/*
 !compat/OSL Aroused/Scripts/Source/OSLAroused_Main.psc
 !compat/SOFTBODY SPS/
 !compat/SOFTBODY SPS/**
-!compat/SOFTBODY SPS Natural/
-!compat/SOFTBODY SPS Natural/**
+!compat/SOFTBODY SPS No Body Collision/
+!compat/SOFTBODY SPS No Body Collision/**
 !compat/Personal Physics/
 !compat/Personal Physics/**

@@ -6,7 +6,7 @@ a compatible SOS, TNG or UBE six-bone genital mesh using
 
 The three XML profiles combine the SPS author's compatible shaft dynamics
 and collision exclusions with Goutou's SOFTBODY normal, soft and anal collision
-profiles. Each file contains exactly one `MaleGenitals` shape: the merged shape
+profiles. The balls hang freely under gravity and the shaft curves along its length (each of Gen02 to Gen06 has its own joint, looser toward the tip). Each file contains exactly one `MaleGenitals` shape: the merged shape
 retains SOFTBODY's weight thresholds and adds the SPS compatibility exclusions.
 
 Select this component only when SOFTBODY and a matching six-bone genital mesh

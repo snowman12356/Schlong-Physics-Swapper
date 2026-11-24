@@ -448,7 +448,6 @@
 		<shared>public</shared>
 		<no-collide-with-tag>MaleBody</no-collide-with-tag>
 		<no-collide-with-tag>MaleHands</no-collide-with-tag>
-		<no-collide-with-tag>Genitals</no-collide-with-tag>
 		<weight-threshold bone="NPC Head [Head]">0.2</weight-threshold>
 		<weight-threshold bone="NPC L Clavicle [LClv]">0.2</weight-threshold>
 		<weight-threshold bone="NPC R Clavicle [RClv]">0.2</weight-threshold>
@@ -501,22 +500,20 @@
 		<margin>1</margin>
 		<penetration>0</penetration>
 		<tag>ground</tag>
-		<no-collide-with-tag>scrotum</no-collide-with-tag>
 	</per-triangle-shape>
 
 	<per-triangle-shape name="VirtualGround">
 		<margin>1</margin>
 		<penetration>0</penetration>
 		<tag>ground</tag>
-		<no-collide-with-tag>scrotum</no-collide-with-tag>
 	</per-triangle-shape>
 
-	<per-triangle-shape name="scotumcollision">
-		<margin>0.10</margin>
+	<per-triangle-shape name="scrotumcollision">
+		<margin>0.03</margin>
 		<penetration>0</penetration>
 		<tag>scrotum</tag>
-		<no-collide-with-tag>ground</no-collide-with-tag>
 		<shared>private</shared>
+		<no-collide-with-tag>ground</no-collide-with-tag>
 	</per-triangle-shape>
 
 	<per-triangle-shape name="MaleGenitals">
@@ -528,7 +525,6 @@
    		<no-collide-with-tag>vaginaskip</no-collide-with-tag>
 		<no-collide-with-tag>butt</no-collide-with-tag>
    		<no-collide-with-tag>Genitals</no-collide-with-tag>	
-		<no-collide-with-tag>MaleBody</no-collide-with-tag>	
 		<no-collide-with-tag>ground</no-collide-with-tag>	
 		<no-collide-with-tag>hands</no-collide-with-tag>
 		<no-collide-with-tag>3BCA_Br</no-collide-with-tag>
@@ -609,6 +605,7 @@
 		<no-collide-with-tag>VirtualLegs</no-collide-with-tag>
 		<no-collide-with-tag>VirtualPenis</no-collide-with-tag>
 			<weight-threshold bone="NPC Genitals06 [Gen06]">0.1</weight-threshold>
+		<no-collide-with-tag>MaleBody</no-collide-with-tag>
 	</per-triangle-shape>
 
 	<per-triangle-shape name="Werewolf Genitals">
@@ -729,7 +726,7 @@
 	</per-triangle-shape>
 
 	<per-triangle-shape name="penis">
-		<margin>0.1</margin>			
+		<margin>0.15</margin>			
 		<penetration>0.1</penetration>
 		<wind-effect>0</wind-effect>	
 		<shared>public</shared>
@@ -761,7 +758,7 @@
 	</per-triangle-shape>
 
 	<per-triangle-shape name="peniscollision">
-		<margin>0.1</margin>			
+		<margin>0.15</margin>			
 		<penetration>0.1</penetration>
 		<wind-effect>0</wind-effect>	
 		<shared>public</shared>
@@ -770,7 +767,6 @@
 		<no-collide-with-tag>butt</no-collide-with-tag>
    		<no-collide-with-tag>Genitals</no-collide-with-tag>	
 		<no-collide-with-tag>MaleBody</no-collide-with-tag>	
-		<no-collide-with-tag>ground</no-collide-with-tag>	
 		<no-collide-with-tag>hands</no-collide-with-tag>
 		<no-collide-with-tag>3BCA_Br</no-collide-with-tag>
 		<no-collide-with-tag>3BCA_Belly</no-collide-with-tag>
@@ -790,6 +786,7 @@
 			<weight-threshold bone="NPC Genitals04 [Gen04]">0.1</weight-threshold>
 			<weight-threshold bone="NPC Genitals05 [Gen05]">0.1</weight-threshold>
 			<weight-threshold bone="NPC Genitals06 [Gen06]">0.1</weight-threshold>
+		<no-collide-with-tag>ground</no-collide-with-tag>
 	</per-triangle-shape>
 
 	<per-triangle-shape name="MaleGenitals Average">
