@@ -62,7 +62,7 @@ requiring users to repair the state manually.
   commit `738b2ee`, tag `v2.0.0`) and 2.0.1 (2026-09-15, commit `7aa9f80`, tag
   `v2.0.1`, Unicode-filename startup crash hotfix). Nexus page (mod 188174) was
   updated for 2.0.0. 2.3.0.0 is unpublished.
-- **2.3.0.3 bridge crash fix (built 2026-11-24, installed 2026-11-24 19:49 with Skyrim closed, 15 files hash-verified, rollback `out/backups/testmod-before-bridgev6-20261124-194938`; not checked in game):**
+- **2.3.0.3 bridge crash fix (built 2026-11-24, installed 2026-11-24 19:49 with Skyrim closed, 15 files hash-verified, rollback `out/backups/testmod-before-bridgev6-20261124-194938`; committed `4f90c69`, pushed, `main` fast-forwarded, tag and GitHub release `v2.3.0.3` published 2026-11-24 (Nexus upload left to the owner); not checked in game):**
   the same reporter on 2.3.0.2: no load crash, but the same engine crash (ID 104802+0xAE inside
   `DispatchStaticCall`, called directly from SPS `DispatchStatic`) when arousal was raised to 80,
   on the first rise step (`SOSBend-9`): TNG's graph refused `NotifyAnimationGraph`, so the Papyrus
