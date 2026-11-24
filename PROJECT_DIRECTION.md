@@ -62,7 +62,7 @@ requiring users to repair the state manually.
   commit `738b2ee`, tag `v2.0.0`) and 2.0.1 (2026-09-15, commit `7aa9f80`, tag
   `v2.0.1`, Unicode-filename startup crash hotfix). Nexus page (mod 188174) was
   updated for 2.0.0. 2.3.0.0 is unpublished.
-- **2.3.0.4 handjob/blowjob stay soft (built 2026-11-24, installed 2026-11-24 20:16 with Skyrim closed, 15 files hash-verified, rollback `out/backups/testmod-before-pparole-20261124-201643`; the MO2 `Schlong` mod with 2.3.0.0 still wins unless disabled; not checked in game):**
+- **2.3.0.4 handjob/blowjob stay soft (built 2026-11-24, installed 2026-11-24 20:16 with Skyrim closed, 15 files hash-verified, rollback `out/backups/testmod-before-pparole-20261124-201643`; the MO2 `Schlong` mod with 2.3.0.0 still wins unless disabled; committed `64792e7`, pushed, `main` fast-forwarded, tag and GitHub release `v2.3.0.4` published 2026-11-24 (Nexus upload left to the owner); not checked in game):**
   user reports that handjobs and blowjobs stay floppy. The owner's 2026-11-24 19:58-20:06 log (game
   running **2.3.0.0** from a separate MO2 mod `D:\Modding\mods\Schlong`, DLL `00FB6947...`, which
   wins over the test mod) shows two SexLab scenes with `PPA role update: Penetrating / top` followed
