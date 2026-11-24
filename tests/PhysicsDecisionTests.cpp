@@ -113,7 +113,14 @@ int main(int argc, char** argv)
     sexLab.entryCBPC = false;
     sexLab.recentPPARoleValid = true;
     sexLab.recentPPARole = SPS::Core::SceneRole::penetrating;
-    Expect(!SPS::Core::SexLabSceneWantsCBPC(settings, sexLab), "valid SexLab receiving role wins conflicting PPA role");
+    Expect(SPS::Core::SexLabSceneWantsCBPC(settings, sexLab), "PPA penetrating role wins a SexLab receiving role (contact-based P+ misses a soft shaft)");
+
+    sexLab.recentPPARole = SPS::Core::SceneRole::receiving;
+    Expect(!SPS::Core::SexLabSceneWantsCBPC(settings, sexLab), "SexLab receiving role with PPA receiving keeps the bottom behaviour");
+
+    sexLab.recentPPARoleValid = false;
+    Expect(!SPS::Core::SexLabSceneWantsCBPC(settings, sexLab), "SexLab receiving role without PPA keeps the bottom behaviour");
+    sexLab.recentPPARoleValid = true;
 
     sexLab.role = SPS::Core::SceneRole::penetrating;
     sexLab.recentPPARole = SPS::Core::SceneRole::receiving;
@@ -122,7 +129,11 @@ int main(int argc, char** argv)
     sexLab.role = SPS::Core::SceneRole::unknown;
     sexLab.recentPPARole = SPS::Core::SceneRole::penetrating;
     sexLab.currentCBPC = false;
-    Expect(!SPS::Core::SexLabSceneWantsCBPC(settings, sexLab), "valid unknown SexLab role preserves the configured fallback despite PPA");
+    Expect(SPS::Core::SexLabSceneWantsCBPC(settings, sexLab), "PPA penetrating role wins an unidentified SexLab role");
+
+    sexLab.recentPPARole = SPS::Core::SceneRole::receiving;
+    Expect(!SPS::Core::SexLabSceneWantsCBPC(settings, sexLab), "valid unknown SexLab role preserves the configured fallback despite a PPA receiving role");
+    sexLab.recentPPARole = SPS::Core::SceneRole::penetrating;
 
     sexLab.roleValid = false;
     Expect(SPS::Core::SexLabSceneWantsCBPC(settings, sexLab), "PPA penetrating role is used when the SexLab role query is unavailable");

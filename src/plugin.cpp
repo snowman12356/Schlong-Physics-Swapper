@@ -60,7 +60,7 @@ namespace Mod {
 namespace fs = std::filesystem;
 
 constexpr auto kName = "Schlong Physics Swapper";
-constexpr auto kVersion = "2.3.0.3";
+constexpr auto kVersion = "2.3.0.4";
 constexpr auto kIni = "Data/SKSE/Plugins/SchlongPhysicsSwapper.ini";
 constexpr auto kLegacyIni = "Data/SKSE/Plugins/UBEPhysicsSwitch.ini";
 constexpr auto kReport = "Data/SKSE/Plugins/SchlongPhysicsSwapper_Diagnostics.txt";
@@ -359,10 +359,15 @@ SPS::API::SceneRole PlayerSceneRoleForAPI() {
     const auto now = NowMs();
     const auto& state = sceneController.State();
     if (state.ostim.active.load() && state.ostim.roleValid.load()) return toRole(state.ostim.role.load());
-    if (state.sexLab.active.load() && state.sexLab.roleValid.load()) return toRole(state.sexLab.role.load());
-    if (state.ppa.sceneActive.load() && state.ppa.sceneRoleValid.load() &&
-        now - state.ppa.lastUpdateMs.load() < 3000)
-        return toRole(state.ppa.sceneRole.load());
+    const bool ppaValid = state.ppa.sceneActive.load() && state.ppa.sceneRoleValid.load() &&
+        now - state.ppa.lastUpdateMs.load() < 3000;
+    if (state.sexLab.active.load() && state.sexLab.roleValid.load()) {
+        // Same rule as the physics decision (SexLabSceneWantsCBPC): a PPA
+        // penetrating role wins a SexLab receiving or unidentified one.
+        if (ppaValid && state.ppa.sceneRole.load() == 2) return SceneRole::Penetrating;
+        return toRole(state.sexLab.role.load());
+    }
+    if (ppaValid) return toRole(state.ppa.sceneRole.load());
     return SceneRole::Unknown;
 }
 

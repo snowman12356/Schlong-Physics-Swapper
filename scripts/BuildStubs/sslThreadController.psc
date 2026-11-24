@@ -17,3 +17,8 @@ EndFunction
 Int Function GetThreadID()
     Return -1
 EndFunction
+
+; sslThreadModel.psc:1560 (P+ 2.19), a native on sslThreadModel. Diagnostic use only.
+String Function GetInteractionStringImpl(Actor akPosition)
+    Return ""
+EndFunction

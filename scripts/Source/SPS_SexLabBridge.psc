@@ -1,7 +1,7 @@
 Scriptname SPS_SexLabBridge Hidden
 
 Int Function GetSPSBridgeVersion() Global
-    Return 6
+    Return 7
 EndFunction
 
 ; Version 6: actor-level SexLab reads for SPS_PositionBridge, which must not
@@ -53,6 +53,23 @@ Int Function GetPlayerRole() Global
     EndIf
 
     Return ReadSexLabRole(sexLab.GetActorController(player), player)
+EndFunction
+
+; Version 7. Diagnostic: P+'s own description of the player's current interactions
+; (sslThreadModel.GetInteractionStringImpl), logged by the DLL when the SexLab
+; role changes so a wrong role can be traced to what P+ detected. "" when the
+; player is not in a P+ thread.
+String Function GetPlayerInteractionString() Global
+    Actor player = Game.GetPlayer()
+    SexLabFramework sexLab = Game.GetFormFromFile(0xD62, "SexLab.esm") as SexLabFramework
+    If player == None || sexLab == None
+        Return ""
+    EndIf
+    sslThreadController thread = sexLab.GetActorController(player)
+    If thread == None
+        Return ""
+    EndIf
+    Return thread.GetInteractionStringImpl(player)
 EndFunction
 
 ; Shared by GetPlayerRole and ReadActorRole (used by SPS_PositionBridge v6).

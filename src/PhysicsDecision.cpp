@@ -103,6 +103,16 @@ bool SexLabSceneWantsCBPC(const Settings& settings, const SexLabDecisionState& s
     }
 
     if (state.roleValid) {
+        // Penetrating from either source wins, as it does inside SexLab when a
+        // stage registers both directions. P+ detects roles by contact, and a
+        // shaft held soft at scene start never reaches the partner's hand or
+        // mouth, so a handjob or blowjob kept reading as receiving and the
+        // shaft stayed soft for the whole scene while PPA, which reads the
+        // animation, already reported the player as the penetrating partner.
+        if (state.role != SceneRole::penetrating && state.recentPPARoleValid &&
+            state.recentPPARole == SceneRole::penetrating) {
+            return true;
+        }
         if (state.role == SceneRole::receiving) {
             return BottomWantsCBPC(settings, state);
         }

@@ -33,7 +33,7 @@ constexpr std::uint32_t kMaxRemembered = 256;
 constexpr std::uint32_t kManagedRecord = Tag('M', 'N', 'P', 'C');
 constexpr std::uint32_t kManagedRecordVersion = 1;
 
-constexpr int kSexLabBridgeVersion = 6;
+constexpr int kSexLabBridgeVersion = 7;
 constexpr std::int64_t kDescribeEveryMs = 5000;
 constexpr std::int64_t kReapplyEveryMs = 10000;
 

@@ -62,6 +62,23 @@ requiring users to repair the state manually.
   commit `738b2ee`, tag `v2.0.0`) and 2.0.1 (2026-09-15, commit `7aa9f80`, tag
   `v2.0.1`, Unicode-filename startup crash hotfix). Nexus page (mod 188174) was
   updated for 2.0.0. 2.3.0.0 is unpublished.
+- **2.3.0.4 handjob/blowjob stay soft (built 2026-11-24, installed 2026-11-24 20:16 with Skyrim closed, 15 files hash-verified, rollback `out/backups/testmod-before-pparole-20261124-201643`; the MO2 `Schlong` mod with 2.3.0.0 still wins unless disabled; not checked in game):**
+  user reports that handjobs and blowjobs stay floppy. The owner's 2026-11-24 19:58-20:06 log (game
+  running **2.3.0.0** from a separate MO2 mod `D:\Modding\mods\Schlong`, DLL `00FB6947...`, which
+  wins over the test mod) shows two SexLab scenes with `PPA role update: Penetrating / top` followed
+  by `SexLab role: Receiving / bottom`, staying SMP; a third scene read SexLab `Penetrating` and went
+  CBPC. SPS honoured every valid SexLab role over PPA (rule written while P+ 2.19 roles were
+  unreadable; 2.3.0.0 is the first release that reads them). Likely cause (unproven): P+ detects
+  interactions by contact, and the shaft held soft at scene start never reaches the hand or mouth,
+  so P+ never flags `pHandJob`/`pOral` and the role locks as receiving. The P+ side mapping itself
+  matches P+'s own `sslActorAlias.IsGenitalInteraction`. Fix: `SexLabSceneWantsCBPC` lets a recent
+  PPA `Penetrating` role win a SexLab receiving or unknown role (PPA receiving never overrides
+  SexLab penetrating); the API role follows. New diagnostic `SPS_SexLabBridge` v7
+  `GetPlayerInteractionString()` (P+ `GetInteractionStringImpl`) logged as `SexLab P+ interactions
+  for the player (<role>): ...` on each SexLab role change. Decision tests updated (5 new cases).
+  Transient decision only, no co-save/INI change: safe for existing saves; DLL and PEX paired.
+  Build 0 warnings, tests and package guards pass. DLL `2B3F6C58...1053`, ZIP `947C5A9D...07C9`.
+  Unknown: whether the owner's character gave or received in the two soft scenes.
 - **2.3.0.3 bridge crash fix (built 2026-11-24, installed 2026-11-24 19:49 with Skyrim closed, 15 files hash-verified, rollback `out/backups/testmod-before-bridgev6-20261124-194938`; committed `4f90c69`, pushed, `main` fast-forwarded, tag and GitHub release `v2.3.0.3` published 2026-11-24 (Nexus upload left to the owner); not checked in game):**
   the same reporter on 2.3.0.2: no load crash, but the same engine crash (ID 104802+0xAE inside
   `DispatchStaticCall`, called directly from SPS `DispatchStatic`) when arousal was raised to 80,
@@ -420,8 +437,11 @@ Not checked in game.
   Journal/MCM closes. OSL `GetArousal` decays a set value toward a baseline
   unless `SetActorArousalLocked(actor, true)` is applied after setting it; the
   revert is not fixed (epsilon and the installed commit unverified).
-- **Scene roles:** every valid SexLab result is honoured (including a temporary
-  unknown); PPA is used only when the SexLab role query is unavailable. SOFTBODY
+- **Scene roles:** a valid SexLab result is honoured (including a temporary
+  unknown), except that a live PPA `Penetrating` role wins a SexLab `Receiving` or
+  unknown one (2.3.0.4: P+ detects by contact and missed handjobs/blowjobs on a soft
+  shaft); PPA is otherwise used only when the SexLab role query is unavailable. The
+  V4/V5 API role follows the same rule. SOFTBODY
   3.37.2 reload events are recovered automatically by reasserting the already
   selected owner when `HDT SMP Object - Simple.esp` is loaded. Disabling SPS
   waits for the in-flight transaction and restores plain SMP.
