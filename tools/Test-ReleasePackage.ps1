@@ -34,14 +34,6 @@ $requiredFiles = @(
     'Optional\OStim\Scripts\SPS_OStimBridge.pex',
     'Optional\OSL Legacy\Scripts\OSLAroused_Main.pex',
     'Optional\OSL Legacy\Source\OSL Aroused Compatibility\OSLAroused_Main.psc',
-    'Optional\SOFTBODY SPS\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml',
-    'Optional\SOFTBODY SPS\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsSoft.xml',
-    'Optional\SOFTBODY SPS\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsToAnus.xml',
-    'Optional\SOFTBODY SPS\README.md',
-    'Optional\SOFTBODY SPS No Body Collision\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml',
-    'Optional\SOFTBODY SPS No Body Collision\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsSoft.xml',
-    'Optional\SOFTBODY SPS No Body Collision\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsToAnus.xml',
-    'Optional\SOFTBODY SPS No Body Collision\README.md',
     'Optional\SOFTBODY SPS Natural Hang\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml',
     'Optional\SOFTBODY SPS Natural Hang\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsSoft.xml',
     'Optional\SOFTBODY SPS Natural Hang\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsToAnus.xml',
@@ -108,9 +100,7 @@ $physicsChoices = @($module.SelectNodes('//installStep[@name="Physics XML compat
 $expectedPhysicsChoices = @(
     'I have my own compatible physics',
     'Use my personal physics',
-    'Use my SOFTBODY physics',
-    'Use my SOFTBODY physics (no body collision)',
-    'Use my SOFTBODY physics (natural hang)'
+    'Use my SOFTBODY physics'
 )
 if (($physicsChoices -join '|') -ne ($expectedPhysicsChoices -join '|')) {
     throw 'The FOMOD physics choices or their order do not match the supported first-person wording.'
@@ -140,7 +130,7 @@ foreach ($xmlFile in $smpXmlFiles) {
     }
 }
 
-foreach ($softbodyOption in @('SOFTBODY SPS', 'SOFTBODY SPS No Body Collision', 'SOFTBODY SPS Natural Hang')) {
+foreach ($softbodyOption in @('SOFTBODY SPS Natural Hang')) {
 $softbodySpsRoot = Join-Path $resolvedPackage "Optional\$softbodyOption\SKSE\Plugins\hdtSkinnedMeshConfigs"
 foreach ($fileName in @('MaleGenitals.xml', 'MaleGenitalsSoft.xml', 'MaleGenitalsToAnus.xml')) {
     [xml]$combined = Get-Content -LiteralPath (Join-Path $softbodySpsRoot $fileName) -Raw

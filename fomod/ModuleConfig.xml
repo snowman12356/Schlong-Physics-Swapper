@@ -41,25 +41,7 @@
               <typeDescriptor><type name="Optional" /></typeDescriptor>
             </plugin>
             <plugin name="Use my SOFTBODY physics">
-              <description>This installs my combined normal, soft and anal profiles with six-bone shaft physics and GT SOFTBODY 3.37.2 collisions. The balls hang freely under gravity, the shaft curves along its length, and the shaft and balls can collide with each other, the thighs and the pelvis. Choose it if you use SOFTBODY with a compatible SOS, TNG or UBE six-bone mesh, and make SPS win conflicts for the three MaleGenitals XML files.</description>
-              <files>
-                <file source="Optional\SOFTBODY SPS\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml" destination="SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml" priority="10" />
-                <file source="Optional\SOFTBODY SPS\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsSoft.xml" destination="SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsSoft.xml" priority="10" />
-                <file source="Optional\SOFTBODY SPS\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsToAnus.xml" destination="SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsToAnus.xml" priority="10" />
-              </files>
-              <typeDescriptor><type name="Optional" /></typeDescriptor>
-            </plugin>
-            <plugin name="Use my SOFTBODY physics (no body collision)">
-              <description>Same as "Use my SOFTBODY physics" but the shaft and balls do not collide with the thighs, pelvis or the virtual ground shapes. Choose it instead of the standard SOFTBODY option, not in addition, and make SPS win conflicts for the three MaleGenitals XML files.</description>
-              <files>
-                <file source="Optional\SOFTBODY SPS No Body Collision\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml" destination="SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml" priority="10" />
-                <file source="Optional\SOFTBODY SPS No Body Collision\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsSoft.xml" destination="SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsSoft.xml" priority="10" />
-                <file source="Optional\SOFTBODY SPS No Body Collision\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsToAnus.xml" destination="SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsToAnus.xml" priority="10" />
-              </files>
-              <typeDescriptor><type name="Optional" /></typeDescriptor>
-            </plugin>
-            <plugin name="Use my SOFTBODY physics (natural hang)">
-              <description>Same SOFTBODY collisions as "Use my SOFTBODY physics", with my own heavier hang: more gravity on the shaft and balls, the shaft rests closer to the balls and curves further down, and the balls move more and hang correctly when you bend over. Tuned on one large mesh, so it may clip on a smaller one. Choose it instead of the other SOFTBODY options, not in addition, and make SPS win conflicts for the three MaleGenitals XML files.</description>
+              <description>This installs my combined normal, soft and anal profiles with GT SOFTBODY 3.37.2 collisions and my own heavier hang: more gravity on the shaft and balls, the shaft rests closer to the balls and curves further down, and the balls move more and hang correctly when you bend over. Tuned on one large mesh, so it may clip on a smaller one. Choose it if you use SOFTBODY with a compatible SOS, TNG or UBE six-bone mesh, and make SPS win conflicts for the three MaleGenitals XML files.</description>
               <files>
                 <file source="Optional\SOFTBODY SPS Natural Hang\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml" destination="SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml" priority="10" />
                 <file source="Optional\SOFTBODY SPS Natural Hang\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsSoft.xml" destination="SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsSoft.xml" priority="10" />

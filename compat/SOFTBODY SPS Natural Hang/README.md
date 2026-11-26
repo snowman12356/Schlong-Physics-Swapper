@@ -15,12 +15,11 @@ heavier, more natural hang:
   correctly when the character bends over.
 
 It was tuned for one large mesh. Check it on your own mesh: on a smaller mesh the
-shaft may sit too close to the balls and clip. If it does, choose "Use my SOFTBODY
-physics" instead.
+shaft may sit too close to the balls and clip. If it does, use your own SOFTBODY
+XMLs and choose "I have my own compatible physics".
 
 Select this component only when SOFTBODY and a matching six-bone genital mesh are
-installed, and choose it instead of the other SOFTBODY options, not in addition.
-The SPS mod must win conflicts for `MaleGenitals.xml`, `MaleGenitalsSoft.xml`
+installed. The SPS mod must win conflicts for `MaleGenitals.xml`, `MaleGenitalsSoft.xml`
 and `MaleGenitalsToAnus.xml`. In MO2, place SPS below SOFTBODY and other mods that
 provide those files. After installing, restart Skyrim or use SPS Repair current
 physics once so FSMP reloads the active profile.

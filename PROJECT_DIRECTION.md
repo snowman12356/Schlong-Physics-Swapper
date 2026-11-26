@@ -159,7 +159,18 @@ also in git history and the vault dev logs).
    The user skipped the addon-off test and declined both fixes (raise the
    threshold, hysteresis in code). Do nothing on this unless asked. Vault note:
    `Debugging/SPS Shaft Regrowth After Reset`.
-2. **Player owner handoff re-triggering.** *Update 2026-11-24 (owner log 20:54-21:19, 2.3.0.4):*
+2. **Player owner handoff re-triggering.** *Update 2026-11-26 (owner log 22:13-22:37, packaged
+   2.3.0.5): 11 `Player mesh changed; guarded erect-physics reconnect queued` lines, all in
+   erect stretches with SPS Arousal Morphs enabled (bursts 22:22:27-22:52 and 22:24:00-22:41).
+   After the addon was disabled in its menu (22:32:42) the next 2 min 12 s erect stretch
+   (22:35:09-22:37:21, no scene) had none. CORRECTION (later log, to 22:45): 10 more mesh-changed
+   lines came at 22:37:36-22:41:51 with the addon still off, starting the second a SexLab/PPA scene
+   began (22:37:33; `SOFTBODY scene reload` lines every ~30 s, `Physics owner re-check scheduled
+   after the player's SOFTBODY scene reload`). So there are two cases: (a) outside a scene, bursts
+   only while the addon was on (one quiet addon-off stretch, correlation, mechanism unproven);
+   (b) during a scene, repeated mesh-change reconnects tied to SOFTBODY's scene reloads, addon off.
+   Case (b) was not investigated (is each reload a real mesh swap, or does SPS over-react). Owner
+   decision (case a): ship 2.3.0.5 with this as a known issue; no code change yet.* *Update 2026-11-24 (owner log 20:54-21:19, 2.3.0.4):*
    10 `Player mesh changed; refreshing its SMP physics` and 4 erect reconnects in 25 min, in
    chains such as 21:11:04 -> 05.5 -> 12.5 -> 23.5 and 21:13:21 -> 28.7 -> 32.7: each SPS reset
    transaction takes 4-6 s, longer than its own 3 s `ignoreNodeEventsUntilMs`, so the NiNode
@@ -250,7 +261,10 @@ also in git history and the vault dev logs).
    working XMLs are still outstanding. The SOFTBODY PPA patch v3.0 supplies no
    dynamic shaft chain, so it must not replace SPS profiles. See
    `docs/PREDATOR_HIMBO_COMPATIBILITY_2026-09-14.md`.
-6. **FOMOD natural-hang option** ("Use my SOFTBODY physics (natural hang)"). *Rebuilt
+6. **FOMOD SOFTBODY option.** *Owner decision 2026-11-26 (late): the package ships only this
+   one SOFTBODY preset, named "Use my SOFTBODY physics"; the older "SOFTBODY SPS" and "No Body
+   Collision" presets are no longer packaged (their `compat/` folders remain in the repo).*
+   Natural-hang option, *rebuilt
    2026-11-26* from the owner's working override (`SOFTBODY True Soft Shaft - SPS`, with its
    duplicate no-collide tags removed): `compat/SOFTBODY SPS Natural Hang/` (three XMLs and
    README), the fourth physics choice in `fomod/ModuleConfig.xml`, and entries in
