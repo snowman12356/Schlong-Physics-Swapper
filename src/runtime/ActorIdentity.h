@@ -48,7 +48,7 @@ bool RequestFuta(std::uint32_t formID, bool futa);
 void ResetActorIdentities();
 // Called once from plugin load.
 void RegisterActorIdentitySerialization();
-// Papyrus registration: SPS_SexLabBridge.ResolveIdentityActor.
+// Papyrus registration: ResolveIdentityActor on SPS_IdentityBridge and SPS_SexLabBridge.
 bool RegisterActorIdentityNatives(RE::BSScript::IVirtualMachine* vm);
 
 }

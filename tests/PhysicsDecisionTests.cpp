@@ -646,6 +646,18 @@ int main(int argc, char** argv)
     Expect(gate.Prepare("not-started") , "queued-only cancellation releases its slot");
     gate.Cancel();
     Expect(!gate.Enter("not-started"), "timed-out queued stack has no side effects when it finally starts");
+    {
+        // The timeout chooses its limit from Executing(): a queued stack may be
+        // cancelled early, a running one is left to finish.
+        SPS::Controllers::PapyrusOperationGate running;
+        Expect(running.Prepare("queued") && !running.Executing(), "a queued stack is not yet executing");
+        Expect(running.Enter("queued") && running.Executing(), "an entered stack is executing");
+        running.Cancel();
+        Expect(running.Executing() && !running.Current("queued"),
+            "a cancelled running stack still holds its lease and reads as executing");
+        running.Complete("queued");
+        Expect(!running.Executing() && !running.Busy(), "a returned stack is no longer executing");
+    }
 
     // A newer scene/arousal/disabled target must win even if the obsolete
     // stack reports success, or the request flips back before it has returned.

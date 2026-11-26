@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(SchlongPhysicsSwapper VERSION 2.3.0.3 LANGUAGES CXX)
+project(SchlongPhysicsSwapper VERSION 2.3.0.5 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(NOT DEFINED ENV{COMMONLIB_SSE_FOLDER})
@@ -79,6 +79,8 @@ add_library(SPSCore STATIC    src/api/ExternalControlRegistry.cpp
     src/controllers/PositionController.h
     src/controllers/PoseTargets.h
     src/controllers/RecoveryController.cpp
+    src/controllers/SoftRecoveryCoordinator.cpp
+    src/controllers/SoftRecoveryCoordinator.h
     src/controllers/RecoveryController.h
     src/PhysicsDecision.cpp
     src/PhysicsDecision.h
@@ -168,6 +170,13 @@ if(SPS_BUILD_CORE_TESTS)
   endif()
   add_test(NAME SPSActorRegistryTests COMMAND SPSActorRegistryTests)
   add_dependencies(${PROJECT_NAME} SPSActorRegistryTests)
+  add_executable(SPSSoftRecoveryTests tests/SoftRecoveryCoordinatorTests.cpp)
+  target_link_libraries(SPSSoftRecoveryTests PRIVATE SPSCore)
+  if(MSVC)
+    target_compile_options(SPSSoftRecoveryTests PRIVATE /W4)
+  endif()
+  add_test(NAME SPSSoftRecoveryTests COMMAND SPSSoftRecoveryTests)
+  add_dependencies(${PROJECT_NAME} SPSSoftRecoveryTests)
 endif()
 target_precompile_headers(${PROJECT_NAME} PRIVATE src/PCH.h)
 if(SPS_BUILD_API_TEST_PLUGIN)

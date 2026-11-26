@@ -1,10 +1,10 @@
 Scriptname SPS_PositionBridge Hidden
 
 Int Function GetSPSBridgeVersion() Global
-    Return 6
+    Return 7
 EndFunction
 
-; Version 6: no variable, parameter or cast in this script may use a SexLab (or
+; No variable, parameter or cast in this script may use a SexLab (or
 ; other optional mod) script type. The player's angle event is sent through
 ; this script for every user, and 2.3.0 to 2.3.0.2 crashed on the first call
 ; into it when SexLab was not installed and SexLabFramework could not be
@@ -28,7 +28,7 @@ Int Function ReadActorSceneState(Actor targetActor, Bool checkOSL, Bool checkSex
         EndIf
     EndIf
     If checkSexLab
-        ; Via SPS_SexLabBridge: this script must not declare SexLab types (v6).
+        ; Via SPS_SexLabBridge: this script must not declare SexLab types.
         ; A missing or older SexLab bridge returns 0 here: unavailable.
         If SPS_SexLabBridge.GetSPSBridgeVersion() < 6
             Return 0
@@ -47,7 +47,7 @@ Int Function ReadActorSceneState(Actor targetActor, Bool checkOSL, Bool checkSex
     Return 1
 EndFunction
 
-; Version 5: the role of an actor in a scene. 0 unknown, 1 receiving, 2
+; The role of an actor in a scene. 0 unknown, 1 receiving, 2
 ; penetrating, -1 SexLab requested but unresolvable. OStim first, then SexLab
 ; (SPS_SexLabBridge.ReadActorRole). Only the requested providers are touched.
 Int Function ReadActorSceneRole(Actor targetActor, Bool checkSexLab, Bool checkOStim) Global
@@ -150,12 +150,3 @@ Bool Function SendPlayerAnimationEvent(String eventName) Global
     Return True
 EndFunction
 
-; -1 keeps the angle configured in the INI (Position/PoseAngleDegrees).
-Bool Function SetPlayerPoseAngle(Int bend, Float degreesAtMaxBend) Global
-    Actor player = Game.GetPlayer()
-    If player == None
-        Return False
-    EndIf
-
-    Return SPS_PoseAngle.SetActorPoseAngle(player, bend, degreesAtMaxBend)
-EndFunction

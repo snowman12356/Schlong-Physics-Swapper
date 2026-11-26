@@ -173,10 +173,16 @@ private:
 
 bool RegisterPhysicsBridge(RE::BSScript::IVirtualMachine* vm)
 {
-    vm->RegisterFunction("EnterOperation", "SPS_FSMPBridge", EnterOperation);
-    vm->RegisterFunction("OperationCurrent", "SPS_FSMPBridge", OperationCurrent);
-    vm->RegisterFunction("QueueResetBarrier", "SPS_FSMPBridge", QueueResetBarrier);
-    vm->RegisterFunction("ResetBarrierPassed", "SPS_FSMPBridge", ResetBarrierPassed);
+    // The four lease guards only touch the mutex-guarded operation gate (and
+    // SKSE's thread-safe task queue), so they may run on the script thread.
+    // Without this flag each call waits for a main-thread frame, and a bridge
+    // stack makes about twenty of them, which stretched transactions towards
+    // their timeout. The actor guards below read actor state, so they keep
+    // the default main-thread synchronisation.
+    vm->RegisterFunction("EnterOperation", "SPS_FSMPBridge", EnterOperation, true);
+    vm->RegisterFunction("OperationCurrent", "SPS_FSMPBridge", OperationCurrent, true);
+    vm->RegisterFunction("QueueResetBarrier", "SPS_FSMPBridge", QueueResetBarrier, true);
+    vm->RegisterFunction("ResetBarrierPassed", "SPS_FSMPBridge", ResetBarrierPassed, true);
     vm->RegisterFunction("OwnershipRequestCurrent", "SPS_FSMPBridge",
         OwnershipRequestCurrent);
     vm->RegisterFunction("ResolveOwnershipRequest", "SPS_FSMPBridge",
@@ -190,6 +196,7 @@ bool PreparePhysicsOperation(const std::string& token) { return operationGate.Pr
 void CompletePhysicsOperation(const std::string& token) { operationGate.Complete(token); }
 void CancelPhysicsOperation(const std::string& token) { operationGate.Cancel(token); }
 bool PhysicsOperationBusy() { return operationGate.Busy(); }
+bool PhysicsOperationExecuting() { return operationGate.Executing(); }
 void ResetPhysicsOperations()
 {
     operationGate.ResetSession();
@@ -258,7 +265,7 @@ OwnershipDispatchResult SetActorPhysicsOwner(
     // Ownership work is serialized with every other engine mutation, so it must
     // take the same ledger slot as the player path rather than a parallel gate.
     if (!ownershipRequests.Prepare(token, { lease, handle.native_handle(),
-            Controllers::ActorRequestKind::ownership, nowMs + 10000, false, identity }, nowMs))
+            Controllers::ActorRequestKind::ownership, nowMs + kActorOwnershipValidityMs, false, identity }, nowMs))
         return OwnershipDispatchResult::failed;
     if (!operationGate.Prepare(token)) {
         ownershipRequests.Discard(token);
@@ -269,7 +276,9 @@ OwnershipDispatchResult SetActorPhysicsOwner(
     };
     // The callback releases both the gate lease and the ownership request when
     // the stack returns (or is disposed), so the request stays resolvable for
-    // the whole bridge call. Expiry (10 s) still bounds a stack that never runs.
+    // the whole bridge call. Expiry still bounds a stack that never returns;
+    // it matches the NPC controller's hard timeout so the stack is never
+    // invalidated while the controller still waits for it.
     if (DispatchStaticWithCallback("SPS_FSMPBridge", "SetActorOwnerV3",
             allowedAfterMs, nowMs, std::move(callback),
             RE::BSFixedString(token), useCBPC, preparation)) {

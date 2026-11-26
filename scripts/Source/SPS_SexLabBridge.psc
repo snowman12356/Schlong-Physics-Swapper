@@ -1,12 +1,14 @@
 Scriptname SPS_SexLabBridge Hidden
 
 Int Function GetSPSBridgeVersion() Global
-    Return 6
+    Return 9
 EndFunction
 
-; Version 6: actor-level SexLab reads for SPS_PositionBridge, which must not
-; declare SexLab types itself (see the note there).
-; 0 unavailable, 1 clear, 2 active.
+; Declares SexLab types, so the DLL calls this script only when SexLab is
+; loaded. Callers that also run without SexLab (SPS_PositionBridge,
+; SPS_IdentityBridge) reach it through global calls only.
+
+; Actor-level SexLab reads for SPS_PositionBridge. 0 unavailable, 1 clear, 2 active.
 Int Function ReadActorSceneState(Actor target) Global
     SexLabFramework sexLab = Game.GetFormFromFile(0xD62, "SexLab.esm") as SexLabFramework
     If target == None || sexLab == None
@@ -28,19 +30,19 @@ Int Function ReadActorRole(Actor target) Global
     Return ReadSexLabRole(sexLab.GetActorController(target), target)
 EndFunction
 
-; Version 5: FormID to Actor through the SPS DLL. Game.GetForm returns None for
-; FormIDs >= 0x80000000 (light-plugin FE and runtime-created FF references), and
+; FormID to Actor through the SPS DLL. Game.GetForm returns None for FormIDs
+; >= 0x80000000 (light-plugin FE and runtime-created FF references), and
 ; Game.GetFormEx does not compile against this project's script sources.
 Actor Function ResolveIdentityActor(Int formID) Global Native
 
-Bool Function IsPlayerActive() Global
-    Actor player = Game.GetPlayer()
-    SexLabFramework sexLab = Game.GetFormFromFile(0xD62, "SexLab.esm") as SexLabFramework
-    If player == None || sexLab == None
-        Return False
+; SexLab's sex for an actor (SexLabRegistry mapping: 0 male, 1 female, 2 futa,
+; 3 creature male, 4 creature female); baseSex = True ignores SexLab's override.
+; Called by SPS_IdentityBridge only when SexLab is loaded.
+Int Function GetActorSex(Actor target, Bool baseSex) Global
+    If target == None
+        Return -1
     EndIf
-
-    Return sexLab.IsActorActive(player)
+    Return SexLabRegistry.GetSex(target, baseSex)
 EndFunction
 
 ; Returns 0 when P+ cannot describe the current stage, 1 when the player is
@@ -55,7 +57,24 @@ Int Function GetPlayerRole() Global
     Return ReadSexLabRole(sexLab.GetActorController(player), player)
 EndFunction
 
-; Shared by GetPlayerRole and ReadActorRole (used by SPS_PositionBridge v6).
+; Diagnostic: P+'s own description of the player's current interactions
+; (sslThreadModel.GetInteractionStringImpl), logged by the DLL when the SexLab
+; role changes so a wrong role can be traced to what P+ detected. "" when the
+; player is not in a P+ thread.
+String Function GetPlayerInteractionString() Global
+    Actor player = Game.GetPlayer()
+    SexLabFramework sexLab = Game.GetFormFromFile(0xD62, "SexLab.esm") as SexLabFramework
+    If player == None || sexLab == None
+        Return ""
+    EndIf
+    sslThreadController thread = sexLab.GetActorController(player)
+    If thread == None
+        Return ""
+    EndIf
+    Return thread.GetInteractionStringImpl(player)
+EndFunction
+
+; Shared by GetPlayerRole and ReadActorRole (used by SPS_PositionBridge).
 ; 0 unknown, 1 receiving, 2 penetrating. Uses P+'s
 ; sslThreadModel.HasActiveInteractionAny(Actor akPosition, int[] aiInterTypes).
 ; Type IDs are the SexLabThread.psc constants as of P+ 2.19.0, which renumbered
@@ -115,34 +134,6 @@ Int Function GetPlayerThreadID() Global
         Return -1
     EndIf
     Return thread.GetThreadID()
-EndFunction
-
-; Version 4: identity and futa override for the player and managed NPCs.
-; The actor is resolved from its FormID through ResolveIdentityActor; the native
-; side only asks for actors it is already tracking (the player and managed NPCs).
-;
-; Returns "<addon>|<rank>|<baseSex>|<sex>". addon is "" when SOS AE reports no
-; schlong or was not read; the sex fields are -1 when SexLab was not read.
-; Returns "" when the FormID does not resolve to an actor.
-String Function DescribeActor(Int formID, Bool readSos, Bool readSexLab) Global
-    Actor target = ResolveIdentityActor(formID)
-    If target == None
-        Return ""
-    EndIf
-    String addon = ""
-    Int rank = 0
-    If readSos
-        ; SOS AE 4.0 getters only read; they never roll or assign an addon.
-        addon = SOSAE_SKSE.GetActorAddonName(target)
-        rank = SOSAE_SKSE.GetActorRank(target)
-    EndIf
-    Int baseSex = -1
-    Int sex = -1
-    If readSexLab
-        baseSex = SexLabRegistry.GetSex(target, True)
-        sex = SexLabRegistry.GetSex(target, False)
-    EndIf
-    Return addon + "|" + rank + "|" + baseSex + "|" + sex
 EndFunction
 
 ; futa = True: SexLab treats the actor as futa whatever its base sex (the menu decides

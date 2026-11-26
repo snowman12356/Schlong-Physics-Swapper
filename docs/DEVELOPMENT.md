@@ -54,8 +54,8 @@ under the per-user `SPSBuild` cache rather than in the source tree.
 .\tools\Build-PapyrusBridge.ps1 -GameRoot '<Skyrim installation>'
 ```
 
-This compiles the six bridges (FSMP ownership, SexLab, position, pose angle,
-arousal and optional OStim) from `scripts\Source` using only the tracked declarations in
+This compiles the seven bridges (FSMP ownership, SexLab, identity, position,
+pose angle, arousal and optional OStim) from `scripts\Source` using only the tracked declarations in
 `scripts\BuildStubs`.
 The compiler writes the paired PEX files back to `scripts`, where release
 validation parses their actual signatures, global/native flags and version
@@ -74,7 +74,7 @@ Update the version in `CMakeLists.txt`, `src/plugin.cpp`, `fomod/info.xml` and
 The release command checks all version declarations and the environment,
 recompiles every Papyrus bridge, builds the DLL, creates the FOMOD ZIP, expands
 the ZIP into a temporary folder, validates compiled bridge contracts and contents,
-and verifies all thirteen DLL/PEX/PSC hashes against `SPSBuildManifest.json`.
+and verifies all fifteen DLL/PEX/PSC hashes against `SPSBuildManifest.json`.
 Failure-case tests reject incompatible version values, signatures/native flags,
 and mismatched DLL, compiled script or source files. `New-ReleasePackage.ps1`
 requires the receipt from `Build-Release.ps1`; changing any recorded input
@@ -124,3 +124,5 @@ that is not on GitHub's `main` branch, and never overwrites an existing release.
 ## Code structure
 
 New ownership policy should go into the testable core instead of adding more global decisions to `plugin.cpp`.
+The soft recovery coordinator (`src/controllers/SoftRecoveryCoordinator`) is the model:
+game-free decisions with unit tests, and `plugin.cpp` only supplying inputs and side effects.

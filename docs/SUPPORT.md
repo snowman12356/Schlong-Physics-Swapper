@@ -2,7 +2,7 @@
 
 Please include enough information to reproduce the problem:
 
-1. Open **SKSE Menu Framework > Schlong Physics Swapper > Troubleshooting**.
+1. Open **SKSE Menu Framework > Schlong Physics Swapper > Help**.
 2. Press **Check setup again**.
 3. If the problem happens on demand, press **Record 30 seconds** and
    reproduce it before the timer finishes.
@@ -35,8 +35,11 @@ SOFTBODY is detected automatically. SPS waits for its SexLab/OStim genital XML
 reloads to finish and then restores the selected physics owner. Most users
 should keep **I have my own compatible physics**. Alternatively choose **Use my
 personal physics** for the supplied general six-bone profile, or **Use my
-SOFTBODY physics** when GT SOFTBODY 3.37.2 is also installed. **Use my SOFTBODY physics (no body collision)** is the same profile without shaft and ball collision against the thighs, pelvis and virtual ground (choose one, not both). All supplied choices support compatible SOS, TNG and UBE six-bone meshes. For the SOFTBODY
-choice, make SPS win MO2 conflicts for
+SOFTBODY physics** when GT SOFTBODY 3.37.2 is also installed. **Use my SOFTBODY
+physics (no body collision)** is the same profile without shaft and ball
+collision against the thighs, pelvis and virtual ground (choose one, not both).
+All supplied choices support compatible SOS, TNG and UBE six-bone meshes. For
+either SOFTBODY choice, make SPS win MO2 conflicts for
 `MaleGenitals.xml`, `MaleGenitalsSoft.xml` and `MaleGenitalsToAnus.xml`; another
 winning copy can make the soft shaft rigid or prevent the erect angle from
 appearing. The diagnostic report records whether SOFTBODY was found but cannot
@@ -82,10 +85,16 @@ bridge scripts together.
 - `SPS-020`: A startup or queued quick-fix action timed out waiting for script
   execution or a physics handoff. The log and diagnostic report include the
   current Papyrus wait reason; a workload warning alone does not block SPS.
+- `SPS-021`: The SPS FSMP bridge script is missing; reinstall SPS.
+- `SPS-022`: SMP could not be proven on the player's shaft after SPS re-checked
+  it (or a soft rest rebuild could not be proven after two retries). Faster
+  HDT-SMP may have answered for the first-person skeleton, or the equipped
+  genital XML has no SMP shaft. Run `smp reset` in the console if the shaft
+  looks wrong.
 
 ## Suggested pinned Nexus post
 
-If something is not working, please open the mod's **Troubleshooting** page,
+If something is not working, please open the mod's **Help** page,
 check the setup and save a report. For problems you can repeat, record the next
 30 seconds and reproduce the issue before the timer ends.
 Attach the resulting text file with your schlong addon, Skyrim version and a

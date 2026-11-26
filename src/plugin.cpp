@@ -15,6 +15,7 @@
 #include "controllers/ArousalController.h"
 #include "controllers/ActorContext.h"
 #include "controllers/PhysicsOwnershipController.h"
+#include "controllers/SoftRecoveryCoordinator.h"
 #include "controllers/PositionController.h"
 #include "controllers/RecoveryController.h"
 #include "controllers/SceneController.h"
@@ -31,7 +32,6 @@
 #include "runtime/PapyrusGateway.h"
 #include "runtime/PhysicsOwnershipAdapter.h"
 #include "runtime/PositionBackendAdapter.h"
-#include "runtime/ShaftPoseTracker.h"
 #include "runtime/SosPoseAngle.h"
 #include "controllers/PoseTargets.h"
 
@@ -60,7 +60,7 @@ namespace Mod {
 namespace fs = std::filesystem;
 
 constexpr auto kName = "Schlong Physics Swapper";
-constexpr auto kVersion = "2.3.0.3";
+constexpr auto kVersion = "2.3.0.5";
 constexpr auto kIni = "Data/SKSE/Plugins/SchlongPhysicsSwapper.ini";
 constexpr auto kLegacyIni = "Data/SKSE/Plugins/UBEPhysicsSwitch.ini";
 constexpr auto kReport = "Data/SKSE/Plugins/SchlongPhysicsSwapper_Diagnostics.txt";
@@ -112,6 +112,33 @@ std::atomic<std::int64_t> playerBonesRefreshDueMs{ 0 };
 // Set by an armour change; the equipment follow-up spends it on one more soft
 // SMP reset after the late genital-node rebuild some outfits cause.
 std::atomic<bool> equipSecondResetPending{ false };
+// Last equip or unequip of armour that can cover or replace the genitals.
+// A player NiNode update without one (for example a RaceMenu BodyMorph apply)
+// gets a plain ownership check instead of a full SMP rest rebuild.
+std::atomic<std::int64_t> lastShaftEquipChangeMs{ 0 };
+constexpr std::int64_t kShaftEquipWindowMs = 8000;
+
+// Armour whose slots are all in this set never covers or replaces the
+// genital mesh: head, hair, hands, forearms, amulet, ring, feet, calves,
+// shield, long hair, circlet, ears, mouth, neck, face jewellery and the
+// decapitation slots. Anything else (body 32, pelvis 49/52, unnamed mod
+// slots, or an empty mask) keeps the full equipment recovery.
+bool ArmorCanAffectShaft(const RE::TESObjectARMO* armor) {
+    if (!armor) return true;
+    using Slot = RE::BGSBipedObjectForm::BipedObjectSlot;
+    constexpr std::uint32_t kNeverShaft =
+        static_cast<std::uint32_t>(Slot::kHead) | static_cast<std::uint32_t>(Slot::kHair) |
+        static_cast<std::uint32_t>(Slot::kHands) | static_cast<std::uint32_t>(Slot::kForearms) |
+        static_cast<std::uint32_t>(Slot::kAmulet) | static_cast<std::uint32_t>(Slot::kRing) |
+        static_cast<std::uint32_t>(Slot::kFeet) | static_cast<std::uint32_t>(Slot::kCalves) |
+        static_cast<std::uint32_t>(Slot::kShield) | static_cast<std::uint32_t>(Slot::kLongHair) |
+        static_cast<std::uint32_t>(Slot::kCirclet) | static_cast<std::uint32_t>(Slot::kEars) |
+        static_cast<std::uint32_t>(Slot::kModMouth) | static_cast<std::uint32_t>(Slot::kModNeck) |
+        static_cast<std::uint32_t>(Slot::kModFaceJewelry) |
+        static_cast<std::uint32_t>(Slot::kDecapitateHead) | static_cast<std::uint32_t>(Slot::kDecapitate);
+    const std::uint32_t mask = armor->GetSlotMask().underlying();
+    return mask == 0 || (mask & ~kNeverShaft) != 0;
+}
 // The angle the player held when a node refresh reset the applied bend. A
 // morph update (for example an arousal morph addon) raises the same player
 // NiNode event as a real mesh change, and the reconnect that follows used to
@@ -503,6 +530,13 @@ SPS::API::SceneRole ApiRoleFromInt(int value) {
 SPS::API::Result __cdecl APIGetAnyActorSceneRole(std::uint32_t actorFormID, SPS::API::SceneRole* role) {
     if (!role) return SPS::API::Result::InvalidArgument;
     if (actorFormID == SPS::API::kPlayerFormID) return APIGetActorSceneRole(actorFormID, role);
+    // A managed NPC's role is already read by its driver. Its own Papyrus query
+    // for the same actor competes with the API probe for one request slot, and
+    // the probe then answered with a stale role (2026-11-25 log).
+    if (const auto managed = SPS::Runtime::ReadManagedNpcApiState(actorFormID); managed && managed->sceneRole) {
+        *role = ApiRoleFromInt(*managed->sceneRole);
+        return SPS::API::Result::Success;
+    }
     int value = 0;
     switch (SPS::Runtime::ReadApiActorSceneRole(actorFormID, &value, papyrusDispatchAllowedAfterMs.load())) {
     case SPS::Runtime::ApiActorRead::ready:
@@ -566,8 +600,11 @@ SPS::API::Result __cdecl APIGetActorState(std::uint32_t actorFormID, SPS::API::A
             out.validFlags |= kStateSceneValid;
         }
         int role = 0;
-        if (SPS::Runtime::ReadApiActorSceneRole(actorFormID, &role,
-                papyrusDispatchAllowedAfterMs.load()) == SPS::Runtime::ApiActorRead::ready) {
+        if (const auto managed = SPS::Runtime::ReadManagedNpcApiState(actorFormID); managed && managed->sceneRole) {
+            out.role = ApiRoleFromInt(*managed->sceneRole);
+            out.validFlags |= kStateRoleValid;
+        } else if (SPS::Runtime::ReadApiActorSceneRole(actorFormID, &role,
+                       papyrusDispatchAllowedAfterMs.load()) == SPS::Runtime::ApiActorRead::ready) {
             out.role = ApiRoleFromInt(role);
             out.validFlags |= kStateRoleValid;
         }
@@ -894,6 +931,9 @@ std::atomic<std::int64_t> shaftSampleStartMs{0};
 
 // Diagnostic: after an SMP reset, log the local rotation (degrees, XYZ) of the six
 // shaft bones once per poll for 15 s, to show whether the bones move after the reset.
+// `span` is the world distance from Gen01 to Gen06 (game units). The shaft joints
+// have no linear freedom, so a changing span means the mesh or bone translation
+// changed, while a steady span with changing angles is the shaft swinging.
 void SampleShaftAfterReset() {
     const auto start = shaftSampleStartMs.load();
     if (start <= 0) return;
@@ -906,26 +946,20 @@ void SampleShaftAfterReset() {
         "NPC Genitals01 [Gen01]", "NPC Genitals02 [Gen02]", "NPC Genitals03 [Gen03]",
         "NPC Genitals04 [Gen04]", "NPC Genitals05 [Gen05]", "NPC Genitals06 [Gen06]" };
     std::string line = fmt::format("Shaft sample +{:.1f}s:", elapsed / 1000.0);
+    RE::NiAVObject* first = nullptr;
+    RE::NiAVObject* last = nullptr;
     for (int i = 0; i < 6; ++i) {
         auto* node = root->GetObjectByName(RE::BSFixedString(names[i]));
         if (!node) { line += fmt::format(" G{}=none", i + 1); continue; }
+        if (i == 0) first = node;
+        if (i == 5) last = node;
         float x = 0, y = 0, z = 0;
         node->local.rotate.ToEulerAnglesXYZ(x, y, z);
         constexpr float deg = 57.2957795f;
         line += fmt::format(" G{}=({:.1f},{:.1f},{:.1f}) s={:.2f}", i + 1, x * deg, y * deg, z * deg, node->local.scale);
     }
+    if (first && last) line += fmt::format(" span={:.2f}", first->world.translate.GetDistance(last->world.translate));
     Record(line);
-}
-
-// True when the six shaft bones' local rotations have changed by less than
-// 0.5 degrees since the previous call (at least ~400 ms apart) twice in a row.
-// SMP rebuilds its bodies from the skeleton as it is at reset time, so a reset
-// issued while the resting clip is still blending bakes a half-blended pose.
-// Returns true when the bones cannot be read, so a missing node never blocks it.
-bool ShaftPoseStable() {
-    static SPS::Runtime::ShaftPoseTracker tracker;
-    auto* player = RE::PlayerCharacter::GetSingleton();
-    return tracker.Stable(player ? player->Get3D() : nullptr, NowMs());
 }
 
 void CaptureState(std::string_view reason) {
@@ -1616,8 +1650,10 @@ void ApplyRequestedSoftBend(bool force = false, bool animate = false) {
     { std::scoped_lock lock(settingsLock); copy = settings; }
     if (!copy.positionControl || PPAOwnsPosition()) return;
 
-    // The soft pose is a bend stage: 0 sends SOSBend-9 (the lowest position),
-    // a supported FlaccidBend sends its own stage. SOSFlaccid is never sent.
+    // The soft pose: a supported FlaccidBend sends its own stage. Bend 0 is
+    // sent with flaccid=true, which ApplyPosition (PositionBackendAdapter.cpp)
+    // turns into SOSFlaccid on SOS once SMP owns the bones, and SOSBend-9 on
+    // TNG. This is the clip sent right after a clean rest rebuild.
     const bool customSoftAngle = copy.flaccidAngleControl && SoftAngleControlAvailable(copy.bendMethod);
     const int desired = customSoftAngle ? copy.flaccidBend : 0;
     playerContext.position.requestedBend.store(desired);
@@ -1754,107 +1790,78 @@ void RunSoftAngleRefresh() {
     Record("Soft angle changed; guarded player pose refresh queued");
 }
 
-bool RefreshSMPAfterPlayerMeshChange() {
-    if (!playerContext.physics.known.load() || playerContext.physics.usingCBPC.load()) return false;
-    if (ownershipController.Read().pending || PPAOwnsPosition()) {
-        playerContext.recovery.nodeRefreshDueMs.store(NowMs() + 750);
-        return false;
-    }
-    if (!PapyrusReadyForDispatch()) {
-        playerContext.recovery.nodeRefreshDueMs.store(NowMs() + 1000);
-        return false;
-    }
-    auto* player = RE::PlayerCharacter::GetSingleton();
-    if (!player || ::GetModuleHandleW(L"hdtsmp64.dll") == nullptr) return false;
+// ---- Soft recovery coordinator ---------------------------------------------
+// Decisions live in SPS::Controllers::SoftRecoveryCoordinator (tested); this
+// file supplies the live inputs and runs the transaction it asks for.
+SPS::Controllers::SoftRecoveryCoordinator softRecovery;
 
-    const auto now = NowMs();
-    playerContext.recovery.ignoreNodeEventsUntilMs.store(now + 3000);
-    SPS::Runtime::HoldPositionPapyrusFallback(now + 6000);
-    const bool dispatched = QueueOwnershipHandoff(false, SPS::Controllers::OwnershipPurpose::resetMesh);
-    if (!dispatched) return false;
-
-    Record("Player mesh changed; refreshing its SMP physics");
-    return true;
+void RequestSoftRecovery(std::string_view reason, bool bake, bool force = false) {
+    softRecovery.Request(reason, bake, force, NowMs());
+    logger::debug("Soft recovery requested: {}{}", reason, bake ? " (rebuild)" : "");
 }
 
-std::int64_t stableWaitStartMs = 0;
+void ClearSoftRecovery() { softRecovery.Clear(); }
 
-void RunSoftHandoffSMPReset() {
-    if (playerContext.physics.known.load() && playerContext.physics.usingCBPC.load()) {
-        stableWaitStartMs = 0;
-        playerContext.recovery.softHandoffResetDueMs.store(0);
-        playerContext.recovery.softHandoffResetUntilMs.store(0);
-        return;
-    }
-    const auto now = NowMs();
-    auto retry = [now](std::string_view reason) {
-        auto until = playerContext.recovery.softHandoffResetUntilMs.load();
-        if (until == 0) {
-            until = now + 10000;
-            playerContext.recovery.softHandoffResetUntilMs.store(until);
-        }
-        if (now < until) {
-            playerContext.recovery.softHandoffResetDueMs.store(now + 1000);
-            logger::debug("Soft SMP pose refresh is waiting for {}", reason);
-        } else {
-            playerContext.recovery.softHandoffResetUntilMs.store(0);
-            Record("SPS-019: Soft SMP pose refresh stopped before it could run", true);
-        }
-    };
-    if (PPAOwnsPosition()) {
-        // Active penetration alignment is expected to last longer than the
-        // normal retry window. Keep the refresh waiting until scene cleanup.
-        playerContext.recovery.softHandoffResetUntilMs.store(now + 10000);
-        playerContext.recovery.softHandoffResetDueMs.store(now + 1000);
-        return;
-    }
-    if (!playerContext.physics.known.load() || ownershipController.Read().pending) {
-        retry("the current ownership handoff");
-        return;
-    }
-    if (!PapyrusReadyForDispatch()) {
-        retry("Papyrus");
-        return;
-    }
-    auto* player = RE::PlayerCharacter::GetSingleton();
-    if (!player) {
-        retry("the player");
-        return;
-    }
-    if (::GetModuleHandleW(L"hdtsmp64.dll") == nullptr) {
-        playerContext.recovery.softHandoffResetUntilMs.store(0);
-        Record("SPS-019: Soft SMP pose refresh could not find Faster HDT-SMP", true);
-        return;
-    }
+// Why the player's scene is not over yet, or nullptr when it is. Matches the
+// scene priority rules: a SexLab or OStim scene only counts while SPS manages
+// that framework and its state is valid, and PPA must have let go.
+const char* PlayerSceneBusyReason(const Settings& copy) {
+    const auto& scenes = sceneController.State();
+    if (copy.sexLabOverride && scenes.sexLab.valid.load() && scenes.sexLab.active.load()) return "a SexLab scene";
+    if (copy.ostimOverride && scenes.ostim.active.load()) return "an OStim scene";
+    if (scenes.ppa.sceneActive.load() && NowMs() - scenes.ppa.lastUpdateMs.load() < 3000) return "PPA";
+    if (PPAOwnsPosition()) return "PPA";
+    return nullptr;
+}
 
-    // Wait (at most 6 s) for the shaft bones to stop moving before the rebuild,
-    // so SMP does not bake a pose that is still blending. After the cap the reset
-    // runs anyway, so this can only delay it.
-    if (stableWaitStartMs == 0) stableWaitStartMs = now;
-    if (now - stableWaitStartMs < 6000 && !ShaftPoseStable()) {
-        playerContext.recovery.softHandoffResetDueMs.store(now + 500);
-        logger::debug("Soft SMP pose refresh is waiting for the shaft pose to settle");
+// Clip the bake plays while the shaft is kinematic (bridge preparation 6):
+// 0-18 = SOSBend(index - 9), -1 = none. Always a bend stage: SOSFlaccid shows a
+// raised pose on kinematic bones (see ApplyPosition), so baking from it would
+// bake a raised rest. An unconfigured SOS rest gets SOSBend-9 here and its
+// SOSFlaccid resting clip after the bake, once SMP owns the bones.
+int SoftRestClipIndex(const Settings& copy) {
+    if (!copy.positionControl || copy.bendMethod == SPS::Runtime::kBendMethodPose) return -1;
+    const bool custom = copy.flaccidAngleControl && SoftAngleControlAvailable(copy.bendMethod);
+    return SPS::Core::PoseTargets::EventIndex(custom ? copy.flaccidBend : 0, TngLoaded()) + 9;
+}
+// The clip index the last bake was dispatched with (-1 = none).
+std::atomic<int> lastBakeClipIndex{ -1 };
+
+void RunSoftRecoveryCoordinator(const Settings& copy) {
+    using Coordinator = SPS::Controllers::SoftRecoveryCoordinator;
+    Coordinator::Inputs in;
+    in.now = NowMs();
+    in.sceneBusy = PlayerSceneBusyReason(copy);
+    in.enabled = copy.enabled;
+    in.ownerKnown = playerContext.physics.known.load();
+    in.ownerCBPC = playerContext.physics.usingCBPC.load();
+    in.handoffPending = ownershipController.Read().pending;
+    in.animating = playerContext.position.animating.load();
+    in.papyrusReady = PapyrusReadyForDispatch();
+    const auto plan = softRecovery.Evaluate(in);
+    if (plan.logLongWait && plan.waitingFor)
+        Record(fmt::format("SPS-019: Soft physics recovery has waited over a minute for {}; use Repair physics if the shaft looks wrong", plan.waitingFor), true);
+    if (plan.action != Coordinator::Action::confirm && plan.action != Coordinator::Action::bake) return;
+
+    bool doBake = plan.action == Coordinator::Action::bake;
+    if (doBake && (!FsmpActorApiAvailable() || ::GetModuleHandleW(L"hdtsmp64.dll") == nullptr)) doBake = false;
+    const bool queued = QueueOwnershipHandoff(false, doBake ? SPS::Controllers::OwnershipPurpose::bakeSoft :
+        SPS::Controllers::OwnershipPurpose::confirmSoft);
+    if (!queued) {
+        if (softRecovery.OnDispatchFailed(playerContext.physics.known.load()))
+            Record("SPS-019: Soft physics recovery could not be dispatched after several attempts", true);
         return;
     }
-    Record(now - stableWaitStartMs >= 6000
-        ? "Soft SMP reset: shaft pose still moving after 6 s, resetting anyway"
-        : fmt::format("Soft SMP reset: shaft pose stable after {} ms", now - stableWaitStartMs));
-    stableWaitStartMs = 0;
-
-    // The actor reset reloads meshes but does not run the global button's
-    // physics-world reset. The guarded soft reset also lets the six managed
-    // bones follow the skeleton briefly after rebuilding, then resumes SMP.
-    // Command completion still cannot prove the visible resting length.
-    playerContext.recovery.ignoreNodeEventsUntilMs.store(now + 3000);
-    SPS::Runtime::HoldPositionPapyrusFallback(now + 6000);
-    const bool dispatched = QueueOwnershipHandoff(false, SPS::Controllers::OwnershipPurpose::resetSoft);
-    if (!dispatched) {
-        retry("Faster HDT-SMP");
-        return;
+    const auto dispatchedAt = NowMs();
+    playerContext.recovery.ignoreNodeEventsUntilMs.store(dispatchedAt + 4000);
+    SPS::Runtime::HoldPositionPapyrusFallback(dispatchedAt + 6000);
+    if (plan.reasons.find("the game load") != std::string::npos) {
+        playerContext.recovery.lastLoadSmpResetMs.store(dispatchedAt);
+        ++playerContext.recovery.loadSmpResets;
     }
-
-    playerContext.recovery.softConfirmationDueMs.store(0);
-    Record("Soft SMP pose rebuild and ownership restoration queued");
+    softRecovery.OnDispatched(plan, doBake);
+    Record(fmt::format("Soft physics recovery: {} after {} ({} request{} merged)",
+        doBake ? "clean rest rebuild" : "ownership check", plan.reasons, plan.merged, plan.merged == 1 ? "" : "s"));
 }
 
 void ReportSmpHandoffProof(const SPS::Controllers::OwnershipCompletion& completion)
@@ -1878,6 +1885,43 @@ void ReportSmpHandoffProof(const SPS::Controllers::OwnershipCompletion& completi
     Record("SMP not proven: the handoff returned no bone sample", true);
 }
 
+// FSMP's actor calls (TogglePhysics, ResetPhysics) act on the first skeleton
+// owned by the actor, and FSMP re-sorts its skeleton list every frame with the
+// player's first- and third-person skeletons tied, so a call can land on the
+// first-person skeleton, which never has physics, and silently do nothing
+// (FSMP 4.1.1 dhdtPapyrusFunctions.cpp; ActorManager.cpp sort). The proof
+// sample is the only evidence of where a call landed, so it now drives a
+// bounded follow-up instead of only a log line.
+// Ask for one more clean rest rebuild, at most twice per two minutes.
+void RetrySoftBake(std::string_view reason) {
+    if (softRecovery.AllowBakeRetry(NowMs()))
+        RequestSoftRecovery(reason, true);
+    else
+        Record("SPS-022: The soft rest rebuild could not be proven after several attempts; "
+            "if the shaft looks wrong, run smp reset in the console or use Repair physics", true);
+}
+
+// An SMP handoff whose proof is short gets at most two plain re-checks
+// (CBPC stop, SMP enable, proof sample: no reset, no pose) through the soft
+// recovery coordinator. The count decays after two minutes.
+void FollowUpSmpProof(const SPS::Controllers::OwnershipCompletion& completion) {
+    using SPS::Controllers::ClassifySmpHandoff;
+    using SPS::Controllers::SmpHandoffProof;
+    using Purpose = SPS::Controllers::OwnershipPurpose;
+    if (completion.targetCBPC || !completion.success || completion.purpose == Purpose::bakeSoft ||
+        completion.purpose == Purpose::releaseCBPC || completion.purpose == Purpose::maintainCBPC) return;
+    const bool certain =
+        ClassifySmpHandoff(completion.dynamicBonesAfter, completion.boneCount) == SmpHandoffProof::certain;
+    using FollowUp = SPS::Controllers::SoftRecoveryCoordinator::ProofFollowUp;
+    const auto followUp = softRecovery.OnSmpProof(certain, NowMs());
+    if (followUp == FollowUp::recheck) {
+        RequestSoftRecovery("an SMP handoff that was not proven", false);
+    } else if (followUp == FollowUp::giveUp) {
+        Record("SPS-022: SMP could not be proven on the player's shaft after two re-checks; FSMP may be "
+            "answering for the first-person skeleton. If the shaft looks wrong, run smp reset in the console", true);
+    }
+}
+
 // The ownership completion runs inside the Papyrus VM's own stack-return
 // callback. A crash report (2.3.0, TNG, a few seconds after loading) shows the
 // engine faulting when this path dispatched SPS_PositionBridge.SendPlayerAnimationEvent
@@ -1897,6 +1941,9 @@ void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& comp
     if (!completion.matched) return;
 
     if (completion.superseded) {
+        // A superseded bake may have stopped after its SMP-off step, so the next
+        // bake may find the shaft kinematic.
+        if (completion.purpose == SPS::Controllers::OwnershipPurpose::bakeSoft) softRecovery.NoteBakeAborted();
         logger::debug("Outdated physics transaction retired; current policy will select the next owner");
         return;
     }
@@ -1912,6 +1959,19 @@ void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& comp
             logger::warn("SMP-off safeguard did not complete; ownership is unknown and will be recovered");
         // A single SMP-off command cannot acknowledge CBPC attachment, clear
         // unrelated repair errors, or restart the selected owner's bend timers.
+        return;
+    }
+
+    if (completion.purpose == SPS::Controllers::OwnershipPurpose::releaseCBPC) {
+        // CBPC stop only. The cached owner is untouched (it is still being
+        // decided); only the CBPC side is known to have been released.
+        if (completion.success) {
+            softRecovery.OnCbpcReleased();
+            playerContext.physics.cbpcConnected.store(false);
+            Record("CBPC released on the shaft after loading (CBPC forgets its stop flags on every load)");
+        } else {
+            logger::warn("CBPC release after loading did not complete; it is retried while the first decision waits");
+        }
         return;
     }
 
@@ -1946,6 +2006,21 @@ void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& comp
                 playerContext.recovery.cbpcConfirmationDueMs.store(now + 1000);
             logger::warn("Erect-state ownership confirmation did not complete; bounded retry queued");
             break;
+        case SPS::Controllers::OwnershipPurpose::bakeSoft:
+            // A failed bake may leave the shaft kinematic; ownership is marked
+            // unknown and re-established. Ask for at most two more bakes.
+            // The count decays after two minutes, so one failure much later
+            // still gets its retries.
+            softRecovery.NoteBakeAborted();
+            if (softRecovery.AllowBakeRetry(now))
+                RequestSoftRecovery("a rest rebuild that did not complete", true);
+            else
+                Record("SPS-019: Soft rest rebuild did not complete after several attempts; current ownership will be recovered", true);
+            break;
+        case SPS::Controllers::OwnershipPurpose::releaseCBPC:
+        case SPS::Controllers::OwnershipPurpose::maintainCBPC:
+            // Handled before this switch; listed so the switch stays complete.
+            break;
         case SPS::Controllers::OwnershipPurpose::resetSoft:
             if (now < playerContext.recovery.softHandoffResetUntilMs.load())
                 playerContext.recovery.softHandoffResetDueMs.store(now + 1000);
@@ -1972,19 +2047,42 @@ void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& comp
 
     ClearResolvedOwnerError();
     ReportSmpHandoffProof(completion);
+    FollowUpSmpProof(completion);
     using Purpose = SPS::Controllers::OwnershipPurpose;
     if (completion.purpose == Purpose::resetLoad || completion.purpose == Purpose::resetSoft ||
         completion.purpose == Purpose::resetAngle || completion.purpose == Purpose::resetMesh ||
-        completion.purpose == Purpose::reconnectMesh) {
+        completion.purpose == Purpose::reconnectMesh || completion.purpose == Purpose::bakeSoft) {
         ClearResolvedRefreshError();
         playerContext.recovery.ignoreNodeEventsUntilMs.store(now + 2000);
         // A post-fall soft reset follows a resting pose that was already sent and
         // has had time to blend. Sending SOSFlaccid again would replay the clip
         // after the reset and move the bones the reset just settled, so that one
         // case keeps the recorded pose and does not resend it.
-        const bool restingPoseAlreadyApplied = completion.purpose == Purpose::resetSoft &&
-            !completion.targetCBPC && playerContext.position.appliedBend.load() >= 0;
-        if (!restingPoseAlreadyApplied) playerContext.position.appliedBend.store(-1);
+        const bool baked = completion.purpose == Purpose::bakeSoft && !completion.targetCBPC;
+        const bool restingPoseAlreadyApplied = (completion.purpose == Purpose::resetSoft &&
+            !completion.targetCBPC && playerContext.position.appliedBend.load() >= 0);
+        // The bake already put its stage on the graph. That is the final soft
+        // pose for a configured soft angle and for TNG; an unconfigured SOS rest
+        // still needs its SOSFlaccid clip, sent now that SMP owns the bones.
+        bool bakedPoseFinal = false;
+        // A bake is clean only when the SMP-off step found the shaft dynamic
+        // (so it reached the body skeleton and the shaft took the resting clip)
+        // and every bone is dynamic after the rebuild. After an aborted bake the
+        // shaft may already be kinematic, so only the after-sample is required.
+        bool bakeClean = true;
+        if (baked) {
+            bakeClean = softRecovery.CheckBake(
+                completion.dynamicBonesBefore, completion.dynamicBonesAfter, completion.boneCount);
+        }
+        if (baked && bakeClean) {
+            softRecovery.OnBakeSucceeded();
+            Settings copy;
+            { std::scoped_lock lock(settingsLock); copy = settings; }
+            const bool custom = copy.flaccidAngleControl && SoftAngleControlAvailable(copy.bendMethod);
+            bakedPoseFinal = lastBakeClipIndex.load() >= 0 && (custom || TngLoaded());
+            if (bakedPoseFinal) playerContext.position.appliedBend.store(custom ? copy.flaccidBend : 0);
+        }
+        if (!bakedPoseFinal && !restingPoseAlreadyApplied) playerContext.position.appliedBend.store(-1);
         if (!completion.targetCBPC) shaftSampleStartMs.store(now);
         if (completion.purpose == Purpose::resetLoad) {
             playerContext.recovery.lastLoadSmpResetMs.store(now);
@@ -2003,10 +2101,21 @@ void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& comp
                 playerContext.position.settleDueMs.store(now + copy.settleDelayMs);
                 playerContext.position.confirmationDueMs.store(now + copy.settleDelayMs + 1500);
             }
-        } else if (!restingPoseAlreadyApplied) QueueSoftBendAfterCompletion();
-        Record(restingPoseAlreadyApplied
-            ? "Player SMP reset executed; resting pose kept (not replayed)"
-            : "Player physics preparation and owner handoff executed; pose update requested");
+        } else if (!restingPoseAlreadyApplied && !bakedPoseFinal) QueueSoftBendAfterCompletion();
+        if (baked && !bakeClean) {
+            Record(fmt::format("Soft SMP rest rebuild not proven: the SMP-off step found {}/{} dynamic bones "
+                "and {}/{} were dynamic after the rebuild; one more rebuild requested",
+                std::max(completion.dynamicBonesBefore, 0), completion.boneCount,
+                std::max(completion.dynamicBonesAfter, 0), completion.boneCount), true);
+            RetrySoftBake("a rest rebuild that was not proven");
+            return;
+        }
+        Record(baked ? fmt::format("Soft SMP rest rebuilt from the resting pose; SMP-off found {}/{} dynamic, SMP proof {}/{}",
+                std::max(completion.dynamicBonesBefore, 0), completion.boneCount,
+                std::max(completion.dynamicBonesAfter, 0), completion.boneCount)
+            : restingPoseAlreadyApplied
+            ? std::string("Player SMP reset executed; resting pose kept (not replayed)")
+            : std::string("Player physics preparation and owner handoff executed; pose update requested"));
         return;
     }
     if (completion.purpose == SPS::Controllers::OwnershipPurpose::confirmSoft) {
@@ -2102,6 +2211,12 @@ void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& comp
     }
     Record(fmt::format("Physics switched to {} ({}) after the ordered handoff completed",
         cbpc ? "CBPC" : "SMP", cbpc ? "erect" : "soft"));
+    if (cbpc && previousState == SPS::API::PhysicsState::SMP && completion.dynamicBonesBefore == 0) {
+        // SMP owned the shaft a moment ago, so its SMP-off sample should have
+        // found dynamic bones. None means the call may have landed on FSMP's
+        // first-person skeleton; the background SMP-off check repeats it.
+        Record("SMP-off sample found 0 dynamic bones on an SMP to CBPC switch; the background check will repeat the SMP-off");
+    }
     const auto currentState = cbpc ? SPS::API::PhysicsState::CBPC : SPS::API::PhysicsState::SMP;
     if (previousState != currentState) {
         // A real owner change is a genuine rise or fall, so the angle held
@@ -2139,6 +2254,10 @@ bool QueueOwnershipHandoff(
     // A timed-out/cancelled stack can still be retiring. Waiting for its lease
     // is not another failed physics attempt, and must not inflate SPS-010.
     if (!ownershipController.Read().pending && SPS::Runtime::PhysicsOperationBusy()) return false;
+    // The player bridge has no reset-only step: soft rest refreshes go through
+    // the coordinator's clean rebuild (bakeSoft, preparation 6). resetSoft is
+    // only used for managed NPCs (SPS_FSMPBridge.SetActorOwnerV3 preparation 5).
+    if (purpose == SPS::Controllers::OwnershipPurpose::resetSoft) return false;
     const auto begin = ownershipController.Begin(cbpc, purpose, softTransition, NowMs());
     if (begin.status == SPS::Controllers::OwnershipBeginStatus::alreadyPending)
         return true;
@@ -2149,19 +2268,21 @@ bool QueueOwnershipHandoff(
     const bool reset = purpose == Purpose::resetLoad ||
         purpose == Purpose::resetAngle || purpose == Purpose::resetMesh;
     const int preparation = purpose == Purpose::maintainCBPC ? 3 :
-        (purpose == Purpose::resetSoft ? 5 :
+        purpose == Purpose::releaseCBPC ? 7 :
+        (purpose == Purpose::bakeSoft ? 6 :
             (reset ? 1 : (purpose == Purpose::reconnectMesh ? 2 : 0)));
-    // resetSoft used preparation 4, which only toggled SMP off and on and left the
-    // shaft settled against the old pose. It now uses 5: the actor's
-    // DynamicHDT.ResetPhysics (the FSMP reset the user ran by hand) and nothing
-    // after it, because the CBPC stop and SMP re-enable that preparation 1 ends
-    // with moved the bones again about a second after the reset.
     // softBend >= 0 makes SPS_FSMPBridge send SOSFlaccid before its reset.
     // That clip is not the lowest pose, so it is no longer requested on the
     // graph path: the soft stage (SOSBend-9 or FlaccidBend) is sent natively by
     // ApplyRequestedSoftBend when the reset completes. Only the experimental
     // pose-angle method still uses the bridge's soft-angle step.
     int softBend = -1;
+    if (purpose == Purpose::bakeSoft) {
+        Settings copy;
+        { std::scoped_lock lock(settingsLock); copy = settings; }
+        softBend = SoftRestClipIndex(copy);
+        lastBakeClipIndex.store(softBend);
+    }
     if (purpose == Purpose::resetAngle) {
         std::scoped_lock lock(settingsLock);
         if (settings.bendMethod == SPS::Runtime::kBendMethodPose &&
@@ -2440,10 +2561,21 @@ void Tick() {
     ServicePlayerOslArousalWrite();
 
     ProcessPendingQuickAction();
-    const auto expired = ownershipController.Expire(now, 5000);
+    // A queued stack that never entered is retired after 5 s (it cannot enter
+    // once cancelled). A running stack is left to finish up to the hard limit:
+    // cancelling it between engine calls could leave the shaft kinematic or
+    // with neither engine attached, and observed transactions took 4-6 s.
+    // A stack can still enter between the Executing() read and the cancel
+    // below (the guards now run on the script thread). That stack then fails
+    // its next OperationCurrent check, before its first engine call, so the
+    // window costs a retry, never a half-done handoff.
+    const auto expired = ownershipController.Expire(now,
+        SPS::Runtime::PhysicsOperationExecuting() ? SPS::Runtime::kOwnershipRunningTimeoutMs :
+            SPS::Runtime::kOwnershipQueuedTimeoutMs);
     if (expired.matched) SPS::Runtime::CancelPhysicsOperation();
     HandleOwnershipCompletion(expired);
     if (!copy.enabled) {
+        ClearSoftRecovery();
         const auto ownership = ownershipController.Read();
         if (ownership.pending) {
             SetOwner(false, true);
@@ -2507,6 +2639,16 @@ void Tick() {
     // a needless soft handoff before the already-dispatched arousal query can
     // return. Leave the current mesh alone until a provider replies or the
     // bounded startup window expires.
+    // CBPC clears its per-node stop flags on every game load (CBPC 1.7.3
+    // main.cpp PostLoadGame), so while the first decision waits for arousal
+    // CBPC drives the shaft next to the SMP that FSMP rebuilt. Release CBPC
+    // once with a CBPC-only stop; the decision then picks the owner as before.
+    if (waitingForInitialArousal && softRecovery.CbpcReleaseWanted() && !ownershipController.Read().pending &&
+        FsmpActorApiAvailable() && PapyrusReadyForDispatch() &&
+        QueueOwnershipHandoff(false, SPS::Controllers::OwnershipPurpose::releaseCBPC)) {
+        softRecovery.OnCbpcReleaseQueued();
+    }
+
     if (!waitingForInitialArousal)
         Evaluate(forceStartupDecision);
     CaptureState("poll");
@@ -2524,7 +2666,10 @@ void Tick() {
     }
 
     if (recoveryController.ClaimPostSwitchVerification(now)) {
-        if (ConfirmCurrentPhysicsOwner("the completed physics switch")) {
+        if (playerContext.physics.known.load() && !playerContext.physics.usingCBPC.load()) {
+            RequestSoftRecovery("the post-switch check", false);
+            playerContext.recovery.postSwitchVerificationUntilMs.store(0);
+        } else if (ConfirmCurrentPhysicsOwner("the completed physics switch")) {
             playerContext.recovery.postSwitchVerificationUntilMs.store(0);
         } else if (now < playerContext.recovery.postSwitchVerificationUntilMs.load()) {
             playerContext.recovery.postSwitchVerificationDueMs.store(now + 1000);
@@ -2547,7 +2692,10 @@ void Tick() {
     }
 
     if (recoveryController.ClaimExternalOwnerRepair(now)) {
-        if (ConfirmCurrentPhysicsOwner("an external physics reset")) {
+        if (playerContext.physics.known.load() && !playerContext.physics.usingCBPC.load()) {
+            RequestSoftRecovery("an external physics reset", false);
+            playerContext.recovery.externalOwnerRepairUntilMs.store(0);
+        } else if (ConfirmCurrentPhysicsOwner("an external physics reset")) {
             // Keep the original retry budget until the completion callback.
         } else if (now < playerContext.recovery.externalOwnerRepairUntilMs.load()) {
             playerContext.recovery.externalOwnerRepairDueMs.store(now + 1000);
@@ -2558,12 +2706,21 @@ void Tick() {
     }
 
     if (recoveryController.ClaimLoadSmpReset(now)) {
-        RunLoadSMPReset();
+        if (playerContext.physics.known.load() && !playerContext.physics.usingCBPC.load()) {
+            RequestSoftRecovery("the game load", true);
+            playerContext.recovery.lastLoadSmpResetMs.store(now);
+            ++playerContext.recovery.loadSmpResets;
+        } else {
+            RunLoadSMPReset();
+        }
     }
 
     if (recoveryController.ClaimSoftHandoffReset(
             now, playerContext.physics.usingCBPC.load())) {
-        RunSoftHandoffSMPReset();
+        // The fall-to-soft and post-scene rest refresh: a clean rebuild through
+        // the coordinator instead of the old settle-gated reset.
+        playerContext.recovery.softHandoffResetUntilMs.store(0);
+        RequestSoftRecovery("the soft rest refresh", true);
     }
 
     if (recoveryController.ClaimSoftAngleRefresh(
@@ -2591,7 +2748,11 @@ void Tick() {
             until = now + 10000;
             playerContext.recovery.softConfirmationUntilMs.store(until);
         }
-        if (ConfirmSoftState()) {
+        if (playerContext.physics.known.load()) {
+            // Merged with any other soft recovery; no per-second retry of its own.
+            RequestSoftRecovery("the soft-state confirmation", false);
+            playerContext.recovery.softConfirmationUntilMs.store(0);
+        } else if (ConfirmSoftState()) {
             // Keep the original retry budget until the completion callback.
         } else if (now < until) {
             playerContext.recovery.softConfirmationDueMs.store(now + 1000);
@@ -2692,7 +2853,15 @@ void Tick() {
             // A real later rebuild may discard the bend, but it does not justify a
             // state decision. Re-confirm the existing owner once, then restore only
             // the position data that the rebuilt skeleton may have discarded.
-            if (playerContext.physics.known.load() && !playerContext.physics.usingCBPC.load() && RefreshSMPAfterPlayerMeshChange()) {
+            if (playerContext.physics.known.load() && !playerContext.physics.usingCBPC.load()) {
+                // A rebuild re-bakes SMP's rest from the pose at that moment, so it
+                // is kept for real genital-area equipment changes. A node update on
+                // its own (BodyMorph, RaceMenu, an arousal morph) only re-checks the
+                // owner; the 2026-11-24/25 logs showed those updates chaining resets.
+                const auto equipAt = lastShaftEquipChangeMs.load();
+                const bool equipmentChange = equipAt > 0 && now - equipAt < kShaftEquipWindowMs;
+                RequestSoftRecovery(equipmentChange ? "a player mesh change" : "a player node update",
+                    equipmentChange);
                 // The player-only reset restores the owner and angle after FSMP
                 // finishes rebuilding the newly equipped schlong mesh.
             } else if (playerContext.physics.known.load() && playerContext.physics.usingCBPC.load()) {
@@ -2714,8 +2883,6 @@ void Tick() {
                 playerContext.recovery.nodeCbpcReacquireDueMs.store(now + 250);
                 playerContext.recovery.nodeCbpcReacquireUntilMs.store(now + 10000);
                 Record("Player mesh changed; guarded erect-physics reconnect queued");
-            } else if (playerContext.physics.known.load() && !playerContext.physics.usingCBPC.load()) {
-                playerContext.recovery.softConfirmationDueMs.store(now + 750);
             }
             recoveryController.ScheduleNodeRefreshFollowup(now);
         }
@@ -2724,8 +2891,10 @@ void Tick() {
     if (recoveryController.ClaimNodeRefreshFollowup(now)) {
         // Some armour managers rebuild the genital node twice. This quiet
         // second confirmation catches the late rebuild without another reset.
-        if (ownershipController.Read().pending ||
-            !ConfirmCurrentPhysicsOwner("the completed equipment change")) {
+        const bool softFollowup = playerContext.physics.known.load() && !playerContext.physics.usingCBPC.load();
+        if (softFollowup) RequestSoftRecovery("the completed equipment change", false);
+        if (!softFollowup && (ownershipController.Read().pending ||
+            !ConfirmCurrentPhysicsOwner("the completed equipment change"))) {
             if (!recoveryController.RetryNodeRefreshFollowup(now)) {
                 Record("SPS-010: Equipment follow-up stopped; use Repair current physics to retry", true);
             }
@@ -2737,8 +2906,8 @@ void Tick() {
             else if (!playerContext.physics.usingCBPC.load()) {
                 // One more guarded reset for outfits whose nodes finish
                 // rebuilding after the first reset ran. Soft shaft only.
-                if (equipSecondResetPending.exchange(false) && RefreshSMPAfterPlayerMeshChange())
-                    Record("Equipment change: second SMP reset queued after the late rebuild");
+                if (equipSecondResetPending.exchange(false))
+                    RequestSoftRecovery("a late outfit rebuild", true);
                 else
                     playerContext.recovery.softConfirmationDueMs.store(now + 500);
             }
@@ -2771,6 +2940,9 @@ void Tick() {
             now)) {
         QueueOwnershipHandoff(true, SPS::Controllers::OwnershipPurpose::maintainCBPC);
     }
+
+    // Last, so every trigger posted in this tick is merged into one action.
+    RunSoftRecoveryCoordinator(copy);
 }
 
 void StartPolling() {
@@ -2867,15 +3039,6 @@ void RefreshPlayerBoneDiagnostics() {
         Record(fmt::format("Compatible schlong check updated: {}/6 live physics bones found", found));
 }
 
-void StatusLine(const char* label, const char* status, int level) {
-    ImGuiMCP::Text("%s", label);
-    ImGuiMCP::SameLine(245.0F);
-    const ImGuiMCP::ImVec4 color = level == 2 ? ImGuiMCP::ImVec4(0.35F, 1.0F, 0.45F, 1.0F)
-        : level == 1 ? ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F)
-        : ImGuiMCP::ImVec4(1.0F, 0.35F, 0.35F, 1.0F);
-    ImGuiMCP::TextColored(color, "%s", status);
-}
-
 // Settings live in SKSE\Plugins\SchlongPhysicsSwapper.ini. Most of them are not
 // exposed here on purpose: the menu only carries the choices people actually
 // change, and the rest have sane defaults that can be edited in the file.
@@ -2899,33 +3062,11 @@ void OpenSettingsFile() {
     ShellExecuteW(nullptr, L"open", L"notepad.exe", path.wstring().c_str(), nullptr, SW_SHOWNORMAL);
 }
 
-void PageHeading(const char* title, const char* description) {
-    ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.45F, 0.80F, 1.0F, 1.0F), "%s", title);
-    if (description && description[0] != '\0')
-        ImGuiMCP::TextWrapped("%s", description);
-    ImGuiMCP::Separator();
-}
-
 void SectionHeading(const char* title) {
     // SeparatorText gives each group a titled rule, which reads as structure
     // rather than another line of coloured text competing with the controls.
     ImGuiMCP::Spacing();
     ImGuiMCP::SeparatorText(title);
-}
-
-// One-line explanation under a control. Kept short on purpose: a wall of text
-// under every slider is what made the old pages hard to scan.
-void Hint(const char* fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    ImGuiMCP::TextDisabledV(fmt, args);
-    va_end(args);
-}
-
-// A setting that only matters once the feature above it is on. Disabling
-// rather than hiding keeps the layout stable so nothing appears to jump.
-void BeginDependent(bool enabled) {
-    ImGuiMCP::BeginDisabled(!enabled);
 }
 
 void UseRecommendedSettings(Settings& value) {
@@ -3047,623 +3188,6 @@ void SaveSettingsAndApply(const Settings& copy, const Settings& previous) {
             else SetOwner(false, true);
         });
     }
-}
-
-void __stdcall RenderMain() {
-    Settings copy;
-    { std::scoped_lock lock(settingsLock); copy = settings; }
-    const Settings previous = copy;
-    const auto ownership = ownershipController.Read();
-    bool changed = false;
-
-    Diagnostics d;
-    { std::scoped_lock lock(diagnosticsLock); d = diagnostics; }
-    const bool healthChecked = d.checkedAtMs > 0;
-    const bool coreReady = CoreReady(d, copy);
-
-    PageHeading("HOME", "See what SPS is doing and change its everyday behaviour.");
-
-    SectionHeading("CURRENT STATUS");
-    StatusLine("SPS", !healthChecked ? "Checking setup..." :
-        (coreReady ? (ownership.known ? "Ready" : "Waiting for the player") : "Needs attention"),
-        !healthChecked || !ownership.known ? 1 : (coreReady ? 2 : 0));
-    StatusLine("Physics", ownership.known ?
-        (ownership.usingCBPC ? "Erect (CBPC)" : "Soft (SMP)") : "Not decided yet",
-        ownership.known ? 2 : 1);
-    const char* modeStatus[]{ "Automatic - follows arousal", "Always soft (SMP)", "Always erect (CBPC)" };
-    StatusLine("Mode", modeStatus[std::clamp(copy.mode, 0, 2)], copy.enabled ? 2 : 1);
-    if (copy.mode == 0) {
-        const auto arousalText = arousalController.Valid() ?
-            fmt::format("Arousal: {:.0f} / 100", arousalController.Value()) :
-            std::string("Waiting for the selected arousal mod");
-        ImGuiMCP::ProgressBar(arousalController.Valid() ? arousalController.Value() / 100.0F : 0.0F,
-            ImGuiMCP::ImVec2(-1.0F, 0.0F), arousalText.c_str());
-    } else {
-        StatusLine("Arousal", "Not used in manual mode", 2);
-    }
-    if (sceneController.State().ostim.active.load())
-        StatusLine("OStim role", sceneController.State().ostim.roleValid.load() ? OStimRoleName(sceneController.State().ostim.role.load()) : "Checking...", sceneController.State().ostim.roleValid.load() ? 2 : 1);
-    else if (sceneController.State().sexLab.active.load())
-        StatusLine("SexLab role", sceneController.State().sexLab.roleValid.load() ? SexLabRoleName(sceneController.State().sexLab.role.load()) : "Checking...", sceneController.State().sexLab.roleValid.load() ? 2 : 1);
-    if (healthChecked && !coreReady)
-        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F),
-            "Open Troubleshooting to see what needs attention.");
-
-    ImGuiMCP::Separator();
-    SectionHeading("MAIN CONTROLS");
-    changed |= ImGuiMCP::Checkbox("Enable SPS", &copy.enabled);
-    const char* modes[]{ "Automatic - follow arousal", "Always soft - use SMP", "Always erect - use CBPC" };
-    changed |= ImGuiMCP::Combo("Physics mode", &copy.mode, modes, 3);
-
-    if (copy.mode == 0) {
-        if (ImGuiMCP::SliderFloat("Become erect at arousal", &copy.threshold, 0, 100, "%.0f")) {
-            // Only keep the hidden rising start consistent when the feature is
-            // actually in use; otherwise a threshold change would silently
-            // rewrite a value the user cannot see.
-            if (copy.arousalBasedErection && copy.threshold <= copy.erectionStartArousal)
-                copy.erectionStartArousal = std::max(0.0F, copy.threshold - 1.0F);
-            changed = true;
-        }
-        if (copy.arousalBasedErection) {
-            if (ImGuiMCP::SliderFloat("Rising starts at arousal", &copy.erectionStartArousal, 0.0F, 99.0F, "%.0f")) {
-                if (copy.erectionStartArousal >= copy.threshold)
-                    copy.threshold = std::min(100.0F, copy.erectionStartArousal + 1.0F);
-                changed = true;
-            }
-            Hint("The angle rises between %.0f and %.0f arousal, so it follows the value instead of jumping.",
-                copy.erectionStartArousal, copy.threshold);
-        } else {
-            Hint("Erect at %.0f arousal, soft again below %.0f.",
-                copy.threshold, std::max(0.0F, copy.threshold - copy.hysteresis));
-        }
-        changed |= ImGuiMCP::SliderFloat("Soft return gap", &copy.hysteresis, 0, 25, "%.0f arousal");
-        Hint("Arousal must fall below %.0f before SPS returns to soft. Widen this if the angle flickers.",
-            std::max(0.0F, copy.threshold - copy.hysteresis));
-    } else if (copy.mode == 1) {
-        Hint("Keeps the player soft with SMP. An arousal mod is not required.");
-    } else {
-        Hint("Keeps the player erect with CBPC. An arousal mod is not required.");
-    }
-
-    ImGuiMCP::Separator();
-    SectionHeading("AROUSAL TEST");
-    // Manual arousal writes used to live on the NPCs page. It is a test control
-    // for the player, so it belongs beside the player's own settings.
-    const bool oslReady = OslArousedLoaded() && !SloArousedLoaded() && !ClassicArousedLoaded();
-    ImGuiMCP::BeginDisabled(!oslReady);
-    static float playerArousalSlider{ 0.0F };
-    static bool playerArousalEditing{ false };
-    if (!playerArousalEditing && arousalController.Valid()) playerArousalSlider = arousalController.Value();
-    if (ImGuiMCP::SliderFloat("Player OSL arousal", &playerArousalSlider, 0.0F, 100.0F, "%.0f"))
-        playerArousalEditing = true;
-    if (ImGuiMCP::IsItemDeactivatedAfterEdit()) {
-        RequestPlayerOslArousalWrite(playerArousalSlider);
-        playerArousalEditing = false;
-    }
-    ImGuiMCP::EndDisabled();
-    Hint(oslReady ? "Writes the real OSL Aroused value when released; OSL can change it again afterwards."
-                  : "Current OSL Aroused is required for this test control.");
-
-    ImGuiMCP::Separator();
-    SectionHeading("SETTINGS FILE");
-    if (ImGuiMCP::Button("Open settings file")) OpenSettingsFile();
-    ImGuiMCP::SameLine();
-    if (ImGuiMCP::Button("Reload settings")) ReloadSettingsFromDisk();
-    Hint("Most settings are only in the file. Reload applies your edits without restarting.");
-    if (ImGuiMCP::Button("Refresh status"))
-        if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { QueryArousal(true); QuerySexLab(); QuerySexLabRole(); QueryOStimRole(); Evaluate(); });
-    if (ImGuiMCP::CollapsingHeader("Reset options")) {
-        Hint("Restores the recommended SPS settings. This changes nothing outside SPS.");
-        if (ImGuiMCP::Button("Restore recommended settings")) { UseRecommendedSettings(copy); changed = true; }
-    }
-    if (changed) SaveSettingsAndApply(copy, previous);
-}
-
-void __stdcall RenderLooks() {
-    Settings copy;
-    { std::scoped_lock lock(settingsLock); copy = settings; }
-    const Settings previous = copy;
-    const auto ownership = ownershipController.Read();
-    bool changed = false;
-
-    PageHeading("APPEARANCE", "The soft and erect angles, and how SPS moves between them.");
-
-    // Angle first: it is the visible setting. Transition speed only shapes how
-    // fast the two angles are reached, so it reads better underneath the poses.
-    SectionHeading("POSITIONS");
-    const bool softAngleAvailable = SoftAngleControlAvailable(copy.bendMethod);
-    if (!copy.positionControl) {
-        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F),
-            "Angle control is turned off below. Physics switching still works.");
-    }
-
-    ImGuiMCP::BeginDisabled(!copy.positionControl);
-    changed |= ImGuiMCP::SliderInt("Erect angle", &copy.erectBend, 0, 20);
-    Hint("0 points straight out. 20 is the highest position this skeleton offers.");
-
-    // One slider instead of a checkbox plus a slider: 0 already means "leave
-    // the skeleton's own floppy pose alone", so there is nothing extra to hold.
-    // The flag is only written on an actual edit, so it never lands in the INI
-    // as a change the user did not make.
-    if (softAngleAvailable) {
-        int softAngle = copy.flaccidBend;
-        if (ImGuiMCP::SliderInt("Soft angle", &softAngle, 0, 20,
-            softAngle == 0 ? "0 (normal hanging position)" : "%d")) {
-            copy.flaccidBend = softAngle;
-            copy.flaccidAngleControl = softAngle > 0;
-            changed = true;
-        }
-    }
-    ImGuiMCP::EndDisabled();
-    if (!softAngleAvailable)
-        Hint("Custom soft angles need SOS AE or the SPS pose angle. Legacy SOS and TNG keep their own floppy pose.");
-
-    ImGuiMCP::Separator();
-    SectionHeading("TIMING");
-    float erectionSeconds = copy.erectionDurationMs / 1000.0F;
-    if (ImGuiMCP::SliderFloat("Rise time", &erectionSeconds, 0.5F, 30.0F, "%.1f seconds")) {
-        copy.erectionDurationMs = static_cast<int>(std::lround(erectionSeconds * 1000.0F));
-        // Any duration is a valid timed rise, so the old separate toggle is
-        // redundant: the slider itself expresses "how fast".
-        copy.gradualErection = true;
-        changed = true;
-    }
-    float softeningSeconds = copy.softeningDurationMs / 1000.0F;
-    if (ImGuiMCP::SliderFloat("Fall time", &softeningSeconds, 0.5F, 30.0F, "%.1f seconds")) {
-        copy.softeningDurationMs = static_cast<int>(std::lround(softeningSeconds * 1000.0F));
-        copy.gradualErection = true;
-        changed = true;
-    }
-    // The graph binds 19 positions (SOSBend-9 to SOSBend9), so a full climb is
-    // 18 even steps. The honest readout is how long each step holds.
-    Hint("Rise and fall times are the full -9 to 9 travel time, in 18 even steps: "
-         "about %.2f s per step up, %.2f s per step down.",
-        (copy.erectionDurationMs / 1000.0F) / 18.0F, (copy.softeningDurationMs / 1000.0F) / 18.0F);
-
-    ImGuiMCP::BeginDisabled(!ownership.known || !ownership.usingCBPC);
-    if (ImGuiMCP::Button("Preview rise and fall")) {
-        const int target = copy.erectBend;
-        const int riseMs = copy.erectionDurationMs;
-        if (auto* tasks = SKSE::GetTaskInterface())
-            tasks->AddTask([target, riseMs] {
-                playerContext.position.appliedBend.store(-1);
-                StartBendAnimation(0, target, riseMs, false);
-            });
-        Record("Previewing the angle timing");
-    }
-    ImGuiMCP::SameLine();
-    ImGuiMCP::BeginDisabled(!copy.positionControl || !ownership.known);
-    if (ImGuiMCP::Button("Reapply angle")) {
-        ResetPositionRecovery();
-        playerContext.position.appliedBend.store(-1);
-        if (auto* tasks = SKSE::GetTaskInterface())
-            tasks->AddTask([] { ApplyRequestedBend(true, true, false); });
-    }
-    ImGuiMCP::EndDisabled();
-    ImGuiMCP::EndDisabled();
-    Hint("Preview plays one ramp and back. Reapply is only needed if the physics looks stale.");
-
-    if (ImGuiMCP::CollapsingHeader("Advanced")) {
-        // Everything here has a working default. It is collapsed rather than
-        // removed so a genuine problem can still be diagnosed in game, while
-        // the everyday view stays short.
-        changed |= ImGuiMCP::Checkbox("Let SPS control the angle", &copy.positionControl);
-        BeginDependent(copy.positionControl);
-        // Choice -> Position/Method: 0 stages (1), 1 automatic (2), 2 pose (3).
-        // Automatic used to write 3, the experimental pose angle, which the
-        // animation graph overwrites every frame (docs/SOSAE_4_POSE_ANGLE_2026-11-01.md),
-        // so touching this combo silently stopped the angle from moving.
-        // Method 0 (the removed SOS AE native) behaves like automatic.
-        const char* bendMethods[]{ "SOS / TNG animation stages", "Choose automatically (recommended)",
-            "SPS pose angle (experimental)" };
-        int methodChoice = copy.bendMethod == SPS::Runtime::kBendMethodEvents ? 0 :
-            copy.bendMethod == SPS::Runtime::kBendMethodPose ? 2 : 1;
-        if (ImGuiMCP::Combo("Method", &methodChoice, bendMethods, 3)) {
-            copy.bendMethod = methodChoice == 0 ? SPS::Runtime::kBendMethodEvents :
-                methodChoice == 2 ? SPS::Runtime::kBendMethodPose : SPS::Runtime::kBendMethodAutomatic;
-            changed = true;
-        }
-        if (copy.bendMethod == SPS::Runtime::kBendMethodPose) {
-            ImGuiMCP::TextDisabled("Experimental: writes the base bone directly. The SOS/TNG animation "
-                "usually overwrites it, so the angle may not move. Use automatic instead.");
-        } else {
-            ImGuiMCP::TextDisabled("SOS/TNG animation stages: 19 positions, SOSBend-9 to SOSBend9.");
-        }
-        changed |= ImGuiMCP::Checkbox("Smooth angle changes", &copy.animatePosition);
-        changed |= ImGuiMCP::Checkbox("Stop repeated bouncing", &copy.bounceGuard);
-        changed |= ImGuiMCP::Checkbox("Rise gradually with arousal", &copy.arousalBasedErection);
-        changed |= ImGuiMCP::Checkbox("Allow random erections", &copy.randomErections);
-        BeginDependent(copy.randomErections);
-        changed |= ImGuiMCP::SliderInt("Shortest interval (minutes)", &copy.randomErectionMinMinutes, 1, 120);
-        changed |= ImGuiMCP::SliderInt("Longest interval (minutes)", &copy.randomErectionMaxMinutes, 1, 240);
-        changed |= ImGuiMCP::SliderInt("Duration (seconds)", &copy.randomErectionDurationSeconds, 5, 600);
-        ImGuiMCP::EndDisabled();
-        ImGuiMCP::EndDisabled();
-        Hint("Timing, poll rate and failure thresholds are in the settings file.");
-    }
-
-    if (changed) SaveSettingsAndApply(copy, previous);
-}
-
-void __stdcall RenderScenes() {
-    Settings copy;
-    { std::scoped_lock lock(settingsLock); copy = settings; }
-    const Settings previous = copy;
-    bool changed = false;
-
-    Diagnostics d;
-    { std::scoped_lock lock(diagnosticsLock); d = diagnostics; }
-    const bool sexLabLoaded = d.sexLabModuleLoaded && d.sexLabPluginLoaded;
-    const bool ostimLoaded = d.ostimPluginLoaded;
-    const bool ppaLoaded = ::GetModuleHandleW(L"AccuratePenetration.dll") != nullptr;
-
-    PageHeading("SCENES", "How SPS behaves during SexLab or OStim scenes. Nothing here affects normal gameplay.");
-
-    SectionHeading("SCENE FRAMEWORKS");
-    changed |= ImGuiMCP::Checkbox("Manage SexLab scenes", &copy.sexLabOverride);
-    ImGuiMCP::BeginDisabled(!copy.sexLabOverride);
-    changed |= ImGuiMCP::Checkbox("Follow the player's SexLab role", &copy.sexLabRoleSwitching);
-    ImGuiMCP::EndDisabled();
-
-    changed |= ImGuiMCP::Checkbox("Manage OStim scenes", &copy.ostimOverride);
-    ImGuiMCP::BeginDisabled(!copy.ostimOverride);
-    changed |= ImGuiMCP::Checkbox("Follow the player's OStim role", &copy.ostimRoleSwitching);
-    ImGuiMCP::EndDisabled();
-    if (ostimLoaded && !d.ostimRoleBridgePresent)
-        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.35F, 0.35F, 1.0F),
-            "OStim is installed, but the optional SPS OStim bridge is missing. Rerun the FOMOD to add it.");
-
-    ImGuiMCP::Separator();
-    SectionHeading("SCENE BEHAVIOUR");
-    const bool anyRoleSwitching = (copy.sexLabOverride && copy.sexLabRoleSwitching) ||
-        (copy.ostimOverride && copy.ostimRoleSwitching);
-    ImGuiMCP::BeginDisabled(!anyRoleSwitching);
-    const char* bottomBehaviors[]{
-        "Keep whatever state I had (recommended)",
-        "Follow live arousal",
-        "Always stay soft (SMP)",
-        "Always stay erect (CBPC)"
-    };
-    changed |= ImGuiMCP::Combo("When receiving / bottom", &copy.sexLabBottomBehavior, bottomBehaviors, 4);
-    ImGuiMCP::EndDisabled();
-    ImGuiMCP::TextWrapped("Recommended: receiving keeps the state from before the scene, while penetrating uses erect physics. OStim support is experimental.");
-
-    ImGuiMCP::Separator();
-    SectionHeading("ANGLE DURING SCENES");
-    const bool sexLabPositionChanged = ImGuiMCP::Checkbox("Use a different erect angle in scenes", &copy.useSexLabBend);
-    changed |= sexLabPositionChanged;
-    if (sexLabPositionChanged && copy.useSexLabBend) copy.sexLabOverride = true;
-    ImGuiMCP::BeginDisabled(!copy.useSexLabBend || !copy.positionControl);
-    changed |= ImGuiMCP::SliderInt("Scene erect angle", &copy.sexLabBend, 0, 20);
-    ImGuiMCP::EndDisabled();
-    if (ppaLoaded)
-        ImGuiMCP::TextWrapped("PPA controls the live angle during its scenes. SPS only decides whether physics should be soft or erect.");
-
-    ImGuiMCP::Separator();
-    if (ImGuiMCP::CollapsingHeader("Scene status and compatibility")) {
-        StatusLine("SexLab", sexLabLoaded ? (sceneController.State().sexLab.connected.load() ? "Ready" : "Still loading") :
-            "Not installed (optional)", sexLabLoaded ? (sceneController.State().sexLab.connected.load() ? 2 : 1) : 1);
-        StatusLine("OStim", ostimLoaded ? (d.ostimRoleBridgePresent ? "Ready (experimental)" :
-            "Bridge missing") : "Not installed (optional)", ostimLoaded ? (d.ostimRoleBridgePresent ? 2 : 0) : 1);
-        if (sceneController.State().ostim.active.load())
-            StatusLine("Current role", sceneController.State().ostim.roleValid.load() ? OStimRoleName(sceneController.State().ostim.role.load()) :
-                "OStim running - checking", sceneController.State().ostim.roleValid.load() ? 2 : 1);
-        else
-            StatusLine("Current role", sceneController.State().sexLab.active.load() ?
-                (sceneController.State().sexLab.roleValid.load() ? SexLabRoleName(sceneController.State().sexLab.role.load()) : "SexLab running - checking") :
-                "No scene running", sceneController.State().sexLab.active.load() ? (sceneController.State().sexLab.roleValid.load() ? 2 : 1) : 2);
-        StatusLine("PPA", ppaLoaded ? (PPAOwnsPosition() ? "Controlling the live angle" : "Ready") :
-            "Not installed (optional)", ppaLoaded ? 2 : 1);
-    }
-
-    if (changed) SaveSettingsAndApply(copy, previous);
-}
-
-void __stdcall RenderNPCs() {
-    Settings copy;
-    { std::scoped_lock lock(settingsLock); copy = settings; }
-    const Settings previous = copy;
-    bool changed = false;
-    const ImGuiMCP::ImVec4 green(0.45F, 0.85F, 0.45F, 1.0F);
-    const ImGuiMCP::ImVec4 amber(1.0F, 0.78F, 0.25F, 1.0F);
-    const ImGuiMCP::ImVec4 grey(0.75F, 0.75F, 0.75F, 1.0F);
-
-    // Window-scoped; reset at the end of this page so other pages keep their size.
-    ImGuiMCP::SetWindowFontScale(1.15F);
-
-    PageHeading("NPCs", "Choose which nearby NPCs SPS controls. Everything else is left to your arousal mod.");
-    if (!copy.enabled)
-        ImGuiMCP::TextColored(amber, "SPS is turned off on the Home page, so NPC control is off.");
-
-    const auto managed = SPS::Runtime::ReadManagedNpcStatus();
-
-    // Every registry access is game-thread-only, so the render callback only
-    // queues an intent by FormID and the tick applies it.
-    const auto queueAdd = [](std::uint32_t formID) {
-        if (auto* tasks = SKSE::GetTaskInterface())
-            tasks->AddTask([formID] {
-                if (!SPS::Runtime::QueueManagedNpcAdd(formID))
-                    Record(fmt::format("Could not queue managed NPC {:08X}", formID), true);
-            });
-    };
-    const auto queueRemove = [](std::uint32_t formID) {
-        if (auto* tasks = SKSE::GetTaskInterface())
-            tasks->AddTask([formID] { SPS::Runtime::QueueManagedNpcRemove(formID); });
-    };
-
-    // ---- Managed NPCs: the part most people come here for ----
-    SectionHeading("MANAGED NPCS");
-    changed |= ImGuiMCP::Checkbox("Enable managed NPCs", &copy.managedNpcEnabled);
-    ImGuiMCP::TextWrapped("A managed NPC gets full SPS physics: soft or erect depending on its own arousal. "
-        "The list is forgotten when you close the game.");
-    ImGuiMCP::BeginDisabled(!copy.managedNpcEnabled);
-    changed |= ImGuiMCP::Checkbox("Allow up to 8 managed NPCs (default is 1)", &copy.managedNpcUpToEight);
-    ImGuiMCP::EndDisabled();
-    if (copy.managedNpcUpToEight) {
-        ImGuiMCP::TextColored(amber, "Warning: every managed NPC runs its own SMP/CBPC handoffs and Papyrus checks. "
-            "Several at once can cost frame rate and script time, especially in busy scenes. Not tested with more than two.");
-    } else if (managed.actors.size() > managed.capacity) {
-        ImGuiMCP::TextColored(amber, "%zu NPCs are managed but the limit is %zu. Remove the extras; "
-            "none can be added until you do.", managed.actors.size(), managed.capacity);
-    }
-    ImGuiMCP::Spacing();
-
-    if (managed.actors.empty()) {
-        ImGuiMCP::TextColored(grey, "No NPC is managed yet. Pick one from the list below, or look at one and press Add NPC in crosshair.");
-    }
-    struct ManagedSliderState { float value{ 0.0F }; bool editing{ false }; };
-    static std::unordered_map<std::uint32_t, ManagedSliderState> managedSliders;
-    std::erase_if(managedSliders, [&managed](const auto& item) {
-        return std::none_of(managed.actors.begin(), managed.actors.end(),
-            [formID = item.first](const auto& actor) { return actor.formID == formID; });
-    });
-    const bool oslReadyManaged = OslArousedLoaded() && !SloArousedLoaded() && !ClassicArousedLoaded();
-    for (const auto& actor : managed.actors) {
-        ImGuiMCP::TextColored(green, "%s", actor.name.c_str());
-        ImGuiMCP::SameLine();
-        if (actor.arousal)
-            ImGuiMCP::Text("- %s, arousal %.0f", actor.physics.c_str(), *actor.arousal);
-        else
-            ImGuiMCP::Text("- %s, waiting for arousal", actor.physics.c_str());
-        ImGuiMCP::SameLine();
-        if (ImGuiMCP::Button(fmt::format("Remove###sps-managed-remove-{:08X}", actor.formID).c_str()))
-            queueRemove(actor.formID);
-        if (oslReadyManaged) {
-            auto& slider = managedSliders[actor.formID];
-            if (!slider.editing && actor.arousal) slider.value = *actor.arousal;
-            const auto label = fmt::format("Set arousal###sps-managed-arousal-{:08X}", actor.formID);
-            if (ImGuiMCP::SliderFloat(label.c_str(), &slider.value, 0.0F, 100.0F, "%.0f"))
-                slider.editing = true;
-            if (ImGuiMCP::IsItemDeactivatedAfterEdit()) {
-                const auto formID = actor.formID;
-                const auto value = slider.value;
-                if (auto* tasks = SKSE::GetTaskInterface()) {
-                    tasks->AddTask([formID, value] {
-                        if (!SPS::Runtime::QueueManagedNpcArousalWrite(formID, value))
-                            Record(fmt::format("Could not queue an OSL arousal write for managed NPC {:08X}", formID), true);
-                    });
-                }
-                slider.editing = false;
-            }
-        }
-        // This NPC's own settings. They are separate from the player's.
-        if (ImGuiMCP::CollapsingHeader(fmt::format("Settings for {}###sps-managed-opt-{:08X}",
-                actor.name, actor.formID).c_str())) {
-            // Local copy while dragging, so the page does not snap back to the
-            // last published value; the file is written when the control is released.
-            struct OptionState { SPS::Runtime::ManagedNpcOptions value; bool editing{ false }; };
-            static std::unordered_map<std::uint32_t, OptionState> optionStates;
-            auto& state = optionStates[actor.formID];
-            if (!state.editing) state.value = actor.options;
-            auto& o = state.value;
-            bool edited = false, released = false;
-            const auto track = [&](bool changedNow) {
-                edited |= changedNow;
-                released |= ImGuiMCP::IsItemDeactivatedAfterEdit();
-            };
-            track(ImGuiMCP::SliderFloat(fmt::format("Erect at arousal###sps-o-at-{:08X}", actor.formID).c_str(),
-                &o.erectAt, 0.0F, 100.0F, "%.0f"));
-            track(ImGuiMCP::SliderInt(fmt::format("Erect angle###sps-o-ang-{:08X}", actor.formID).c_str(),
-                &o.angle, 1, 20));
-            if (ImGuiMCP::Checkbox(fmt::format("Rise with arousal###sps-o-follow-{:08X}", actor.formID).c_str(),
-                    &o.followArousal)) { edited = true; released = true; }
-            track(ImGuiMCP::SliderInt(fmt::format("Rise time (seconds)###sps-o-rise-{:08X}", actor.formID).c_str(),
-                &o.riseSeconds, 1, 30));
-            track(ImGuiMCP::SliderInt(fmt::format("Fall time (seconds)###sps-o-fall-{:08X}", actor.formID).c_str(),
-                &o.fallSeconds, 1, 30));
-            if (edited) state.editing = !released;
-            if (edited || released) {
-                if (auto* tasks = SKSE::GetTaskInterface()) {
-                    const auto formID = actor.formID;
-                    const auto value = o;
-                    const bool save = released;
-                    tasks->AddTask([formID, value, save] { SPS::Runtime::SetManagedNpcOptions(formID, value, save); });
-                }
-            }
-        }
-    }
-    if (oslReadyManaged && !managed.actors.empty())
-        Hint("Writes OSL's real value when you let go. OSL can change it again afterwards.");
-    if (!managed.rejection.empty())
-        ImGuiMCP::TextColored(amber, "Could not do that: %s", managed.rejection.c_str());
-
-    ImGuiMCP::Spacing();
-    if (ImGuiMCP::Button("Add NPC in crosshair")) {
-        if (auto* tasks = SKSE::GetTaskInterface()) {
-            tasks->AddTask([] {
-                const auto target = SPS::Runtime::ResolveManagedNpcTarget();
-                if (!target) Record("No NPC in the crosshair to manage", true);
-                else if (!SPS::Runtime::QueueManagedNpcAdd(target))
-                    Record(fmt::format("Could not queue managed NPC {:08X}", target), true);
-            });
-        }
-    }
-    ImGuiMCP::SameLine();
-    ImGuiMCP::BeginDisabled(managed.actors.empty());
-    if (ImGuiMCP::Button("Remove all")) {
-        for (const auto& actor : managed.actors) queueRemove(actor.formID);
-    }
-    ImGuiMCP::EndDisabled();
-
-    // ---- Nearby list ----
-    SectionHeading("NEARBY NPCS");
-    if (!copy.managedNpcEnabled || !copy.enabled)
-        ImGuiMCP::TextColored(grey, "Turn on Enable managed NPCs to see who is nearby.");
-    else if (managed.nearby.empty())
-        ImGuiMCP::TextColored(grey, "Nobody in range. Move closer to the NPC you want.");
-    const bool atLimit = managed.actors.size() >= managed.capacity;
-    for (const auto& candidate : managed.nearby) {
-        const auto meters = candidate.distance / 70.0F;  // ~70 units per metre
-        ImGuiMCP::Text("%s", candidate.name.c_str());
-        ImGuiMCP::SameLine(300.0F);
-        ImGuiMCP::TextColored(grey, "%.0f m", meters);
-        ImGuiMCP::SameLine(380.0F);
-        if (candidate.managed) {
-            ImGuiMCP::TextColored(green, "Managed");
-            continue;
-        }
-        if (!candidate.unavailable.empty()) {
-            ImGuiMCP::TextColored(grey, "%s", candidate.unavailable.c_str());
-            continue;
-        }
-        ImGuiMCP::BeginDisabled(atLimit);
-        if (ImGuiMCP::Button(fmt::format("Manage###sps-managed-add-{:08X}", candidate.formID).c_str()))
-            queueAdd(candidate.formID);
-        ImGuiMCP::EndDisabled();
-    }
-    if (atLimit && !managed.nearby.empty())
-        ImGuiMCP::TextColored(amber, "Limit reached (%zu). Remove one to manage another.", managed.capacity);
-
-    // ---- Optional and technical sections, closed by default ----
-    ImGuiMCP::Spacing();
-    ImGuiMCP::Separator();
-
-    // Kept outside the collapsible section so the safety rule always applies.
-    if (!copy.basicNpcProviderSosDisabled && copy.basicNpcEnabled) { copy.basicNpcEnabled = false; changed = true; }
-
-    if (ImGuiMCP::CollapsingHeader("Everyone else (basic NPC poses)")) {
-        ImGuiMCP::TextWrapped("Poses other nearby NPCs soft or erect from their arousal, without SMP/CBPC control. "
-            "Turn off Enable SOS in OSL Aroused first so the two do not fight, then tick the box below.");
-        changed |= ImGuiMCP::Checkbox("I turned off OSL's SOS control", &copy.basicNpcProviderSosDisabled);
-        ImGuiMCP::BeginDisabled(!copy.basicNpcProviderSosDisabled);
-        changed |= ImGuiMCP::Checkbox("Pose other NPCs", &copy.basicNpcEnabled);
-        ImGuiMCP::EndDisabled();
-        Hint("NPCs wait during scenes. Turning this off leaves their last pose.");
-
-        const auto npc = SPS::Runtime::ReadBasicNpcStatus();
-        ImGuiMCP::Spacing();
-        ImGuiMCP::Text("%s", npc.state.c_str());
-        Hint("Nearby: %u / 8", npc.tracked);
-
-        ImGuiMCP::Spacing();
-        ImGuiMCP::Text("Set arousal (test)");
-        Hint("Writes OSL's real value when you let go. OSL can change it again afterwards.");
-        const bool oslReady = OslArousedLoaded() && !SloArousedLoaded() && !ClassicArousedLoaded();
-        ImGuiMCP::BeginDisabled(!oslReady);
-        struct SliderState { float value{ 0.0F }; bool editing{ false }; };
-        static std::unordered_map<std::uint32_t, SliderState> npcSliders;
-        std::erase_if(npcSliders, [&npc](const auto& item) {
-            return std::none_of(npc.actors.begin(), npc.actors.end(),
-                [formID = item.first](const auto& actor) { return actor.formID == formID; });
-        });
-        if (!oslReady) npcSliders.clear();
-        for (const auto& actor : npc.actors) {
-            auto& slider = npcSliders[actor.formID];
-            if (!slider.editing && actor.arousal) slider.value = *actor.arousal;
-            const auto label = fmt::format("{}###OSL NPC arousal {:08X}", actor.name, actor.formID);
-            if (ImGuiMCP::SliderFloat(label.c_str(), &slider.value, 0.0F, 100.0F, "%.0f"))
-                slider.editing = true;
-            if (ImGuiMCP::IsItemDeactivatedAfterEdit()) {
-                // The basic NPC pool is game-thread-only. This render callback must
-                // not read or write it directly; the request is queued by ID so the
-                // pool can also be rebuilt or reset before the task runs.
-                const auto formID = actor.formID;
-                const auto value = slider.value;
-                if (auto* tasks = SKSE::GetTaskInterface()) {
-                    tasks->AddTask([formID, value] {
-                        if (!SPS::Runtime::QueueBasicNpcOslArousalWrite(formID, value,
-                                papyrusDispatchAllowedAfterMs.load()))
-                            Record(fmt::format("Could not queue an OSL arousal write for NPC {:08X}", formID), true);
-                    });
-                }
-                slider.editing = false;
-            }
-        }
-        ImGuiMCP::EndDisabled();
-        if (!oslReady) Hint("Needs OSL Aroused, with no other arousal mod taking priority.");
-        else if (npc.actors.empty()) Hint("No eligible NPC nearby yet.");
-    }
-
-    if (ImGuiMCP::CollapsingHeader("Schlong and SexLab")) {
-        const bool sosAe = SosAeNativeLoaded();
-        const bool sexLab = PluginLoaded({ "SexLab.esm" });
-        if (!sosAe && !sexLab)
-            ImGuiMCP::TextColored(grey, "Needs Schlongs of Skyrim AE or SexLab P+ to show this.");
-        else
-            ImGuiMCP::TextWrapped("Shows the schlong and SexLab sex of you and your managed NPCs. "
-                "Make futa uses SexLab's own futa override. SPS remembers it in this save and re-applies it if SexLab forgets.");
-        std::vector<std::pair<std::uint32_t, std::string>> people{ { SPS::API::kPlayerFormID, "Player" } };
-        for (const auto& actor : managed.actors) people.emplace_back(actor.formID, actor.name);
-        for (const auto& [formID, name] : people) {
-            const auto identity = SPS::Runtime::ReadActorIdentity(formID);
-            if (!identity || !identity->known) {
-                ImGuiMCP::Text("%s: reading...", name.c_str());
-                continue;
-            }
-            std::string schlong = !identity->sosRead ? "SOS AE not detected" :
-                identity->addon.empty() ? "no schlong" :
-                fmt::format("{} (size {})", identity->addon, identity->rank);
-            std::string sex = !identity->sexLabRead ? "SexLab not detected" :
-                fmt::format("SexLab: {}{}", SPS::Runtime::SexLabSexName(identity->sex),
-                    identity->sex == 2 && identity->baseSex != 2 ? " (forced)" :
-                    identity->baseSex != identity->sex ?
-                        fmt::format(" (base: {})", SPS::Runtime::SexLabSexName(identity->baseSex)) : "");
-            ImGuiMCP::TextColored(green, "%s", name.c_str());
-            ImGuiMCP::Text("%s, %s%s", schlong.c_str(), sex.c_str(),
-                identity->rememberedFuta ? ", remembered in this save" : "");
-            if (!identity->sexLabRead) continue;
-            const bool forced = identity->rememberedFuta || (identity->sex == 2 && identity->baseSex != 2);
-            if (SPS::Runtime::FutaEligible(*identity) && identity->sex != 2) {
-                if (ImGuiMCP::Button(fmt::format("Make futa in SexLab###sps-futa-{:08X}", formID).c_str()))
-                    SPS::Runtime::RequestFuta(formID, true);
-            } else if (forced) {
-                if (ImGuiMCP::Button(fmt::format("Undo futa###sps-unfuta-{:08X}", formID).c_str()))
-                    SPS::Runtime::RequestFuta(formID, false);
-            } else if (identity->baseSex != 0 && identity->baseSex != 1) {
-                if (identity->sex != 2) {
-                    if (ImGuiMCP::Button(fmt::format("Force futa in SexLab###sps-forcefuta-{:08X}", formID).c_str()))
-                        SPS::Runtime::RequestFuta(formID, true);
-                    Hint(fmt::format("SexLab's base sex for this character is {}. Forcing futa overrides it; creature animations may no longer match.",
-                        SPS::Runtime::SexLabSexName(identity->baseSex)).c_str());
-                }
-            } else if (identity->sosRead && identity->addon.empty()) {
-                Hint("No futa button: give them a schlong in SOS first.");
-            }
-            ImGuiMCP::Spacing();
-        }
-    }
-
-    if (ImGuiMCP::CollapsingHeader("Technical details")) {
-        const auto npc = SPS::Runtime::ReadBasicNpcStatus();
-        Hint("Managed NPCs");
-        ImGuiMCP::TextWrapped("%s (limit %zu)", managed.state.c_str(), managed.capacity);
-        if (!managed.actors.empty())
-            ImGuiMCP::TextWrapped("Commands sent: %llu physics changes, %llu poses applied, %llu deferred, %llu failed, %llu blocked. "
-                "These count commands, so check the NPC in game for visible motion.",
-                static_cast<unsigned long long>(managed.switched), static_cast<unsigned long long>(managed.applied),
-                static_cast<unsigned long long>(managed.deferred), static_cast<unsigned long long>(managed.failed),
-                static_cast<unsigned long long>(managed.blocked));
-        ImGuiMCP::Spacing();
-        Hint("Basic NPC poses");
-        ImGuiMCP::TextWrapped("Waiting for information: %u. In scenes: %u. Pending requests: %u.",
-            npc.waiting, npc.inScene, npc.pending);
-        ImGuiMCP::TextWrapped("%llu completed, %llu scene deferrals, %llu failed or expired, %llu waiting for a bridge or free slot.",
-            static_cast<unsigned long long>(npc.completed), static_cast<unsigned long long>(npc.deferred),
-            static_cast<unsigned long long>(npc.failed), static_cast<unsigned long long>(npc.blocked));
-    }
-
-    ImGuiMCP::SetWindowFontScale(1.0F);
-    if (changed) SaveSettingsAndApply(copy, previous);
 }
 
 std::string BuildReport() {
@@ -3821,8 +3345,7 @@ void TestPhysicsState(bool cbpc) {
     manualPhysicsTestUntilMs.store(testStartedMs + 10000);
     if (!cbpc) {
         playerContext.recovery.softConfirmationDueMs.store(testStartedMs + 250);
-        playerContext.recovery.softHandoffResetDueMs.store(testStartedMs + 250);
-        playerContext.recovery.softHandoffResetUntilMs.store(testStartedMs + 10250);
+        RequestSoftRecovery("the soft physics test", true, true);
     }
     Record(fmt::format("{} physics test active for 10 seconds",
         cbpc ? "Erect" : "Soft"));
@@ -3865,8 +3388,7 @@ void RepairPhysics() {
     playerContext.recovery.postSwitchVerificationDueMs.store(repairedAt + 1000);
     playerContext.recovery.postSwitchVerificationUntilMs.store(repairedAt + 11000);
     if (!playerContext.physics.usingCBPC.load()) {
-        playerContext.recovery.softHandoffResetDueMs.store(repairedAt + 250);
-        playerContext.recovery.softHandoffResetUntilMs.store(repairedAt + 10250);
+        RequestSoftRecovery("a manual repair", true, true);
     }
     Record("Repair applied; final handoff check queued");
     RefreshDiagnostics();
@@ -3907,193 +3429,908 @@ void ProcessPendingQuickAction() {
         TestPhysicsState(action == 1);
 }
 
-void __stdcall RenderDebug() {
+// ---------------------------------------------------------------------------
+// Menu (SKSE Menu Framework). Six pages, each answering one question:
+//   Overview - is it working, and the main switch.
+//   Erection - when SPS switches to erect physics and how fast.
+//   Angles   - where the shaft points.
+//   Scenes   - what happens during SexLab and OStim scenes.
+//   NPCs     - which NPCs get full SPS physics.
+//   Help     - setup check, tests, support report and technical details.
+// Every control is a labelled row (label left, control right) so the pages
+// scan the same way; longer explanations are tooltips on the (?) marker.
+// Settings keys and their meaning are unchanged: only the layout moved.
+// ---------------------------------------------------------------------------
+namespace Menu {
+
+using ImGuiMCP::ImVec2;
+using ImGuiMCP::ImVec4;
+
+const ImVec4 kAccent(0.45F, 0.80F, 1.0F, 1.0F);
+const ImVec4 kGood(0.40F, 0.90F, 0.50F, 1.0F);
+const ImVec4 kWarn(1.0F, 0.78F, 0.25F, 1.0F);
+const ImVec4 kBad(1.0F, 0.42F, 0.38F, 1.0F);
+const ImVec4 kMuted(0.64F, 0.66F, 0.70F, 1.0F);
+
+const ImVec4& LevelColor(int level) {
+    return level >= 2 ? kGood : level == 1 ? kWarn : kBad;
+}
+
+void Title(const char* title, const std::string& subtitle) {
+    ImGuiMCP::SetWindowFontScale(1.35F);
+    ImGuiMCP::TextColored(kAccent, "%s", title);
+    ImGuiMCP::SetWindowFontScale(1.0F);
+    if (!subtitle.empty()) {
+        ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text, kMuted);
+        ImGuiMCP::TextWrapped("%s", subtitle.c_str());
+        ImGuiMCP::PopStyleColor();
+    }
+    ImGuiMCP::Spacing();
+}
+
+void Note(const std::string& text) {
+    ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text, kMuted);
+    ImGuiMCP::TextWrapped("%s", text.c_str());
+    ImGuiMCP::PopStyleColor();
+}
+
+void Warn(const std::string& text) {
+    ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text, kWarn);
+    ImGuiMCP::TextWrapped("%s", text.c_str());
+    ImGuiMCP::PopStyleColor();
+}
+
+void Error(const std::string& text) {
+    ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_Text, kBad);
+    ImGuiMCP::TextWrapped("%s", text.c_str());
+    ImGuiMCP::PopStyleColor();
+}
+
+// A rounded, lightly shaded panel that grows to fit its content. EndCard must
+// always follow BeginCard, whatever BeginCard returned.
+void BeginCard(const char* id) {
+    ImGuiMCP::PushStyleColor(ImGuiMCP::ImGuiCol_ChildBg, ImVec4(1.0F, 1.0F, 1.0F, 0.035F));
+    ImGuiMCP::PushStyleVar(ImGuiMCP::ImGuiStyleVar_ChildRounding, 6.0F);
+    (void)ImGuiMCP::BeginChild(id, ImVec2(0.0F, 0.0F),
+        ImGuiMCP::ImGuiChildFlags_Border | ImGuiMCP::ImGuiChildFlags_AutoResizeY |
+        ImGuiMCP::ImGuiChildFlags_AlwaysUseWindowPadding);
+}
+
+void EndCard() {
+    ImGuiMCP::EndChild();
+    ImGuiMCP::PopStyleVar();
+    ImGuiMCP::PopStyleColor();
+    ImGuiMCP::Spacing();
+}
+
+// Two-column layout: label on the left, control on the right.
+bool BeginRows(const char* id) {
+    if (!ImGuiMCP::BeginTable(id, 2, ImGuiMCP::ImGuiTableFlags_SizingStretchProp)) return false;
+    ImGuiMCP::TableSetupColumn("label", 0, 0.40F);
+    ImGuiMCP::TableSetupColumn("control", 0, 0.60F);
+    return true;
+}
+
+void EndRows() { ImGuiMCP::EndTable(); }
+
+// Starts a row and leaves the cursor in the control column at full width.
+void Row(const char* label, const char* tip = nullptr) {
+    ImGuiMCP::TableNextRow();
+    ImGuiMCP::TableSetColumnIndex(0);
+    ImGuiMCP::AlignTextToFramePadding();
+    ImGuiMCP::Text("%s", label);
+    if (tip && tip[0] != '\0') {
+        ImGuiMCP::SameLine();
+        ImGuiMCP::TextDisabled("(?)");
+        if (ImGuiMCP::IsItemHovered()) ImGuiMCP::SetTooltip("%s", tip);
+    }
+    ImGuiMCP::TableSetColumnIndex(1);
+    ImGuiMCP::SetNextItemWidth(-1.0F);
+}
+
+// A read-only row with a coloured value. level: 2 good, 1 waiting/optional, 0 problem.
+void StatusRow(const char* label, const std::string& value, int level) {
+    ImGuiMCP::TableNextRow();
+    ImGuiMCP::TableSetColumnIndex(0);
+    ImGuiMCP::TextColored(kMuted, "%s", label);
+    ImGuiMCP::TableSetColumnIndex(1);
+    ImGuiMCP::TextColored(LevelColor(level), "%s", value.c_str());
+}
+
+}  // namespace Menu
+
+std::string SceneRoleText() {
+    const auto& scenes = sceneController.State();
+    if (scenes.ostim.active.load())
+        return scenes.ostim.roleValid.load() ? fmt::format("OStim: {}", OStimRoleName(scenes.ostim.role.load())) :
+            std::string("OStim running - checking the role");
+    if (scenes.sexLab.active.load())
+        return scenes.sexLab.roleValid.load() ? fmt::format("SexLab: {}", SexLabRoleName(scenes.sexLab.role.load())) :
+            std::string("SexLab running - checking the role");
+    return "No scene running";
+}
+
+int SceneRoleLevel() {
+    const auto& scenes = sceneController.State();
+    if (scenes.ostim.active.load()) return scenes.ostim.roleValid.load() ? 2 : 1;
+    if (scenes.sexLab.active.load()) return scenes.sexLab.roleValid.load() ? 2 : 1;
+    return 2;
+}
+
+bool OslArousalWritesReady() {
+    return OslArousedLoaded() && !SloArousedLoaded() && !ClassicArousedLoaded();
+}
+
+// ---- Overview ---------------------------------------------------------------
+void __stdcall RenderOverview() {
+    Settings copy;
+    { std::scoped_lock lock(settingsLock); copy = settings; }
+    const Settings previous = copy;
+    const auto ownership = ownershipController.Read();
+    bool changed = false;
+
     Diagnostics d;
     { std::scoped_lock lock(diagnosticsLock); d = diagnostics; }
-    Settings debugSettings;
-    { std::scoped_lock lock(settingsLock); debugSettings = settings; }
-    const Settings previousDebugSettings = debugSettings;
+    const bool healthChecked = d.checkedAtMs > 0;
+    const bool coreReady = CoreReady(d, copy);
+
+    Menu::Title("Schlong Physics Swapper",
+        fmt::format("Version {}. Soft physics (SMP) when relaxed, erect physics (CBPC) when aroused, switched for you.", kVersion));
+
+    Menu::BeginCard("##sps-overview-status");
+    if (Menu::BeginRows("##sps-overview-status-rows")) {
+        Menu::StatusRow("SPS", !copy.enabled ? "Turned off" : !healthChecked ? "Checking setup..." :
+            (coreReady ? (ownership.known ? "Ready" : "Waiting for the player") : "Needs attention - see Help"),
+            !copy.enabled || !healthChecked || !ownership.known ? 1 : (coreReady ? 2 : 0));
+        Menu::StatusRow("Physics", ownership.known ?
+            (ownership.usingCBPC ? "Erect (CBPC)" : "Soft (SMP)") : "Not decided yet", ownership.known ? 2 : 1);
+        const char* modeStatus[]{ "Automatic - follows arousal", "Always soft (SMP)", "Always erect (CBPC)" };
+        Menu::StatusRow("Mode", modeStatus[std::clamp(copy.mode, 0, 2)], 2);
+        ImGuiMCP::TableNextRow();
+        ImGuiMCP::TableSetColumnIndex(0);
+        ImGuiMCP::AlignTextToFramePadding();
+        ImGuiMCP::TextColored(Menu::kMuted, "Arousal");
+        ImGuiMCP::TableSetColumnIndex(1);
+        // Live arousal that can also be dragged: it follows the arousal mod while
+        // untouched, and writes the real OSL Aroused value when released (the
+        // old separate "test arousal" slider on the Erection page).
+        static float playerArousalSlider{ 0.0F };
+        static bool playerArousalEditing{ false };
+        if (!playerArousalEditing && arousalController.Valid()) playerArousalSlider = arousalController.Value();
+        const std::string suffix = copy.mode == 0 ? fmt::format("(erect at {:.0f})", copy.threshold) :
+            std::string("(not used in this mode)");
+        if (OslArousalWritesReady()) {
+            // The value is printed by the slider; the suffix is literal text, so
+            // any '%' in it would need escaping (it has none).
+            const std::string format = "%.0f / 100  " + suffix;
+            ImGuiMCP::SetNextItemWidth(-1.0F);
+            if (ImGuiMCP::SliderFloat("##sps-overview-arousal", &playerArousalSlider, 0.0F, 100.0F, format.c_str()))
+                playerArousalEditing = true;
+            if (ImGuiMCP::IsItemDeactivatedAfterEdit()) {
+                RequestPlayerOslArousalWrite(playerArousalSlider);
+                playerArousalEditing = false;
+            }
+            if (ImGuiMCP::IsItemHovered() && !playerArousalEditing)
+                ImGuiMCP::SetTooltip("Drag to set the player's arousal. Writes the real OSL Aroused value when you let go; OSL can change it again afterwards.");
+        } else {
+            const auto arousalText = arousalController.Valid() ?
+                fmt::format("{:.0f} / 100  {}", arousalController.Value(), suffix) :
+                std::string("Waiting for the arousal mod");
+            ImGuiMCP::ProgressBar(arousalController.Valid() ? arousalController.Value() / 100.0F : 0.0F,
+                Menu::ImVec2(-1.0F, 0.0F), arousalText.c_str());
+        }
+        Menu::StatusRow("Scene", SceneRoleText(), SceneRoleLevel());
+        Menu::EndRows();
+    }
+    Menu::EndCard();
+
+    SectionHeading("MAIN SWITCH");
+    if (Menu::BeginRows("##sps-overview-main")) {
+        Menu::Row("Enable SPS", "Turn SPS off to leave the schlong to your other mods.");
+        changed |= ImGuiMCP::Checkbox("##sps-enabled", &copy.enabled);
+        Menu::Row("Physics mode");
+        const char* modes[]{ "Automatic - follow arousal", "Always soft - use SMP", "Always erect - use CBPC" };
+        changed |= ImGuiMCP::Combo("##sps-mode", &copy.mode, modes, 3);
+        Menu::EndRows();
+    }
+    if (copy.mode == 0)
+        Menu::Note("SPS goes erect when arousal reaches the value on the Erection page. No arousal mod is needed in the other modes.");
+    else
+        Menu::Note(copy.mode == 1 ? "The player stays soft (SMP) until you change the mode." :
+                                     "The player stays erect (CBPC) until you change the mode.");
+
+    SectionHeading("PAGES");
+    const char* guide[][2]{
+        { "Erection", "when SPS goes erect, and how fast" },
+        { "Angles", "where the shaft points when soft, erect and in scenes" },
+        { "Scenes", "SexLab and OStim behaviour, and SexLab futa" },
+        { "NPCs", "give chosen NPCs full SPS physics" },
+        { "Help", "setup check, tests, support report and settings file" },
+    };
+    for (const auto& [page, text] : guide) {
+        ImGuiMCP::Bullet();
+        ImGuiMCP::TextColored(Menu::kAccent, "%s", page);
+        ImGuiMCP::SameLine();
+        ImGuiMCP::TextColored(Menu::kMuted, "- %s", text);
+    }
+    ImGuiMCP::Spacing();
+    if (ImGuiMCP::SmallButton("Refresh status"))
+        if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { QueryArousal(true); QuerySexLab(); QuerySexLabRole(); QueryOStimRole(); Evaluate(); });
+
+    if (changed) SaveSettingsAndApply(copy, previous);
+}
+
+// ---- Erection ---------------------------------------------------------------
+void __stdcall RenderErection() {
+    Settings copy;
+    { std::scoped_lock lock(settingsLock); copy = settings; }
+    const Settings previous = copy;
     const auto ownership = ownershipController.Read();
-    const auto position = positionController.Read();
+    bool changed = false;
+    const bool automatic = copy.mode == 0;
 
-    const bool coreReady = CoreReady(d, debugSettings);
-    PageHeading("TROUBLESHOOTING", "Check the setup, test each physics state and create a report if something still goes wrong.");
-    SectionHeading("SETUP CHECK");
-    StatusLine("Setup", d.checkedAtMs == 0 ? "Not checked yet" : (coreReady ? "Everything looks good" : "Something needs attention"), d.checkedAtMs == 0 ? 1 : (coreReady ? 2 : 0));
-    if (ImGuiMCP::Button("Check setup again"))
-        if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask(RefreshDiagnostics);
-    ImGuiMCP::SameLine();
-    if (ImGuiMCP::Button("Restore recommended settings")) {
-        Settings fixed;
-        { std::scoped_lock lock(settingsLock); fixed = settings; }
-        const Settings previous = fixed;
-        UseRecommendedSettings(fixed);
-        SaveSettingsAndApply(fixed, previous);
-    }
-    ImGuiMCP::TextWrapped("Green is ready, yellow is optional or still checking, and red needs attention. Restoring settings cannot install a missing requirement.");
-    ImGuiMCP::TextWrapped("Setup checks find the required files and bones. Use the physics tests to check actual movement; a completed command cannot verify live motion.");
+    Menu::Title("Erection", "When SPS switches to erect physics, and how fast the angle moves.");
+    if (!automatic)
+        Menu::Warn("Physics mode is not Automatic (Overview), so arousal is not used. The timing below still applies.");
 
-    const auto suggestions = SuggestedFixes(d);
-    if (suggestions.size() == 1 && suggestions.front().first == "SPS-000")
-        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.35F, 1.0F, 0.45F, 1.0F), "No setup fixes are currently needed.");
-    else {
-        SectionHeading("WHAT TO FIX");
-        for (const auto& item : suggestions)
-            ImGuiMCP::TextWrapped("- %s", item.second.c_str());
+    SectionHeading("WHEN");
+    ImGuiMCP::BeginDisabled(!automatic);
+    if (Menu::BeginRows("##sps-erection-when")) {
+        Menu::Row("Erect at arousal", "SPS switches to erect physics once arousal reaches this value.");
+        if (ImGuiMCP::SliderFloat("##sps-threshold", &copy.threshold, 0, 100, "%.0f")) {
+            // Keep the rising start below the erect value, but only while that
+            // feature is on; otherwise this would rewrite a hidden value.
+            if (copy.arousalBasedErection && copy.threshold <= copy.erectionStartArousal)
+                copy.erectionStartArousal = std::max(0.0F, copy.threshold - 1.0F);
+            changed = true;
+        }
+        Menu::Row("Soft return gap", "Arousal must fall this far below the erect value before SPS goes soft again. Widen it if the shaft flickers.");
+        changed |= ImGuiMCP::SliderFloat("##sps-hysteresis", &copy.hysteresis, 0, 25, "%.0f");
+        Menu::Row("Rise with arousal", "The angle follows arousal from a start value up to the erect value, instead of rising all at once.");
+        ImGuiMCP::BeginDisabled(!copy.positionControl);
+        changed |= ImGuiMCP::Checkbox("##sps-arousal-based", &copy.arousalBasedErection);
+        ImGuiMCP::EndDisabled();
+        Menu::Row("Start rising at");
+        ImGuiMCP::BeginDisabled(!copy.arousalBasedErection || !copy.positionControl);
+        if (ImGuiMCP::SliderFloat("##sps-rise-start", &copy.erectionStartArousal, 0.0F, 99.0F, "%.0f")) {
+            if (copy.erectionStartArousal >= copy.threshold)
+                copy.threshold = std::min(100.0F, copy.erectionStartArousal + 1.0F);
+            changed = true;
+        }
+        ImGuiMCP::EndDisabled();
+        Menu::EndRows();
     }
-    const auto currentActivity = activityLog.Read();
-    if (!currentActivity.lastError.empty())
-        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.45F, 0.35F, 1.0F),
-            "Most recent problem: %s", currentActivity.lastError.c_str());
-    ImGuiMCP::Separator();
-    if (ImGuiMCP::CollapsingHeader("Recovery")) {
-        // Recovery used to be a whole page. Every option here has a working
-        // default, so it belongs with the rest of the "something is wrong"
-        // tools rather than in the everyday menu.
-        Settings recovery;
-        { std::scoped_lock lock(settingsLock); recovery = settings; }
-        bool recoveryChanged = false;
-        recoveryChanged |= ImGuiMCP::Checkbox("Refresh physics after loading", &recovery.resetSMPAfterLoad);
-        recoveryChanged |= ImGuiMCP::Checkbox("Refresh after changing armour or schlong",
-            &recovery.equipmentChangeRecovery);
-        Hint("Both are recommended. Turning them off leaves the last state in place.");
-        if (position.automaticSuspended) {
-            ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F),
-                "Angle recovery paused after repeated failures.");
-            if (ImGuiMCP::Button("Try angle recovery again")) {
-                ResetPositionRecovery();
+    ImGuiMCP::EndDisabled();
+    const float softBelow = std::max(0.0F, copy.threshold - copy.hysteresis);
+    if (automatic) {
+        Menu::Note(copy.arousalBasedErection && copy.positionControl ?
+            fmt::format("Rises between {:.0f} and {:.0f} arousal, soft again below {:.0f}.",
+                copy.erectionStartArousal, copy.threshold, softBelow) :
+            fmt::format("Erect at {:.0f} arousal, soft again below {:.0f}.", copy.threshold, softBelow));
+    }
+
+    SectionHeading("HOW FAST");
+    if (Menu::BeginRows("##sps-erection-speed")) {
+        Menu::Row("Rise time", "Time for the full climb from the lowest to the highest angle.");
+        float erectionSeconds = copy.erectionDurationMs / 1000.0F;
+        if (ImGuiMCP::SliderFloat("##sps-rise-time", &erectionSeconds, 0.5F, 30.0F, "%.1f s")) {
+            copy.erectionDurationMs = static_cast<int>(std::lround(erectionSeconds * 1000.0F));
+            // Any duration is a timed rise, so the slider replaces the old toggle.
+            copy.gradualErection = true;
+            changed = true;
+        }
+        Menu::Row("Fall time", "Time for the full fall back to the lowest angle.");
+        float softeningSeconds = copy.softeningDurationMs / 1000.0F;
+        if (ImGuiMCP::SliderFloat("##sps-fall-time", &softeningSeconds, 0.5F, 30.0F, "%.1f s")) {
+            copy.softeningDurationMs = static_cast<int>(std::lround(softeningSeconds * 1000.0F));
+            copy.gradualErection = true;
+            changed = true;
+        }
+        Menu::EndRows();
+    }
+    // The graph binds 19 positions (SOSBend-9 to SOSBend9): 18 even steps.
+    Menu::Note(fmt::format("18 even steps: about {:.2f} s each going up, {:.2f} s each going down.",
+        (copy.erectionDurationMs / 1000.0F) / 18.0F, (copy.softeningDurationMs / 1000.0F) / 18.0F));
+    ImGuiMCP::BeginDisabled(!ownership.known || !ownership.usingCBPC);
+    if (ImGuiMCP::Button("Preview rise and fall")) {
+        const int target = copy.erectBend;
+        const int riseMs = copy.erectionDurationMs;
+        if (auto* tasks = SKSE::GetTaskInterface())
+            tasks->AddTask([target, riseMs] {
                 playerContext.position.appliedBend.store(-1);
+                StartBendAnimation(0, target, riseMs, false);
+            });
+        Record("Previewing the angle timing");
+    }
+    ImGuiMCP::EndDisabled();
+    if (!ownership.known || !ownership.usingCBPC) {
+        ImGuiMCP::SameLine();
+        ImGuiMCP::TextColored(Menu::kMuted, "Available while erect.");
+    }
+
+    SectionHeading("RANDOM ERECTIONS");
+    if (Menu::BeginRows("##sps-erection-random")) {
+        Menu::Row("Allow random erections", "Now and then the player becomes erect for a while, whatever the arousal.");
+        changed |= ImGuiMCP::Checkbox("##sps-random", &copy.randomErections);
+        ImGuiMCP::BeginDisabled(!copy.randomErections);
+        Menu::Row("Shortest gap");
+        changed |= ImGuiMCP::SliderInt("##sps-random-min", &copy.randomErectionMinMinutes, 1, 120, "%d min");
+        Menu::Row("Longest gap");
+        changed |= ImGuiMCP::SliderInt("##sps-random-max", &copy.randomErectionMaxMinutes, 1, 240, "%d min");
+        Menu::Row("Lasts");
+        changed |= ImGuiMCP::SliderInt("##sps-random-duration", &copy.randomErectionDurationSeconds, 5, 600, "%d s");
+        ImGuiMCP::EndDisabled();
+        Menu::EndRows();
+    }
+
+    if (changed) SaveSettingsAndApply(copy, previous);
+}
+
+// ---- Angles -----------------------------------------------------------------
+void __stdcall RenderAngles() {
+    Settings copy;
+    { std::scoped_lock lock(settingsLock); copy = settings; }
+    const Settings previous = copy;
+    const auto ownership = ownershipController.Read();
+    bool changed = false;
+    const bool softAngleAvailable = SoftAngleControlAvailable(copy.bendMethod);
+
+    Menu::Title("Angles", "Where the shaft points when soft, when erect and during scenes.");
+    if (!copy.positionControl)
+        Menu::Warn("Angle control is off (Advanced, below). Physics switching still works.");
+
+    SectionHeading("POSITIONS");
+    ImGuiMCP::BeginDisabled(!copy.positionControl);
+    if (Menu::BeginRows("##sps-angles")) {
+        Menu::Row("Erect angle", "0 points straight out. 20 is the highest position the skeleton offers.");
+        changed |= ImGuiMCP::SliderInt("##sps-erect-angle", &copy.erectBend, 0, 20);
+        Menu::Row("Soft angle", "0 keeps the normal hanging position.");
+        if (softAngleAvailable) {
+            // One slider: 0 already means "leave the hanging pose alone". The flag
+            // is only written on an edit, so it never lands in the INI unasked.
+            int softAngle = copy.flaccidBend;
+            if (ImGuiMCP::SliderInt("##sps-soft-angle", &softAngle, 0, 20,
+                softAngle == 0 ? "0 (normal hanging)" : "%d")) {
+                copy.flaccidBend = softAngle;
+                copy.flaccidAngleControl = softAngle > 0;
+                changed = true;
+            }
+        } else {
+            ImGuiMCP::AlignTextToFramePadding();
+            ImGuiMCP::TextColored(Menu::kMuted, "Needs SOS AE or the SPS pose angle");
+        }
+        Menu::Row("Own angle in scenes", "Use a different erect angle during SexLab and OStim scenes.");
+        const bool sceneAngleChanged = ImGuiMCP::Checkbox("##sps-scene-angle-on", &copy.useSexLabBend);
+        changed |= sceneAngleChanged;
+        if (sceneAngleChanged && copy.useSexLabBend) copy.sexLabOverride = true;
+        Menu::Row("Scene erect angle");
+        ImGuiMCP::BeginDisabled(!copy.useSexLabBend);
+        changed |= ImGuiMCP::SliderInt("##sps-scene-angle", &copy.sexLabBend, 0, 20);
+        ImGuiMCP::EndDisabled();
+        Menu::EndRows();
+    }
+    ImGuiMCP::EndDisabled();
+    if (!softAngleAvailable)
+        Menu::Note("Legacy SOS and TNG keep their own hanging pose.");
+
+    ImGuiMCP::Spacing();
+    ImGuiMCP::BeginDisabled(!copy.positionControl || !ownership.known);
+    if (ImGuiMCP::Button("Reapply angle")) {
+        ResetPositionRecovery();
+        playerContext.position.appliedBend.store(-1);
+        if (auto* tasks = SKSE::GetTaskInterface())
+            tasks->AddTask([] { ApplyRequestedBend(true, true, false); });
+    }
+    ImGuiMCP::EndDisabled();
+    ImGuiMCP::SameLine();
+    ImGuiMCP::TextColored(Menu::kMuted, "Only needed if the angle looks stale.");
+
+    ImGuiMCP::Spacing();
+    if (ImGuiMCP::CollapsingHeader("Advanced")) {
+        // Everything here has a working default; collapsed so the page stays short.
+        if (Menu::BeginRows("##sps-angles-advanced")) {
+            Menu::Row("Let SPS control the angle", "Off leaves the angle to SOS, TNG or your other mods. Physics switching still works.");
+            changed |= ImGuiMCP::Checkbox("##sps-position-control", &copy.positionControl);
+            ImGuiMCP::BeginDisabled(!copy.positionControl);
+            // Choice -> Position/Method: 0 stages (1), 1 automatic (2), 2 pose (3).
+            // Automatic must not write 3 (the experimental pose angle, which the
+            // animation graph overwrites every frame).
+            Menu::Row("Method");
+            const char* bendMethods[]{ "SOS / TNG animation stages", "Choose automatically (recommended)",
+                "SPS pose angle (experimental)" };
+            int methodChoice = copy.bendMethod == SPS::Runtime::kBendMethodEvents ? 0 :
+                copy.bendMethod == SPS::Runtime::kBendMethodPose ? 2 : 1;
+            if (ImGuiMCP::Combo("##sps-method", &methodChoice, bendMethods, 3)) {
+                copy.bendMethod = methodChoice == 0 ? SPS::Runtime::kBendMethodEvents :
+                    methodChoice == 2 ? SPS::Runtime::kBendMethodPose : SPS::Runtime::kBendMethodAutomatic;
+                changed = true;
+            }
+            Menu::Row("Smooth angle changes");
+            changed |= ImGuiMCP::Checkbox("##sps-animate", &copy.animatePosition);
+            Menu::Row("Stop repeated bouncing", "Pauses automatic angle repairs for a moment if the angle keeps being reset.");
+            changed |= ImGuiMCP::Checkbox("##sps-bounce", &copy.bounceGuard);
+            ImGuiMCP::EndDisabled();
+            Menu::EndRows();
+        }
+        if (copy.bendMethod == SPS::Runtime::kBendMethodPose)
+            Menu::Warn("Experimental: writes the base bone directly. The SOS/TNG animation usually overwrites it, so the angle may not move.");
+        else
+            Menu::Note("SOS/TNG animation stages: 19 positions, SOSBend-9 to SOSBend9. Timing and other rarely changed values are in the settings file.");
+    }
+
+    if (changed) SaveSettingsAndApply(copy, previous);
+}
+
+// ---- Scenes -----------------------------------------------------------------
+void RenderFutaSection(const SPS::Runtime::ManagedNpcStatus& managed) {
+    const bool sosAe = SosAeNativeLoaded();
+    const bool sexLab = PluginLoaded({ "SexLab.esm" });
+    if (!sosAe && !sexLab) {
+        Menu::Note("Needs Schlongs of Skyrim AE or SexLab P+.");
+        return;
+    }
+    Menu::Note("Shows the schlong and SexLab sex of you and your managed NPCs. Make futa uses SexLab's own futa "
+        "override; SPS remembers it in this save and re-applies it if SexLab forgets.");
+    std::vector<std::pair<std::uint32_t, std::string>> people{ { SPS::API::kPlayerFormID, "Player" } };
+    for (const auto& actor : managed.actors) people.emplace_back(actor.formID, actor.name);
+    for (const auto& [formID, name] : people) {
+        Menu::BeginCard(fmt::format("##sps-futa-card-{:08X}", formID).c_str());
+        ImGuiMCP::TextColored(Menu::kAccent, "%s", name.c_str());
+        const auto identity = SPS::Runtime::ReadActorIdentity(formID);
+        if (!identity || !identity->known) {
+            ImGuiMCP::TextColored(Menu::kMuted, "Reading...");
+            Menu::EndCard();
+            continue;
+        }
+        const std::string schlong = !identity->sosRead ? "SOS AE not detected" :
+            identity->addon.empty() ? "No schlong" :
+            fmt::format("{} (size {})", identity->addon, identity->rank);
+        const std::string sex = !identity->sexLabRead ? "SexLab not detected" :
+            fmt::format("{}{}", SPS::Runtime::SexLabSexName(identity->sex),
+                identity->sex == 2 && identity->baseSex != 2 ? " (forced)" :
+                identity->baseSex != identity->sex ?
+                    fmt::format(" (base: {})", SPS::Runtime::SexLabSexName(identity->baseSex)) : "");
+        if (Menu::BeginRows(fmt::format("##sps-futa-rows-{:08X}", formID).c_str())) {
+            Menu::StatusRow("Schlong", schlong, 2);
+            Menu::StatusRow("SexLab sex", sex + (identity->rememberedFuta ? ", remembered in this save" : ""), 2);
+            Menu::EndRows();
+        }
+        if (identity->sexLabRead) {
+            const bool forced = identity->rememberedFuta || (identity->sex == 2 && identity->baseSex != 2);
+            if (SPS::Runtime::FutaEligible(*identity) && identity->sex != 2) {
+                if (ImGuiMCP::Button(fmt::format("Make futa in SexLab###sps-futa-{:08X}", formID).c_str()))
+                    SPS::Runtime::RequestFuta(formID, true);
+            } else if (forced) {
+                if (ImGuiMCP::Button(fmt::format("Undo futa###sps-unfuta-{:08X}", formID).c_str()))
+                    SPS::Runtime::RequestFuta(formID, false);
+            } else if (identity->baseSex != 0 && identity->baseSex != 1) {
+                if (identity->sex != 2) {
+                    if (ImGuiMCP::Button(fmt::format("Force futa in SexLab###sps-forcefuta-{:08X}", formID).c_str()))
+                        SPS::Runtime::RequestFuta(formID, true);
+                    Menu::Note(fmt::format("SexLab's base sex for this character is {}. Forcing futa overrides it; creature animations may no longer match.",
+                        SPS::Runtime::SexLabSexName(identity->baseSex)));
+                }
+            } else if (identity->sosRead && identity->addon.empty()) {
+                Menu::Note("No futa button: give them a schlong in SOS first.");
             }
         }
-        if (recoveryChanged) {
-            const Settings previous = debugSettings;
-            debugSettings = recovery;
-            SaveSettingsAndApply(debugSettings, previous);
-        }
+        Menu::EndCard();
+    }
+}
+
+void __stdcall RenderScenes() {
+    Settings copy;
+    { std::scoped_lock lock(settingsLock); copy = settings; }
+    const Settings previous = copy;
+    bool changed = false;
+
+    Diagnostics d;
+    { std::scoped_lock lock(diagnosticsLock); d = diagnostics; }
+    const bool sexLabLoaded = d.sexLabModuleLoaded && d.sexLabPluginLoaded;
+    const bool ostimLoaded = d.ostimPluginLoaded;
+    const bool ppaLoaded = ::GetModuleHandleW(L"AccuratePenetration.dll") != nullptr;
+    const auto& scenes = sceneController.State();
+
+    Menu::Title("Scenes", "What SPS does during SexLab and OStim scenes. Normal gameplay is not affected.");
+
+    Menu::BeginCard("##sps-scenes-status");
+    if (Menu::BeginRows("##sps-scenes-status-rows")) {
+        Menu::StatusRow("SexLab", sexLabLoaded ? (scenes.sexLab.connected.load() ? "Ready" : "Still loading") :
+            "Not installed (optional)", sexLabLoaded ? (scenes.sexLab.connected.load() ? 2 : 1) : 1);
+        Menu::StatusRow("OStim", ostimLoaded ? (d.ostimRoleBridgePresent ? "Ready" : "SPS OStim bridge missing") :
+            "Not installed (optional)", ostimLoaded ? (d.ostimRoleBridgePresent ? 2 : 0) : 1);
+        Menu::StatusRow("PPA", ppaLoaded ? (PPAOwnsPosition() ? "Lining up the current scene" : "Ready") :
+            "Not installed (optional)", ppaLoaded ? 2 : 1);
+        Menu::StatusRow("Current role", SceneRoleText(), SceneRoleLevel());
+        Menu::EndRows();
+    }
+    Menu::EndCard();
+    if (ostimLoaded && !d.ostimRoleBridgePresent)
+        Menu::Error("OStim is installed, but the optional SPS OStim bridge is missing. Rerun the SPS installer and tick OStim.");
+
+    SectionHeading("FRAMEWORKS");
+    if (Menu::BeginRows("##sps-scenes-frameworks")) {
+        Menu::Row("Manage SexLab scenes");
+        changed |= ImGuiMCP::Checkbox("##sps-sexlab", &copy.sexLabOverride);
+        Menu::Row("Follow the SexLab role", "Erect when the player's penis is used, the receiving choice below otherwise.");
+        ImGuiMCP::BeginDisabled(!copy.sexLabOverride);
+        changed |= ImGuiMCP::Checkbox("##sps-sexlab-role", &copy.sexLabRoleSwitching);
+        ImGuiMCP::EndDisabled();
+        Menu::Row("Manage OStim scenes");
+        changed |= ImGuiMCP::Checkbox("##sps-ostim", &copy.ostimOverride);
+        Menu::Row("Follow the OStim role", "Erect when the player's penis is used, the receiving choice below otherwise.");
+        ImGuiMCP::BeginDisabled(!copy.ostimOverride);
+        changed |= ImGuiMCP::Checkbox("##sps-ostim-role", &copy.ostimRoleSwitching);
+        ImGuiMCP::EndDisabled();
+        Menu::EndRows();
     }
 
-    ImGuiMCP::Separator();
+    SectionHeading("WHEN RECEIVING");
+    const bool anyRoleSwitching = (copy.sexLabOverride && copy.sexLabRoleSwitching) ||
+        (copy.ostimOverride && copy.ostimRoleSwitching);
+    if (Menu::BeginRows("##sps-scenes-receiving")) {
+        Menu::Row("Receiving / bottom", "What happens when the player is not the one using their penis.");
+        ImGuiMCP::BeginDisabled(!anyRoleSwitching);
+        const char* bottomBehaviors[]{
+            "Keep the state from before the scene (recommended)",
+            "Follow live arousal",
+            "Always stay soft (SMP)",
+            "Always stay erect (CBPC)"
+        };
+        changed |= ImGuiMCP::Combo("##sps-bottom", &copy.sexLabBottomBehavior, bottomBehaviors, 4);
+        ImGuiMCP::EndDisabled();
+        Menu::EndRows();
+    }
+    Menu::Note("When the player's penis is used, SPS always uses erect physics. The scene angle is on the Angles page.");
+    if (ppaLoaded)
+        Menu::Note("PPA lines up the live angle during its scenes; SPS only decides soft or erect.");
+
+    SectionHeading("SEXLAB FUTA");
+    RenderFutaSection(SPS::Runtime::ReadManagedNpcStatus());
+
+    if (changed) SaveSettingsAndApply(copy, previous);
+}
+
+// ---- NPCs -------------------------------------------------------------------
+void __stdcall RenderNPCs() {
+    Settings copy;
+    { std::scoped_lock lock(settingsLock); copy = settings; }
+    const Settings previous = copy;
+    bool changed = false;
+
+    Menu::Title("NPCs", "Pick NPCs for full SPS physics. Everyone else keeps their arousal mod's behaviour.");
+    if (!copy.enabled)
+        Menu::Warn("SPS is turned off on the Overview page, so NPC control is off.");
+
+    const auto managed = SPS::Runtime::ReadManagedNpcStatus();
+    // Registry access is game-thread-only: the menu queues an intent by FormID.
+    const auto queueAdd = [](std::uint32_t formID) {
+        if (auto* tasks = SKSE::GetTaskInterface())
+            tasks->AddTask([formID] {
+                if (!SPS::Runtime::QueueManagedNpcAdd(formID))
+                    Record(fmt::format("Could not queue managed NPC {:08X}", formID), true);
+            });
+    };
+    const auto queueRemove = [](std::uint32_t formID) {
+        if (auto* tasks = SKSE::GetTaskInterface())
+            tasks->AddTask([formID] { SPS::Runtime::QueueManagedNpcRemove(formID); });
+    };
+
+    if (Menu::BeginRows("##sps-npcs-main")) {
+        Menu::Row("Managed NPCs", "A managed NPC switches soft or erect from its own arousal, goes erect when its penis is used in a scene, and is remembered in this save.");
+        changed |= ImGuiMCP::Checkbox("##sps-managed", &copy.managedNpcEnabled);
+        Menu::Row("Allow up to 8", "The default limit is 1. Each managed NPC runs its own physics handoffs.");
+        ImGuiMCP::BeginDisabled(!copy.managedNpcEnabled);
+        changed |= ImGuiMCP::Checkbox("##sps-managed-eight", &copy.managedNpcUpToEight);
+        ImGuiMCP::EndDisabled();
+        Menu::EndRows();
+    }
+    if (copy.managedNpcUpToEight)
+        Menu::Warn("Several managed NPCs at once can cost frame rate and script time, especially in busy scenes. Not tested with more than two.");
+    else if (managed.actors.size() > managed.capacity)
+        Menu::Warn(fmt::format("{} NPCs are managed but the limit is {}. Remove the extras; none can be added until you do.",
+            managed.actors.size(), managed.capacity));
+
+    SectionHeading(fmt::format("MANAGED  {} / {}", managed.actors.size(), managed.capacity).c_str());
+    if (managed.actors.empty())
+        Menu::Note("No NPC is managed yet. Pick one from Nearby below, or look at one and press Add NPC in crosshair.");
+
+    struct ManagedSliderState { float value{ 0.0F }; bool editing{ false }; };
+    static std::unordered_map<std::uint32_t, ManagedSliderState> managedSliders;
+    std::erase_if(managedSliders, [&managed](const auto& item) {
+        return std::none_of(managed.actors.begin(), managed.actors.end(),
+            [formID = item.first](const auto& actor) { return actor.formID == formID; });
+    });
+    const bool oslReady = OslArousalWritesReady();
+    for (const auto& actor : managed.actors) {
+        Menu::BeginCard(fmt::format("##sps-npc-card-{:08X}", actor.formID).c_str());
+        ImGuiMCP::TextColored(Menu::kAccent, "%s", actor.name.c_str());
+        ImGuiMCP::SameLine();
+        ImGuiMCP::TextColored(Menu::kMuted, "%s", actor.physics.c_str());
+        ImGuiMCP::SameLine();
+        if (ImGuiMCP::SmallButton(fmt::format("Remove###sps-managed-remove-{:08X}", actor.formID).c_str()))
+            queueRemove(actor.formID);
+        if (Menu::BeginRows(fmt::format("##sps-npc-rows-{:08X}", actor.formID).c_str())) {
+            Menu::Row("Arousal", oslReady ? "Writes the real OSL Aroused value when you let go. OSL can change it again afterwards." : nullptr);
+            if (oslReady) {
+                auto& slider = managedSliders[actor.formID];
+                if (!slider.editing && actor.arousal) slider.value = *actor.arousal;
+                if (ImGuiMCP::SliderFloat(fmt::format("##sps-managed-arousal-{:08X}", actor.formID).c_str(),
+                        &slider.value, 0.0F, 100.0F, "%.0f"))
+                    slider.editing = true;
+                if (ImGuiMCP::IsItemDeactivatedAfterEdit()) {
+                    const auto formID = actor.formID;
+                    const auto value = slider.value;
+                    if (auto* tasks = SKSE::GetTaskInterface()) {
+                        tasks->AddTask([formID, value] {
+                            if (!SPS::Runtime::QueueManagedNpcArousalWrite(formID, value))
+                                Record(fmt::format("Could not queue an OSL arousal write for managed NPC {:08X}", formID), true);
+                        });
+                    }
+                    slider.editing = false;
+                }
+            } else {
+                const auto text = actor.arousal ? fmt::format("{:.0f} / 100", *actor.arousal) : std::string("Waiting...");
+                ImGuiMCP::ProgressBar(actor.arousal ? *actor.arousal / 100.0F : 0.0F, Menu::ImVec2(-1.0F, 0.0F), text.c_str());
+            }
+            Menu::EndRows();
+        }
+        // This NPC's own settings, separate from the player's. A local copy is
+        // kept while dragging; the file is written when the control is released.
+        if (ImGuiMCP::CollapsingHeader(fmt::format("Settings###sps-managed-opt-{:08X}", actor.formID).c_str())) {
+            struct OptionState { SPS::Runtime::ManagedNpcOptions value; bool editing{ false }; };
+            static std::unordered_map<std::uint32_t, OptionState> optionStates;
+            auto& state = optionStates[actor.formID];
+            if (!state.editing) state.value = actor.options;
+            auto& o = state.value;
+            bool edited = false, released = false;
+            const auto track = [&](bool changedNow) {
+                edited |= changedNow;
+                released |= ImGuiMCP::IsItemDeactivatedAfterEdit();
+            };
+            if (Menu::BeginRows(fmt::format("##sps-npc-opt-rows-{:08X}", actor.formID).c_str())) {
+                Menu::Row("Erect at arousal");
+                track(ImGuiMCP::SliderFloat(fmt::format("##sps-o-at-{:08X}", actor.formID).c_str(),
+                    &o.erectAt, 0.0F, 100.0F, "%.0f"));
+                Menu::Row("Erect angle");
+                track(ImGuiMCP::SliderInt(fmt::format("##sps-o-ang-{:08X}", actor.formID).c_str(), &o.angle, 1, 20));
+                Menu::Row("Rise with arousal");
+                if (ImGuiMCP::Checkbox(fmt::format("##sps-o-follow-{:08X}", actor.formID).c_str(), &o.followArousal)) {
+                    edited = true;
+                    released = true;
+                }
+                Menu::Row("Rise time");
+                track(ImGuiMCP::SliderInt(fmt::format("##sps-o-rise-{:08X}", actor.formID).c_str(), &o.riseSeconds, 1, 30, "%d s"));
+                Menu::Row("Fall time");
+                track(ImGuiMCP::SliderInt(fmt::format("##sps-o-fall-{:08X}", actor.formID).c_str(), &o.fallSeconds, 1, 30, "%d s"));
+                Menu::EndRows();
+            }
+            if (edited) state.editing = !released;
+            if (edited || released) {
+                if (auto* tasks = SKSE::GetTaskInterface()) {
+                    const auto formID = actor.formID;
+                    const auto value = o;
+                    const bool save = released;
+                    tasks->AddTask([formID, value, save] { SPS::Runtime::SetManagedNpcOptions(formID, value, save); });
+                }
+            }
+        }
+        Menu::EndCard();
+    }
+    if (!managed.rejection.empty())
+        Menu::Warn(fmt::format("Could not do that: {}", managed.rejection));
+
+    if (ImGuiMCP::Button("Add NPC in crosshair")) {
+        if (auto* tasks = SKSE::GetTaskInterface()) {
+            tasks->AddTask([] {
+                const auto target = SPS::Runtime::ResolveManagedNpcTarget();
+                if (!target) Record("No NPC in the crosshair to manage", true);
+                else if (!SPS::Runtime::QueueManagedNpcAdd(target))
+                    Record(fmt::format("Could not queue managed NPC {:08X}", target), true);
+            });
+        }
+    }
+    ImGuiMCP::SameLine();
+    ImGuiMCP::BeginDisabled(managed.actors.empty());
+    if (ImGuiMCP::Button("Remove all"))
+        for (const auto& actor : managed.actors) queueRemove(actor.formID);
+    ImGuiMCP::EndDisabled();
+
+    SectionHeading("NEARBY");
+    const bool atLimit = managed.actors.size() >= managed.capacity;
+    if (!copy.managedNpcEnabled || !copy.enabled)
+        Menu::Note("Turn on Managed NPCs to see who is nearby.");
+    else if (managed.nearby.empty())
+        Menu::Note("Nobody in range. Move closer to the NPC you want.");
+    else if (ImGuiMCP::BeginTable("##sps-nearby", 3,
+            ImGuiMCP::ImGuiTableFlags_SizingStretchProp | ImGuiMCP::ImGuiTableFlags_RowBg)) {
+        ImGuiMCP::TableSetupColumn("name", 0, 0.55F);
+        ImGuiMCP::TableSetupColumn("distance", 0, 0.15F);
+        ImGuiMCP::TableSetupColumn("action", 0, 0.30F);
+        for (const auto& candidate : managed.nearby) {
+            ImGuiMCP::TableNextRow();
+            ImGuiMCP::TableSetColumnIndex(0);
+            ImGuiMCP::AlignTextToFramePadding();
+            ImGuiMCP::Text("%s", candidate.name.c_str());
+            ImGuiMCP::TableSetColumnIndex(1);
+            ImGuiMCP::AlignTextToFramePadding();
+            ImGuiMCP::TextColored(Menu::kMuted, "%.0f m", candidate.distance / 70.0F);  // ~70 units per metre
+            ImGuiMCP::TableSetColumnIndex(2);
+            if (candidate.managed) {
+                ImGuiMCP::AlignTextToFramePadding();
+                ImGuiMCP::TextColored(Menu::kGood, "Managed");
+            } else if (!candidate.unavailable.empty()) {
+                ImGuiMCP::AlignTextToFramePadding();
+                ImGuiMCP::TextColored(Menu::kMuted, "%s", candidate.unavailable.c_str());
+            } else {
+                ImGuiMCP::BeginDisabled(atLimit);
+                if (ImGuiMCP::SmallButton(fmt::format("Manage###sps-managed-add-{:08X}", candidate.formID).c_str()))
+                    queueAdd(candidate.formID);
+                ImGuiMCP::EndDisabled();
+            }
+        }
+        ImGuiMCP::EndTable();
+    }
+    if (atLimit && !managed.nearby.empty() && copy.managedNpcEnabled)
+        Menu::Warn(fmt::format("Limit reached ({}). Remove one to manage another.", managed.capacity));
+
+    // Kept outside the collapsible section so the safety rule always applies.
+    if (!copy.basicNpcProviderSosDisabled && copy.basicNpcEnabled) { copy.basicNpcEnabled = false; changed = true; }
+
+    ImGuiMCP::Spacing();
+    if (ImGuiMCP::CollapsingHeader("Other NPCs (simple poses)")) {
+        Menu::Note("Poses other nearby NPCs soft or erect from their arousal, without switching their physics. "
+            "Turn off Enable SOS in OSL Aroused first so the two do not fight.");
+        if (Menu::BeginRows("##sps-basic-rows")) {
+            Menu::Row("OSL's SOS control is off", "Confirms you turned off Enable SOS in OSL Aroused.");
+            changed |= ImGuiMCP::Checkbox("##sps-basic-confirm", &copy.basicNpcProviderSosDisabled);
+            Menu::Row("Pose other NPCs", "NPCs wait during scenes. Turning this off leaves their last pose.");
+            ImGuiMCP::BeginDisabled(!copy.basicNpcProviderSosDisabled);
+            changed |= ImGuiMCP::Checkbox("##sps-basic", &copy.basicNpcEnabled);
+            ImGuiMCP::EndDisabled();
+            Menu::EndRows();
+        }
+        const auto npc = SPS::Runtime::ReadBasicNpcStatus();
+        Menu::Note(fmt::format("{}  -  nearby: {} / 8", npc.state, npc.tracked));
+
+        ImGuiMCP::BeginDisabled(!oslReady);
+        struct SliderState { float value{ 0.0F }; bool editing{ false }; };
+        static std::unordered_map<std::uint32_t, SliderState> npcSliders;
+        std::erase_if(npcSliders, [&npc](const auto& item) {
+            return std::none_of(npc.actors.begin(), npc.actors.end(),
+                [formID = item.first](const auto& actor) { return actor.formID == formID; });
+        });
+        if (!oslReady) npcSliders.clear();
+        if (!npc.actors.empty() && Menu::BeginRows("##sps-basic-arousal")) {
+            for (const auto& actor : npc.actors) {
+                auto& slider = npcSliders[actor.formID];
+                if (!slider.editing && actor.arousal) slider.value = *actor.arousal;
+                Menu::Row(actor.name.c_str());
+                if (ImGuiMCP::SliderFloat(fmt::format("##OSL NPC arousal {:08X}", actor.formID).c_str(),
+                        &slider.value, 0.0F, 100.0F, "%.0f"))
+                    slider.editing = true;
+                if (ImGuiMCP::IsItemDeactivatedAfterEdit()) {
+                    // The basic NPC pool is game-thread-only: queue the write by ID.
+                    const auto formID = actor.formID;
+                    const auto value = slider.value;
+                    if (auto* tasks = SKSE::GetTaskInterface()) {
+                        tasks->AddTask([formID, value] {
+                            if (!SPS::Runtime::QueueBasicNpcOslArousalWrite(formID, value,
+                                    papyrusDispatchAllowedAfterMs.load()))
+                                Record(fmt::format("Could not queue an OSL arousal write for NPC {:08X}", formID), true);
+                        });
+                    }
+                    slider.editing = false;
+                }
+            }
+            Menu::EndRows();
+        }
+        ImGuiMCP::EndDisabled();
+        if (!oslReady) Menu::Note("Arousal test sliders need OSL Aroused, with no other arousal mod taking priority.");
+        else if (npc.actors.empty()) Menu::Note("No eligible NPC nearby yet.");
+    }
+
+    if (ImGuiMCP::CollapsingHeader("Technical details##sps-npcs")) {
+        const auto npc = SPS::Runtime::ReadBasicNpcStatus();
+        Menu::Note(fmt::format("Managed NPCs: {} (limit {})", managed.state, managed.capacity));
+        if (!managed.actors.empty())
+            Menu::Note(fmt::format("Commands sent: {} physics changes, {} poses applied, {} deferred, {} failed, {} blocked. "
+                "These count commands, so check the NPC in game for visible motion.",
+                managed.switched, managed.applied, managed.deferred, managed.failed, managed.blocked));
+        Menu::Note(fmt::format("Simple poses: waiting {}, in scenes {}, pending {}; {} completed, {} scene deferrals, "
+            "{} failed or expired, {} waiting for a bridge or free slot.",
+            npc.waiting, npc.inScene, npc.pending, npc.completed, npc.deferred, npc.failed, npc.blocked));
+    }
+
+    if (changed) SaveSettingsAndApply(copy, previous);
+}
+
+// ---- Help -------------------------------------------------------------------
+void __stdcall RenderHelp() {
+    Diagnostics d;
+    { std::scoped_lock lock(diagnosticsLock); d = diagnostics; }
+    Settings copy;
+    { std::scoped_lock lock(settingsLock); copy = settings; }
+    const Settings previous = copy;
+    bool changed = false;
+    const auto ownership = ownershipController.Read();
+    const auto position = positionController.Read();
+    const bool coreReady = CoreReady(d, copy);
+
+    Menu::Title("Help", "Check the setup, test each physics state, and make a report if something still goes wrong.");
+
+    // ---- Setup check
+    Menu::BeginCard("##sps-help-setup");
+    if (Menu::BeginRows("##sps-help-setup-rows")) {
+        Menu::StatusRow("Setup", d.checkedAtMs == 0 ? "Not checked yet" :
+            (coreReady ? "Everything looks good" : "Something needs attention"),
+            d.checkedAtMs == 0 ? 1 : (coreReady ? 2 : 0));
+        Menu::EndRows();
+    }
+    const auto suggestions = SuggestedFixes(d);
+    if (!(suggestions.size() == 1 && suggestions.front().first == "SPS-000")) {
+        for (const auto& item : suggestions) {
+            ImGuiMCP::Bullet();
+            ImGuiMCP::TextWrapped("%s", item.second.c_str());
+        }
+    }
+    const auto activity = activityLog.Read();
+    if (!activity.lastError.empty())
+        Menu::Error(fmt::format("Most recent problem: {}", activity.lastError));
+    if (ImGuiMCP::SmallButton("Check setup again"))
+        if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask(RefreshDiagnostics);
+    Menu::EndCard();
+    if (OslArousedLoaded())
+        Menu::Warn("OSL Aroused 2.9.3+: turn off Enable SOS so OSL does not fight SPS for the player's angle.");
+    else if (SloArousedLoaded())
+        Menu::Warn("SLO Aroused NG: turn off Use SOS so SLO does not fight SPS for the player's angle.");
+    else if (d.classicArousedPluginLoaded)
+        Menu::Warn("SexLab Aroused Redux: turn off Enable SOS so Redux does not fight SPS for the player's angle.");
+    if (d.sosPhysicsManagerLoaded)
+        Menu::Error("SOS Physics Manager is enabled. Disable it: it controls the same schlong physics as SPS.");
+    if (d.physicsEditorLoaded)
+        Menu::Warn("Physics Editor is installed. Disable its schlong controls if SPS changes unexpectedly.");
+    if (d.autoPhysicsResetLoaded)
+        Menu::Warn("Auto Physics Reset is running. Turn off its load, cell or scene resets if the state changes unexpectedly.");
+
+    // ---- Test and repair
     SectionHeading("TEST AND REPAIR");
-    if (ImGuiMCP::Button("Test soft (10 seconds)"))
+    if (ImGuiMCP::Button("Test soft (10 s)"))
         if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { TestPhysicsState(false); });
     ImGuiMCP::SameLine();
-    if (ImGuiMCP::Button("Test erect (10 seconds)"))
+    if (ImGuiMCP::Button("Test erect (10 s)"))
         if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask([] { TestPhysicsState(true); });
     ImGuiMCP::SameLine();
-    if (ImGuiMCP::Button("Repair current physics"))
+    if (ImGuiMCP::Button("Repair physics"))
         if (auto* tasks = SKSE::GetTaskInterface()) tasks->AddTask(RepairPhysics);
     const int queuedAction = pendingQuickAction.load();
     if (queuedAction >= 0) {
         const char* queuedName = queuedAction == 0 ? "soft test" : (queuedAction == 1 ? "erect test" : "repair");
-        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F),
-            "Waiting for the game to run the %s...", queuedName);
+        Menu::Warn(fmt::format("Waiting for the game to run the {}...", queuedName));
     } else if (activeManualPhysicsTest.load() >= 0 && NowMs() < manualPhysicsTestUntilMs.load()) {
         const auto remaining = std::max<std::int64_t>(0, manualPhysicsTestUntilMs.load() - NowMs());
-        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(0.35F, 1.0F, 0.45F, 1.0F),
-            "%s physics test is active (%lld seconds left)",
+        ImGuiMCP::TextColored(Menu::kGood, "%s test running (%lld s left)",
             activeManualPhysicsTest.load() == 1 ? "Erect" : "Soft", (remaining + 999) / 1000);
     }
-    ImGuiMCP::TextWrapped("Tests temporarily force one state, then normal control resumes. Repair reapplies the state SPS currently expects. Actions wait briefly while the game or a physics handoff is busy.");
-    ImGuiMCP::Separator();
-
-    SectionHeading("DETECTED COMPONENTS");
-    const auto providerName = ArousalProviderName();
-    if (debugSettings.mode != 0 && (!d.oslModuleLoaded || !d.oslPluginLoaded))
-        StatusLine("Arousal mod", "Not installed - not needed in manual mode", 2);
-    else
-        StatusLine("Arousal mod", d.oslModuleLoaded && d.oslPluginLoaded ? (arousalController.Connected() ? fmt::format("{} - ready", providerName).c_str() : fmt::format("{} - still checking", providerName).c_str()) : "Missing", d.oslModuleLoaded && d.oslPluginLoaded ? (arousalController.Connected() ? 2 : 1) : 0);
-    // "Commands accepted" is deliberate: neither engine can be read back. FSMP
-    // reports only whether a bone was dynamic before a call, and CBPC's
-    // StartPhysics/StopPhysics return nothing at all. Claiming "ready" here was
-    // an overstatement in support reports.
-    StatusLine("Soft physics", !d.fsmpModuleLoaded ? "Faster HDT-SMP is missing" :
-        (!d.fsmpActorApiAvailable ? "FSMP is too old - update to 4.0.1+" :
-            (!d.fsmpBridgePresent ? "SPS FSMP bridge is missing - reinstall SPS" :
-                (ownership.smpConnected ? "SMP - commands accepted" : "SMP found - not tested yet"))),
-        !d.fsmpModuleLoaded || !d.fsmpActorApiAvailable || !d.fsmpBridgePresent ? 0 : (ownership.smpConnected ? 2 : 1));
-    StatusLine("Erect physics", d.cbpcModuleLoaded ? (ownership.cbpcConnected ? "CBPC - commands accepted" : "CBPC found - not tested yet") : "CBPC is missing", d.cbpcModuleLoaded ? (ownership.cbpcConnected ? 2 : 1) : 0);
-    if (ownership.smpDriftDetections > 0)
-        StatusLine("SMP drift", fmt::format("Recovered {} time(s); {} of 6 bones had resumed", ownership.smpDriftDetections, ownership.lastDynamicBonesBefore).c_str(), 1);
-    StatusLine("Compatible schlong", d.playerBonesFound == 6 ? "All 6 physics bones found" : fmt::format("Only {}/6 physics bones found", d.playerBonesFound).c_str(), d.playerBonesFound == 6 ? 2 : 0);
-    const bool positionBackendFound = PositionBackendAvailable();
-    StatusLine("Erect angle control", positionBackendFound ? fmt::format("{} - ready", PositionBackendName()).c_str() : "Not available - physics switching still works", positionBackendFound ? 2 : 1);
-
-    if (OslArousedLoaded())
-        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F),
-            "OSL 2.9.3+ users: turn off Enable SOS so OSL does not fight SPS for the player's angle. The legacy FOMOD option is only for OSL 2.9.0 through 2.9.2.");
-    else if (SloArousedLoaded())
-        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F),
-            "SLO Aroused NG users: turn off Use SOS so SLO does not fight SPS for the player's angle.");
-    else if (d.classicArousedPluginLoaded)
-        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F),
-            "SexLab Aroused Redux users: turn off Enable SOS so Redux does not fight SPS for the player's angle.");
-
-    if (d.physicsEditorLoaded)
-        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F), "Physics Editor is installed. It can stay installed, but disable its schlong controls if SPS changes unexpectedly.");
-    if (d.sosPhysicsManagerLoaded)
-        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.35F, 0.35F, 1.0F), "SOS Physics Manager is enabled. Disable it because it controls the same schlong physics as SPS.");
-    if (d.autoPhysicsResetLoaded)
-        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F), "Auto Physics Reset is also running. Turn off its load, cell or scene resets if the state changes unexpectedly.");
-
-    if (ImGuiMCP::CollapsingHeader("Optional scene mods")) {
-        StatusLine("SexLab P+", d.sexLabModuleLoaded && d.sexLabPluginLoaded ? (sceneController.State().sexLab.connected.load() ? "Ready" : "Found - still checking") : "Not installed", d.sexLabModuleLoaded && d.sexLabPluginLoaded ? (sceneController.State().sexLab.connected.load() ? 2 : 1) : 1);
-        if (sceneController.State().sexLab.active.load())
-            StatusLine("Current scene role", sceneController.State().sexLab.roleValid.load() ? SexLabRoleName(sceneController.State().sexLab.role.load()) : "Checking...", sceneController.State().sexLab.roleValid.load() ? 2 : 1);
-        const bool ppaLoaded = ::GetModuleHandleW(L"AccuratePenetration.dll") != nullptr;
-        StatusLine("PPA", ppaLoaded ? (PPAOwnsPosition() ? "Controlling the scene angle" : "Ready") : "Not installed", ppaLoaded ? 2 : 1);
-        if (d.sexLabModuleLoaded && d.sexLabPluginLoaded)
-            StatusLine("Scene role support", d.sexLabRoleBridgePresent ? "Ready" : "Missing - reinstall SPS", d.sexLabRoleBridgePresent ? 2 : 0);
-        StatusLine("OStim Standalone", d.ostimPluginLoaded ? (d.ostimRoleBridgePresent ? "Ready - experimental" : "Bridge missing - rerun the FOMOD") : "Not installed", d.ostimPluginLoaded ? (d.ostimRoleBridgePresent ? 2 : 0) : 1);
-        if (sceneController.State().ostim.active.load())
-            StatusLine("Current OStim role", sceneController.State().ostim.roleValid.load() ? OStimRoleName(sceneController.State().ostim.role.load()) : "Checking...", sceneController.State().ostim.roleValid.load() ? 2 : 1);
-        StatusLine("SOFTBODY", d.softbodyLoaded ? "Ready - automatic scene reload recovery" : "Not installed", d.softbodyLoaded ? 2 : 1);
+    Menu::Note("A test forces one state for 10 seconds, then normal control resumes. Repair reapplies the state SPS expects.");
+    if (position.automaticSuspended) {
+        Menu::Warn("Angle repair paused after repeated failures.");
+        if (ImGuiMCP::SmallButton("Try angle repair again")) {
+            ResetPositionRecovery();
+            playerContext.position.appliedBend.store(-1);
+        }
     }
 
-    if (ImGuiMCP::CollapsingHeader("Physics file details")) {
-        StatusLine("SMP XML", d.compatibleXmlFiles > 0 ? fmt::format("Ready - {} compatible", d.compatibleXmlFiles).c_str() : "No compatible file found", d.compatibleXmlFiles > 0 ? 2 : 0);
-        ImGuiMCP::TextWrapped("Found: %s", d.xmlSummary.c_str());
-        StatusLine("CBPC bone list", d.compatibleCbpcMaps > 0 ? "Ready" : "Missing Gen01-Gen06 bones", d.compatibleCbpcMaps > 0 ? 2 : 0);
-        ImGuiMCP::TextWrapped("Found: %s", d.cbpcMapSummary.c_str());
-        StatusLine("CBPC movement settings", d.compatibleCbpcParameters > 0 ? "Ready" : "Missing", d.compatibleCbpcParameters > 0 ? 2 : 0);
-        ImGuiMCP::TextWrapped("Found: %s", d.cbpcParameterSummary.c_str());
-        if (d.compatibleXmlFiles > 1)
-            ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F), "More than one compatible SMP XML is visible. The schlong mesh decides which one is used.");
-    }
-
-    if (ImGuiMCP::CollapsingHeader("Technical activity")) {
-        const auto activeRequests = apiRegistry.Count();
-        StatusLine("Mod compatibility API", "V1 - ready", 2);
-        ImGuiMCP::Text("Other mods currently controlling physics: %zu", activeRequests);
-        StatusLine("Ordered handoff", ownership.pending ?
-            (ownership.pendingCBPC ? "Queued for CBPC" : "Queued for SMP") : "No handoff pending",
-            ownership.pending ? 1 : 2);
-        ImGuiMCP::Text("Confirmed owner restorations: %u", ownerRestorations.load());
-        ImGuiMCP::Text("Successful physics changes: %u", ownership.successes);
-        ImGuiMCP::Text("Failed physics changes: %u", ownership.failures);
-        ImGuiMCP::Text("Erect angle applications: %u", position.repairs);
-        ImGuiMCP::Text("Requested / applied angle: %d / %d", position.requestedBend, position.appliedBend);
-        ImGuiMCP::Text("Last angle method: %s", BendMethodName(position.lastMethod));
-        StatusLine("Gradual erection", position.animating ? fmt::format("Moving: {}/{}", position.appliedBend, position.animationTargetBend).c_str() : "Not moving", position.animating ? 1 : 2);
-        StatusLine("Angle repair", position.automaticSuspended ? "Paused after failures" : (NowMs() < position.guardUntilMs ? "Waiting for bouncing to stop" : "Ready"), position.automaticSuspended ? 0 : (NowMs() < position.guardUntilMs ? 1 : 2));
-    }
-
-    ImGuiMCP::Separator();
-    if (ImGuiMCP::CollapsingHeader("Recent activity")) {
-        const auto recentActivity = activityLog.Read();
-        ImGuiMCP::TextWrapped("Last action: %s", recentActivity.lastAction.c_str());
-        for (const auto& entry : recentActivity.recent)
-            ImGuiMCP::TextWrapped("- %s", entry.c_str());
-    }
-
-    ImGuiMCP::Separator();
-    SectionHeading("CREATE A SUPPORT REPORT");
-    ImGuiMCP::TextWrapped("For a repeatable problem, start the recording, close the menu, reproduce it, then return here and save the report.");
+    // ---- Support report
+    SectionHeading("SUPPORT REPORT");
+    Menu::Note("For a problem you can repeat: start recording, close the menu, make it happen, then come back and save the report.");
     if (DebugCaptureActive()) {
         const auto remaining = std::max<std::int64_t>(0, debugCaptureUntilMs.load() - NowMs());
-        ImGuiMCP::TextColored(ImGuiMCP::ImVec4(1.0F, 0.78F, 0.25F, 1.0F), "Recording... reproduce the problem now (%lld seconds left)", (remaining + 999) / 1000);
+        Menu::Warn(fmt::format("Recording... make the problem happen now ({} s left)", (remaining + 999) / 1000));
     } else if (ImGuiMCP::Button("Record 30 seconds")) {
         StartDebugCapture();
     }
+    if (!DebugCaptureActive()) ImGuiMCP::SameLine();
     if (ImGuiMCP::Button("Copy report")) {
         const auto report = BuildReport();
         ImGuiMCP::SetClipboardText(report.c_str());
@@ -4106,25 +4343,138 @@ void __stdcall RenderDebug() {
         else
             Record("SPS-012: Could not save the diagnostic report file", true);
     }
-    ImGuiMCP::TextWrapped("The report contains SPS settings, detected mods and relevant filenames. It does not include your Windows username, save name or full computer paths.");
+    Menu::Note("The report has SPS settings, detected mods and file names. It does not include your Windows user name, save name or full paths.");
 
-    if (ImGuiMCP::CollapsingHeader("Extra logging (advanced)")) {
-        if (ImGuiMCP::Checkbox("Write more detail to the log", &debugSettings.verboseLogging)) {
-            SaveSettingsAndApply(debugSettings, previousDebugSettings);
-            Record(debugSettings.verboseLogging ? "Verbose logging enabled" : "Verbose logging disabled");
+    // ---- Settings file
+    SectionHeading("SETTINGS FILE");
+    if (ImGuiMCP::Button("Open settings file")) OpenSettingsFile();
+    ImGuiMCP::SameLine();
+    if (ImGuiMCP::Button("Reload settings")) ReloadSettingsFromDisk();
+    ImGuiMCP::SameLine();
+    if (ImGuiMCP::Button("Restore recommended")) { UseRecommendedSettings(copy); changed = true; }
+    Menu::Note("Rarely changed values live only in the file; Reload applies your edits without restarting. "
+        "Restore recommended changes SPS settings only.");
+
+    // ---- Details, closed by default
+    ImGuiMCP::Spacing();
+    if (ImGuiMCP::CollapsingHeader("Recovery options")) {
+        if (Menu::BeginRows("##sps-help-recovery")) {
+            Menu::Row("Refresh physics after loading", "Recommended. Rebuilds the soft physics a few seconds after a save loads.");
+            changed |= ImGuiMCP::Checkbox("##sps-reset-load", &copy.resetSMPAfterLoad);
+            Menu::Row("Refresh after outfit changes", "Recommended. Reconnects physics after armour or the schlong changes.");
+            changed |= ImGuiMCP::Checkbox("##sps-equip-recovery", &copy.equipmentChangeRecovery);
+            Menu::EndRows();
         }
-        ImGuiMCP::TextWrapped("Only enable this while investigating a problem. It creates a larger log file.");
     }
+
+    if (ImGuiMCP::CollapsingHeader("Detected components")) {
+        if (Menu::BeginRows("##sps-help-components")) {
+            const auto providerName = ArousalProviderName();
+            if (copy.mode != 0 && (!d.oslModuleLoaded || !d.oslPluginLoaded))
+                Menu::StatusRow("Arousal mod", "Not installed - not needed in this mode", 2);
+            else
+                Menu::StatusRow("Arousal mod", d.oslModuleLoaded && d.oslPluginLoaded ?
+                    (arousalController.Connected() ? fmt::format("{} - ready", providerName) : fmt::format("{} - still checking", providerName)) :
+                    std::string("Missing"), d.oslModuleLoaded && d.oslPluginLoaded ? (arousalController.Connected() ? 2 : 1) : 0);
+            // "Commands accepted": neither engine can be read back, so never "ready".
+            Menu::StatusRow("Soft physics", !d.fsmpModuleLoaded ? "Faster HDT-SMP is missing" :
+                (!d.fsmpActorApiAvailable ? "FSMP is too old - update to 4.0.1+" :
+                    (!d.fsmpBridgePresent ? "SPS FSMP bridge is missing - reinstall SPS" :
+                        (ownership.smpConnected ? "SMP - commands accepted" : "SMP found - not tested yet"))),
+                !d.fsmpModuleLoaded || !d.fsmpActorApiAvailable || !d.fsmpBridgePresent ? 0 : (ownership.smpConnected ? 2 : 1));
+            Menu::StatusRow("Erect physics", d.cbpcModuleLoaded ? (ownership.cbpcConnected ? "CBPC - commands accepted" : "CBPC found - not tested yet") :
+                "CBPC is missing", d.cbpcModuleLoaded ? (ownership.cbpcConnected ? 2 : 1) : 0);
+            if (ownership.smpDriftDetections > 0)
+                Menu::StatusRow("SMP drift", fmt::format("Recovered {} time(s); {} of 6 bones had resumed",
+                    ownership.smpDriftDetections, ownership.lastDynamicBonesBefore), 1);
+            Menu::StatusRow("Schlong bones", d.playerBonesFound == 6 ? std::string("All 6 physics bones found") :
+                fmt::format("Only {}/6 physics bones found", d.playerBonesFound), d.playerBonesFound == 6 ? 2 : 0);
+            const bool positionBackendFound = PositionBackendAvailable();
+            Menu::StatusRow("Angle control", positionBackendFound ? fmt::format("{} - ready", PositionBackendName()) :
+                std::string("Not available - physics switching still works"), positionBackendFound ? 2 : 1);
+            Menu::StatusRow("SexLab P+", d.sexLabModuleLoaded && d.sexLabPluginLoaded ?
+                (sceneController.State().sexLab.connected.load() ? "Ready" : "Found - still checking") : "Not installed",
+                d.sexLabModuleLoaded && d.sexLabPluginLoaded ? (sceneController.State().sexLab.connected.load() ? 2 : 1) : 1);
+            if (d.sexLabModuleLoaded && d.sexLabPluginLoaded)
+                Menu::StatusRow("SexLab role support", d.sexLabRoleBridgePresent ? "Ready" : "Missing - reinstall SPS",
+                    d.sexLabRoleBridgePresent ? 2 : 0);
+            Menu::StatusRow("OStim", d.ostimPluginLoaded ? (d.ostimRoleBridgePresent ? "Ready" : "Bridge missing - rerun the installer") :
+                "Not installed", d.ostimPluginLoaded ? (d.ostimRoleBridgePresent ? 2 : 0) : 1);
+            const bool ppaLoaded = ::GetModuleHandleW(L"AccuratePenetration.dll") != nullptr;
+            Menu::StatusRow("PPA", ppaLoaded ? (PPAOwnsPosition() ? "Lining up the current scene" : "Ready") : "Not installed",
+                ppaLoaded ? 2 : 1);
+            Menu::StatusRow("SOFTBODY", d.softbodyLoaded ? "Ready - automatic scene reload recovery" : "Not installed",
+                d.softbodyLoaded ? 2 : 1);
+            Menu::EndRows();
+        }
+    }
+
+    if (ImGuiMCP::CollapsingHeader("Physics files")) {
+        if (Menu::BeginRows("##sps-help-files")) {
+            Menu::StatusRow("SMP XML", d.compatibleXmlFiles > 0 ? fmt::format("Ready - {} compatible", d.compatibleXmlFiles) :
+                std::string("No compatible file found"), d.compatibleXmlFiles > 0 ? 2 : 0);
+            Menu::StatusRow("CBPC bone list", d.compatibleCbpcMaps > 0 ? "Ready" : "Missing Gen01-Gen06 bones",
+                d.compatibleCbpcMaps > 0 ? 2 : 0);
+            Menu::StatusRow("CBPC movement", d.compatibleCbpcParameters > 0 ? "Ready" : "Missing",
+                d.compatibleCbpcParameters > 0 ? 2 : 0);
+            Menu::EndRows();
+        }
+        Menu::Note(fmt::format("SMP XML: {}", d.xmlSummary));
+        Menu::Note(fmt::format("CBPC bones: {}", d.cbpcMapSummary));
+        Menu::Note(fmt::format("CBPC movement: {}", d.cbpcParameterSummary));
+        if (d.compatibleXmlFiles > 1)
+            Menu::Warn("More than one compatible SMP XML is visible. The schlong mesh decides which one is used.");
+    }
+
+    if (ImGuiMCP::CollapsingHeader("Technical activity")) {
+        if (Menu::BeginRows("##sps-help-tech")) {
+            Menu::StatusRow("Mod API", fmt::format("Ready - {} mod(s) controlling physics now", apiRegistry.Count()), 2);
+            Menu::StatusRow("Physics handoff", ownership.pending ?
+                (ownership.pendingCBPC ? "Queued for CBPC" : "Queued for SMP") : "None pending", ownership.pending ? 1 : 2);
+            Menu::StatusRow("Physics changes", fmt::format("{} done, {} failed, {} restorations",
+                ownership.successes, ownership.failures, ownerRestorations.load()), ownership.failures > 0 ? 1 : 2);
+            Menu::StatusRow("Angle", fmt::format("requested {}, applied {} ({}), {} applications",
+                position.requestedBend, position.appliedBend, BendMethodName(position.lastMethod), position.repairs), 2);
+            Menu::StatusRow("Gradual erection", position.animating ? fmt::format("Moving: {}/{}", position.appliedBend,
+                position.animationTargetBend) : std::string("Not moving"), position.animating ? 1 : 2);
+            Menu::StatusRow("Angle repair", position.automaticSuspended ? "Paused after failures" :
+                (NowMs() < position.guardUntilMs ? "Waiting for bouncing to stop" : "Ready"),
+                position.automaticSuspended ? 0 : (NowMs() < position.guardUntilMs ? 1 : 2));
+            Menu::EndRows();
+        }
+    }
+
+    if (ImGuiMCP::CollapsingHeader("Recent activity")) {
+        Menu::Note(fmt::format("Last action: {}", activity.lastAction));
+        for (const auto& entry : activity.recent) {
+            ImGuiMCP::Bullet();
+            ImGuiMCP::TextWrapped("%s", entry.c_str());
+        }
+    }
+
+    if (ImGuiMCP::CollapsingHeader("Extra logging")) {
+        if (Menu::BeginRows("##sps-help-logging")) {
+            Menu::Row("Write more detail to the log", "Only while investigating a problem: it makes a much larger log file.");
+            if (ImGuiMCP::Checkbox("##sps-verbose", &copy.verboseLogging)) {
+                changed = true;
+                Record(copy.verboseLogging ? "Verbose logging enabled" : "Verbose logging disabled");
+            }
+            Menu::EndRows();
+        }
+    }
+
+    if (changed) SaveSettingsAndApply(copy, previous);
 }
 
 void RegisterMenu() {
     if (!SKSEMenuFramework::IsInstalled()) { Record("SKSE Menu Framework not found", true); return; }
     SKSEMenuFramework::SetSection(kName);
-    SKSEMenuFramework::AddSectionItem("Home", RenderMain);
-    SKSEMenuFramework::AddSectionItem("Appearance", RenderLooks);
+    SKSEMenuFramework::AddSectionItem("Overview", RenderOverview);
+    SKSEMenuFramework::AddSectionItem("Erection", RenderErection);
+    SKSEMenuFramework::AddSectionItem("Angles", RenderAngles);
     SKSEMenuFramework::AddSectionItem("Scenes", RenderScenes);
     SKSEMenuFramework::AddSectionItem("NPCs", RenderNPCs);
-    SKSEMenuFramework::AddSectionItem("Troubleshooting", RenderDebug);
+    SKSEMenuFramework::AddSectionItem("Help", RenderHelp);
 }
 
 class ModEventSink final : public RE::BSTEventSink<SKSE::ModCallbackEvent> {
@@ -4252,8 +4602,16 @@ public:
         const auto now = NowMs();
         bool enabled = false;
         { std::scoped_lock lock(settingsLock); enabled = settings.equipmentChangeRecovery; }
+        // Ignore node updates while SPS's own ownership transaction is in flight.
+        // A reset transaction takes 4-6 s, longer than its 3 s ignore window, so
+        // the node update the reset itself causes used to land after the window,
+        // wait for the transaction and start another reset when it completed: a
+        // self-sustaining chain of SMP resets, each re-baking SMP's rest frame
+        // from whatever pose the shaft had (2026-11-24 log). Armour changes are
+        // still caught by EquipEventSink, and completion extends the window.
         if (event && event->reference == RE::PlayerCharacter::GetSingleton() &&
-            now >= playerContext.recovery.ignoreNodeEventsUntilMs.load()) {
+            now >= playerContext.recovery.ignoreNodeEventsUntilMs.load() &&
+            !ownershipController.Read().pending) {
             playerBonesRefreshDueMs.store(now + 1500);
             if (enabled)
                 playerContext.recovery.nodeRefreshDueMs.store(now + 750);
@@ -4266,16 +4624,31 @@ class EquipEventSink final : public RE::BSTEventSink<RE::TESEquipEvent> {
 public:
     RE::BSEventNotifyControl ProcessEvent(const RE::TESEquipEvent* event,
         RE::BSTEventSource<RE::TESEquipEvent>*) override {
-        if (!event || event->actor.get() != RE::PlayerCharacter::GetSingleton())
-            return RE::BSEventNotifyControl::kContinue;
+        if (!event || !event->actor) return RE::BSEventNotifyControl::kContinue;
+        auto* changedArmor = RE::TESForm::LookupByID<RE::TESObjectARMO>(event->baseObject);
+        if (!changedArmor) return RE::BSEventNotifyControl::kContinue;
+        const bool canAffectShaft = ArmorCanAffectShaft(changedArmor);
 
-        auto* changedForm = RE::TESForm::LookupByID(event->baseObject);
-        if (!changedForm || changedForm->GetFormType() != RE::FormType::Armor)
+        if (event->actor.get() != RE::PlayerCharacter::GetSingleton()) {
+            // Managed NPCs had no equipment recovery: a strip or outfit change
+            // lets FSMP rebuild a dynamic shaft under an NPC SPS keeps on CBPC.
+            // Ask the NPC driver to re-assert its current owner (no reset).
+            if (canAffectShaft) {
+                // The registry is game-thread state, so it is read in the task.
+                const auto formID = event->actor->GetFormID();
+                if (auto* tasks = SKSE::GetTaskInterface())
+                    tasks->AddTask([formID] { SPS::Runtime::NotifyManagedNpcEquipment(formID); });
+            }
             return RE::BSEventNotifyControl::kContinue;
+        }
 
         bool enabled = false;
         { std::scoped_lock lock(settingsLock); enabled = settings.equipmentChangeRecovery; }
         playerBonesRefreshDueMs.store(NowMs() + 1500);
+        // Rings, amulets, helmets, boots and the like never touch the genital
+        // mesh; each of them used to start a full SMP rest rebuild (twice).
+        if (!canAffectShaft) return RE::BSEventNotifyControl::kContinue;
+        lastShaftEquipChangeMs.store(NowMs());
         if (enabled) {
             // Some armour managers replace the genital mesh without emitting
             // an SKSE NiNode update. Debounce paired equip/unequip events and
@@ -4294,6 +4667,14 @@ public:
     RE::BSEventNotifyControl ProcessEvent(const RE::MenuOpenCloseEvent* event,
         RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override {
         SPS::Runtime::UpdateExecutionClock();
+        if (event && !event->opening && event->menuName == RE::Console::MENU_NAME &&
+            playerContext.physics.known.load() && !playerContext.physics.usingCBPC.load()) {
+            // A manual "smp reset" is typed in the console and sends SPS no event.
+            // Sample the soft shaft afterwards so the log shows what that reset
+            // changed, for comparison with SPS's own rebuild samples.
+            shaftSampleStartMs.store(NowMs());
+            Record("Console closed while soft; sampling the shaft for 15 s (compare with a manual smp reset)");
+        }
         if (!event || event->menuName != RE::SleepWaitMenu::MENU_NAME)
             return RE::BSEventNotifyControl::kContinue;
 
@@ -4317,6 +4698,8 @@ public:
 };
 
 void ResetTransientTimers() {
+    softRecovery.ResetSession();
+    lastShaftEquipChangeMs.store(0);
     SPS::Runtime::ResetActorIdentities();
     SPS::Runtime::ResetBasicNpcs();
     SPS::Runtime::ResetManagedNpcs();

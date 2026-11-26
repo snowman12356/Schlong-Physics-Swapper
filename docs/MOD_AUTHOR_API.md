@@ -51,8 +51,6 @@ features are required; that export and structure remain unchanged.
 
 ## Reading live arousal and the erect threshold (V2)
 
-Published 2.0.1 does not export V2.
-
 ```cpp
 const SPS::API::InterfaceV2* GetSPSReadAPI()
 {
@@ -206,8 +204,8 @@ NPC events come from SPS's NPC service tick (about once a second), on the game t
 so they are not instant. The role comes from OStim first, then SexLab's directional
 interactions (the same test the player role uses). A scene that only OSL Aroused
 reports has no role, so `role` stays `Unknown`. NPC reads need the matching SPS Papyrus
-bridges (`SPS_PositionBridge` v6; `SPS_SexLabBridge` v6 for SexLab; the optional
-`SPS_OStimBridge` v3 for OStim). With an
+bridges (`SPS_PositionBridge` v6; `SPS_SexLabBridge` v6 or newer for SexLab; the optional
+`SPS_OStimBridge` v4 for OStim). With an
 older bridge, NPC scene and role reads stay `NotReady`.
 
 Not verified in game yet: layout-checked and built only.

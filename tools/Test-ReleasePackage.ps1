@@ -21,6 +21,8 @@ $requiredFiles = @(
     'SKSE\Plugins\CBPConfig_ZZZ_SchlongPhysicsSwapper.txt',
     'Scripts\SPS_SexLabBridge.pex',
     'Source\Scripts\SPS_SexLabBridge.psc',
+    'Scripts\SPS_IdentityBridge.pex',
+    'Source\Scripts\SPS_IdentityBridge.psc',
     'Scripts\SPS_PositionBridge.pex',
     'Source\Scripts\SPS_PositionBridge.psc',
     'Scripts\SPS_ArousalBridge.pex',
@@ -175,4 +177,4 @@ Write-Output "Release package passed validation: $resolvedPackage"
 Write-Output "FOMOD source entries checked: $($sourceNodes.Count)"
 Write-Output "Bundled SMP XML files checked: $($smpXmlFiles.Count)"
 
-Write-Output "Compiled bridge ABIs, version values and 13 paired-build hashes checked."
+Write-Output "Compiled bridge ABIs, version values and $((Get-SPSBuildInputs $resolvedPackage $resolvedPackage).Count) paired-build hashes checked."

@@ -16,7 +16,15 @@ enum class OwnershipPurpose : int {
     resetAngle = 7,
     resetMesh = 8,
     reconnectMesh = 9,
-    maintainCBPC = 10
+    maintainCBPC = 10,
+    // Clean soft rest bake (bridge preparation 6): SMP off, resting clip, reset, SMP on.
+    bakeSoft = 11,
+    // CBPC stop on the six bones only (bridge preparation 7). CBPC forgets its
+    // stop flags on every game load; this releases it while the first owner
+    // decision is still waiting for arousal. Success never changes the cached
+    // owner; a failure marks it unknown like any failed transaction, which is
+    // already its state at that point (it only runs while no owner is known).
+    releaseCBPC = 12
 };
 
 enum class OwnershipBeginStatus {

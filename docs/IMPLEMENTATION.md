@@ -57,10 +57,10 @@ This prevents a paired PPA interaction record from changing a receiving player
 to CBPC before SexLab finishes identifying the stage.
 
 All equipment recovery, player-only SMP resets and delayed bend replays wait for
-the current ownership transaction to finish. After a PPA/Accurate Penetration or
-SOFTBODY scene ends while the player is still using SMP, one delayed
-player-only reset clears scene-stretched transforms before SPS reconfirms the
-soft owner. A real CBPC-to-SMP handoff uses the same refresh path.
+the current ownership transaction to finish. While the player is soft, every
+recovery trigger (fall to soft, scene end, equipment or mesh change, load,
+external reset, repair) is merged by one soft recovery coordinator; a clean rest
+rebuild waits until the scene is fully over and the triggers have gone quiet.
 
 A failed or timed-out Papyrus ownership transaction marks the cached owner as
 unknown. SPS then retries the current policy decision with a new ordered
@@ -77,7 +77,7 @@ player 3D and VM policy checks still apply. Captures and reports show both the
 actual dispatch wait reason and the pressure flag. This does not clear the
 game's workload flag or alter another mod's stacks.
 
-## Audit repairs, 2026-09-06
+## Ownership transaction
 
 `SPS_FSMPBridge.SetPlayerOwnerV3` owns preparation and restoration in one
 callback-tracked operation. Its process/session token is checked at entry,
@@ -85,9 +85,7 @@ after waits and before engine mutations. Native cancellation invalidates the
 token but retains an executing stack's lease until it returns. A token from a
 previous save/process cannot enter a new operation. A queued SKSE barrier
 follows FSMP's reset task; only then does the 750 ms settling delay begin.
-Equipment release, settling and reacquisition use the same operation. Older
-global bridge entry points remain for compatibility; SPS no longer calls them.
-The FSMP bridge version must match the DLL (currently 9) before it dispatches ownership work.
+Equipment release, settling and reacquisition use the same operation. The FSMP bridge version must match the DLL before it dispatches ownership work.
 
 An execution clock excludes game inactivity, frozen-VM periods and paused
 menus. It is used consistently by queries, ownership, recovery and timed
@@ -109,9 +107,9 @@ missing bone; CBPC's per-node calls return no ownership result. Visible movement
 and first-/third-person skeleton attachment still require in-game tests. SPS
 does not guess engine internals or change another mod to hide this limitation.
 
-## SMP drift detection, bridge version 7
+## SMP drift detection
 
-SPS previously discarded FSMP's `TogglePhysics` return value. Verified against
+Verified against
 Faster HDT-SMP `src/dhdtPapyrusFunctions.cpp` (`TogglePhysicsImpl`), the array
 holds, per requested bone, whether that bone **was dynamic at the moment of the
 call**. The sample is taken before any state change, is recorded once per bone
@@ -127,20 +125,20 @@ reports dynamic bones and must never raise an alarm.
 
 The inverse direction remains unprovable. FSMP reports "kinematic or not found"
 identically, so a false entry never confirms that SMP released a bone, and a
-CBPC -> SMP transition supplies no evidence at all. SPS therefore never
-re-asserts SMP purely to sample it. `smpConnected` and `cbpcConnected` are now
-set separately from the selected owner instead of from one shared boolean, which
-previously reported SMP as ready after an SMP-off handoff.
+CBPC -> SMP transition supplies no evidence at all. The post-enable sample
+(below) is the only SMP proof; a short proof gets at most two plain re-checks
+through the soft coordinator, then SPS-022. `smpConnected` and `cbpcConnected`
+are set separately from the selected owner.
 
 The bridge returns `Int[4]`: validity, disable-sample dynamic count, bone-array
-length, and (since version 9) the post-enable dynamic count, which is the only
+length, and the post-enable dynamic count, which is the only
 SMP proof. It requires the paired DLL. CBPC exposes no state at all:
 `CBPCPluginScript.StartPhysics`/`StopPhysics` are void native calls, so "CBPC
 attached" remains an accepted command, never a verified condition.
 
-## Actor-scoped ownership, bridge version 8
+## Actor-scoped ownership
 
-Version 8 adds `SetActorOwnerV3(String token, Bool useCBPC, Int preparation)` for
+`SetActorOwnerV3(String token, Bool useCBPC, Int preparation)` serves
 explicitly managed NPCs. It returns the same `Int[4]` read-back as the player
 path, so NPC switching has the same evidence and the same limits: only the
 disable direction proves anything, and CBPC attachment stays an accepted command.
@@ -174,7 +172,7 @@ These were found during development and are not visible from the code.
 - `Game.GetForm` returns None for FormIDs >= 0x80000000 (`Game.psc` note on
   `GetFormEx`): every runtime-created (`FF`) and light-plugin (`FE`) actor. Never
   resolve an actor FormID with `Game.GetForm` in a bridge; use
-  `SPS_SexLabBridge.ResolveIdentityActor` or a token resolver. This left managed
+  `SPS_IdentityBridge.ResolveIdentityActor` or a token resolver. This left managed
   NPCs such as a spawned Cicero (`FF001FA9`) on "reading..." with no futa button
   until 2026-11-19.
 - 2.0.0 crashed at startup (`std::system_error`, Windows error 1113) when any TXT

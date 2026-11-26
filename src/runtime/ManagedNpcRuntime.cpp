@@ -42,6 +42,12 @@ struct Driver {
     std::int64_t arousalAt{ -1 };
     ActorSceneStatus scene{ ActorSceneStatus::unknown };
     std::int64_t sceneAt{ -1 };
+    // The NPC's role while a scene is active (SPS_PositionBridge.GetActorSceneRole):
+    // -1 failed, 0 unknown, 1 receiving, 2 penetrating. Only 2 acts: it makes the
+    // NPC erect (CBPC) during the scene. Cleared when the scene is not active.
+    int sceneRole{ 0 };
+    int loggedSceneRole{ 0 };
+    std::uint32_t pollCount{ 0 };  // alternates the scene and role checks in a scene
     std::int64_t nextPollMs{ 0 };
     // Last event the bridge accepted. Repeating it every tick would spam the
     // animation graph and is the main source of needless POS work.
@@ -73,6 +79,11 @@ struct Driver {
     std::int64_t softResetUntil{ 0 };
     std::int64_t stableWaitStart{ 0 };
     ShaftPoseTracker shaftPose;
+    // Equipment that can cover or replace the genitals changed. FSMP rebuilds
+    // a dynamic shaft for the new mesh, so the current owner is re-asserted
+    // once the change has settled. 0 means nothing is pending.
+    std::int64_t equipRecheckDueAt{ 0 };
+    std::int64_t equipRecheckUntil{ 0 };
     std::uint64_t switched{ 0 }, applied{ 0 }, deferred{ 0 }, failed{ 0 }, blocked{ 0 };
     // Log throttling: changes are always logged; repeats of the same request or
     // the same blocked reason at most every kRepeatLogMs.
@@ -126,6 +137,7 @@ struct Slot {
 };
 std::unordered_map<std::uint64_t, Slot> arousalSlots;
 std::unordered_map<std::uint64_t, Slot> sceneSlots;
+std::unordered_map<std::uint64_t, Slot> roleSlots;
 
 std::uint64_t Key(ActorWorkTicket ticket) { return (ticket.generation << 32) ^ ticket.formID; }
 
@@ -257,6 +269,7 @@ void DropDriver(ActorWorkTicket ticket)
     drivers.erase(key);
     arousalSlots.erase(key);
     sceneSlots.erase(key);
+    roleSlots.erase(key);
 }
 
 bool Eligible(RE::Actor* actor, RE::PlayerCharacter* player)
@@ -540,6 +553,15 @@ bool QueueOwnership(Driver& driver, RE::Actor* actor,
                     }
                     return;
                 }
+                if (completion.success && completion.purpose == OwnershipPurpose::restore) {
+                    // Same owner re-asserted after an equipment change; not a switch.
+                    SKSE::log::info("Managed NPC {} ({:08X}) owner re-asserted after the equipment change{}",
+                        name, ticket.formID,
+                        !wantCBPC && readback.boneCount > 0 && readback.dynamicBonesAfter != readback.boneCount ?
+                            fmt::format("; SMP not proven ({}/{})", std::max(readback.dynamicBonesAfter, 0),
+                                readback.boneCount) : std::string());
+                    return;
+                }
                 if (completion.success) {
                     ++state.switched;
                     // A real CBPC to SMP handoff: schedule the one soft reset. The
@@ -570,7 +592,11 @@ bool QueueOwnership(Driver& driver, RE::Actor* actor,
         // A reset that never ran changed nothing, so it must not mark the owner
         // unknown (a failed completion would force a full re-handoff). The reset
         // is simply retried while its window lasts.
-        if (purpose == OwnershipPurpose::resetSoft) controller.ResetPending();
+        // An equipment re-check (restore) is the same: it is retried each second
+        // within its own window, and marking the owner unknown would leave the
+        // NPC unknown for a whole scene, where the arousal decision is skipped.
+        if (purpose == OwnershipPurpose::resetSoft || purpose == OwnershipPurpose::restore)
+            controller.ResetPending();
         else (void)controller.Complete(generation, false, now);
         ++driver.blocked;
         logBlocked("the physics script was busy or unavailable (player work, another handoff, or bridge not ready)");
@@ -587,11 +613,38 @@ void Service(ActorWorkTicket ticket, ActorContext& context, RE::Actor* actor, co
     auto& driver = DriverFor(ticket);
     auto& slot = arousalSlots[Key(ticket)];
     auto& sceneSlot = sceneSlots[Key(ticket)];
+    auto& roleSlot = roleSlots[Key(ticket)];
     auto controller = PhysicsOwnershipController{ context.physics };
 
     if (controller.Read().pending) {
-        // Drop a handoff that never returned instead of waiting forever.
-        (void)controller.Expire(now, 15000);
+        // Drop a handoff that never returned instead of waiting forever. A stack
+        // that never entered is retired after the queued limit; one that is
+        // running is left to finish (its waits are bounded) up to the hard
+        // limit. Either way its token is revoked, so a late stack cannot enter
+        // or keep mutating after the controller has given up on it.
+        // NPC stacks queue behind scene scripts, so the queued limit is the
+        // old 10 s ledger validity rather than the player's 5 s.
+        const auto timeout = PhysicsOperationExecuting() ?
+            kOwnershipRunningTimeoutMs : std::int64_t{ 10000 };
+        if (controller.Expire(now, timeout).matched) {
+            CancelActorOwnership(ticket);
+            SKSE::log::warn("Managed NPC {} ({:08X}) handoff timed out after {} s; its token was revoked",
+                ActorName(actor), ticket.formID, timeout / 1000);
+        }
+    }
+    if (driver.equipRecheckDueAt > 0 && now >= driver.equipRecheckDueAt && !controller.Read().pending) {
+        const auto ownership = controller.Read();
+        if (!ownership.known || now >= driver.equipRecheckUntil) {
+            // An unknown owner is re-established by the normal decision anyway.
+            driver.equipRecheckDueAt = 0;
+        } else if (QueueOwnership(driver, actor, lease, ownership.usingCBPC, OwnershipPurpose::restore,
+                       allowedAfterMs, now, ticket, controller)) {
+            driver.equipRecheckDueAt = 0;
+            SKSE::log::info("Managed NPC {} ({:08X}) equipment changed; re-asserting {}",
+                ActorName(actor), ticket.formID, ownership.usingCBPC ? "CBPC (erect)" : "SMP (soft)");
+        } else {
+            driver.equipRecheckDueAt = now + 1000;
+        }
     }
     if (driver.requestedArousalWrite && now >= driver.writeExpiresAt) {
         driver.requestedArousalWrite.reset();
@@ -645,7 +698,14 @@ void Service(ActorWorkTicket ticket, ActorContext& context, RE::Actor* actor, co
                 ++driver.blocked;
             }
         }
-        if (sceneSlot.Begin(now)) {
+        // The scene and role checks are both Kind::scene requests, and the
+        // request ledger allows one per actor and kind, so a role check sent in
+        // the same tick as the scene check was always refused and no role was
+        // ever read (2026-11-25 log). While a scene is active they take turns:
+        // the scene check every other poll (it still sees the scene end within
+        // about 2 s), the role check on the polls in between.
+        const bool roleTurn = driver.scene == ActorSceneStatus::active && (++driver.pollCount % 2 == 0);
+        if (!roleTurn && sceneSlot.Begin(now)) {
             const auto started = now;
             if (!QueryActorScene(lease, actor, allowedAfterMs, [ticket, started](ActorWorkTicket, auto value) {
                 auto& entry = sceneSlots[Key(ticket)];
@@ -676,11 +736,46 @@ void Service(ActorWorkTicket ticket, ActorContext& context, RE::Actor* actor, co
                 }
             }
         }
+        // The role only matters inside a scene; outside one it is forgotten so a
+        // stale "penetrating" can never hold CBPC after the scene ends.
+        if (driver.scene != ActorSceneStatus::active) {
+            driver.sceneRole = 0;
+            driver.loggedSceneRole = 0;
+        } else if (roleTurn && roleSlot.Begin(now)) {
+            const auto started = now;
+            if (!QueryActorSceneRole(lease, actor, allowedAfterMs, [ticket, started](ActorWorkTicket, int value) {
+                auto& entry = roleSlots[Key(ticket)];
+                if (!entry.Finish(started)) return;
+                const auto found = drivers.find(Key(ticket));
+                if (found == drivers.end() || !registry.Resolve(ticket)) return;
+                auto& tracked = found->second;
+                // A failed read (-1) keeps the last known role.
+                if (value < 0 || tracked.scene != ActorSceneStatus::active) return;
+                tracked.sceneRole = value;
+                if (tracked.loggedSceneRole != value) {
+                    tracked.loggedSceneRole = value;
+                    SKSE::log::info("Managed NPC {} ({:08X}) scene role: {}",
+                        ActorName(RE::TESForm::LookupByID<RE::Actor>(ticket.formID)), ticket.formID,
+                        value == 2 ? "penetrating" : value == 1 ? "receiving" : "unknown");
+                }
+            })) {
+                // No SexLab/OStim, the script engine is busy, or another scene
+                // request for this actor (for example an addon's API read) is
+                // still running: keep the last role and try on the next turn.
+                (void)roleSlot.Finish(started);
+                if (driver.blockedLoggedAt < 0 || now - driver.blockedLoggedAt >= kRepeatLogMs) {
+                    driver.blockedLoggedAt = now;
+                    SKSE::log::info("Managed NPC {} ({:08X}): scene role check not sent (script engine busy or another scene check running); keeping the last role",
+                        ActorName(actor), ticket.formID);
+                }
+            }
+        }
     }
 
     if (tickSink) tickSink(ticket.formID, driver.arousal, allowedAfterMs);
 
-    // A scene owns positioning: never send a background ownership change.
+    // A scene owns positioning: no arousal-driven ownership change (the one
+    // exception, a penetrating NPC going erect, is at the end of this block).
     if (driver.scene != ActorSceneStatus::clear) {
         // The scene's own animations replace the pose, so the recorded angle is
         // no longer evidence of the bone. Forget it, otherwise the unchanged
@@ -691,6 +786,20 @@ void Service(ActorWorkTicket ticket, ActorContext& context, RE::Actor* actor, co
         driver.curBend = 0.0F;
         driver.lastStepMs = 0;
         driver.fallHoldSinceMs = -1;
+        // Exception: an NPC that is the penetrating partner (a handjob, blowjob
+        // or penetration it receives on its penis) must be erect, like the
+        // player's role switching. Without this an NPC that entered the scene
+        // soft stayed soft for the whole scene. Only ever towards CBPC here;
+        // the normal arousal decision takes over again after the scene.
+        if (driver.sceneRole == 2 && !controller.Read().pending) {
+            const auto ownership = controller.Read();
+            if (!ownership.known || !ownership.usingCBPC) {
+                driver.softResetDueAt = 0;
+                driver.stableWaitStart = 0;
+                (void)QueueOwnership(driver, actor, lease, true,
+                    OwnershipPurpose::switchOwner, allowedAfterMs, now, ticket, controller);
+            }
+        }
         return;
     }
     if (!driver.arousal || driver.arousalAt < 0 ||
@@ -984,6 +1093,7 @@ void ResetManagedNpcs()
     drivers.clear();
     arousalSlots.clear();
     sceneSlots.clear();
+    roleSlots.clear();
     { std::scoped_lock lock(optionsLock); liveOptions.clear(); }
     nearbyCache.clear();
     nearbyScanAtMs = 0;
@@ -1096,6 +1206,18 @@ bool IsManagedNpc(std::uint32_t formID)
     return registry.Find(formID).has_value();
 }
 
+void NotifyManagedNpcEquipment(std::uint32_t formID)
+{
+    const auto found = registry.Find(formID);
+    if (!found) return;
+    auto& driver = DriverFor(found->ticket);
+    // Debounced: paired unequip/equip events (a strip, an outfit swap) give one
+    // re-check after the last of them. Bounded by a 12 s window.
+    const auto now = NowMs();
+    driver.equipRecheckDueAt = now + 2500;
+    driver.equipRecheckUntil = now + 12000;
+}
+
 std::optional<ManagedNpcApiState> ReadManagedNpcApiState(std::uint32_t formID)
 {
     const auto found = registry.Find(formID);
@@ -1106,8 +1228,14 @@ std::optional<ManagedNpcApiState> ReadManagedNpcApiState(std::uint32_t formID)
         state.physicsKnown = ownership.known && !ownership.pending;
         state.usingCBPC = ownership.usingCBPC;
     }
-    if (const auto driver = drivers.find(Key(found->ticket)); driver != drivers.end() && driver->second.arousal)
-        state.arousal = driver->second.arousal;
+    if (const auto driver = drivers.find(Key(found->ticket)); driver != drivers.end()) {
+        if (driver->second.arousal) state.arousal = driver->second.arousal;
+        // sceneRole is cleared whenever the driver sees no active scene, so a
+        // value here belongs to the current scene.
+        if (driver->second.scene == ActorSceneStatus::active &&
+            (driver->second.sceneRole == 1 || driver->second.sceneRole == 2))
+            state.sceneRole = driver->second.sceneRole;
+    }
     return state;
 }
 

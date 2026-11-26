@@ -218,7 +218,7 @@ try {
     Invoke-SPSProcess -FilePath $cmakeCommand.Path -ArgumentList $buildArguments `
         -Environment $cleanEnvironment -Description 'SPS build'
 
-    foreach ($testName in @('SPSCoreTests', 'SPSDiagnosticsTests', 'SPSActorRegistryTests')) {
+    foreach ($testName in @('SPSCoreTests', 'SPSDiagnosticsTests', 'SPSActorRegistryTests', 'SPSSoftRecoveryTests')) {
         $testExecutable = Join-Path $physicalBuild "$Configuration\$testName.exe"
         if (Test-Path -LiteralPath $testExecutable -PathType Leaf) {
             Invoke-SPSProcess -FilePath $testExecutable -ArgumentList @() `

@@ -33,7 +33,9 @@ constexpr std::uint32_t kMaxRemembered = 256;
 constexpr std::uint32_t kManagedRecord = Tag('M', 'N', 'P', 'C');
 constexpr std::uint32_t kManagedRecordVersion = 1;
 
-constexpr int kSexLabBridgeVersion = 6;
+constexpr int kSexLabBridgeVersion = 9;
+// SexLab-free identity reads (SOS addon and, through SPS_SexLabBridge, SexLab sex).
+constexpr int kIdentityBridgeVersion = 1;
 constexpr std::int64_t kDescribeEveryMs = 5000;
 constexpr std::int64_t kReapplyEveryMs = 10000;
 
@@ -48,8 +50,10 @@ std::unordered_map<std::uint32_t, Entry> entries;
 std::set<std::uint32_t> remembered;          // this save's futa list
 std::vector<std::pair<std::uint32_t, bool>> futaRequests;
 std::uint64_t generation{ 1 };
-std::atomic<int> bridgeVersion{ 0 };          // 0 unknown, -1 mismatch
+std::atomic<int> bridgeVersion{ 0 };          // SexLab bridge: 0 unknown, -1 mismatch
 std::atomic<bool> versionPending{ false };
+std::atomic<int> identityVersion{ 0 };        // identity bridge: 0 unknown, -1 mismatch
+std::atomic<bool> identityVersionPending{ false };
 
 class Callback final : public RE::BSScript::IStackCallbackFunctor {
 public:
@@ -91,6 +95,21 @@ bool ReadSexLab()
         std::filesystem::exists("Data/Scripts/SPS_SexLabBridge.pex");
 }
 
+// The identity bridge is called with or without SexLab, so it holds no SexLab
+// types. SPS_SexLabBridge declares them and is only reached when SexLab is
+// loaded (2.3.0.3 rule: never declare an optional mod's type in a bridge that
+// is called without that mod).
+bool IdentityBridgeInstalled()
+{
+    const bool installed = std::filesystem::exists("Data/Scripts/SPS_IdentityBridge.pex");
+    // Logged once per process so a partial install is visible in support logs.
+    static std::atomic<bool> missingLogged{ false };
+    if (!installed && !missingLogged.exchange(true))
+        SKSE::log::error("SPS-013: SPS_IdentityBridge.pex is missing; schlong and SexLab identity reads are off. "
+            "Install the paired DLL and scripts");
+    return installed;
+}
+
 // "<addon>|<rank>|<baseSex>|<sex>", parsed from the right so an addon name
 // containing '|' cannot shift the numbers.
 bool Parse(std::string_view text, ActorIdentity& out)
@@ -129,6 +148,24 @@ bool EnsureBridge(std::int64_t allowedAfterMs, std::int64_t now)
     return false;
 }
 
+bool EnsureIdentityBridge(std::int64_t allowedAfterMs, std::int64_t now)
+{
+    const int version = identityVersion.load();
+    if (version != 0) return version == kIdentityBridgeVersion;
+    if (identityVersionPending.exchange(true)) return false;
+    const bool sent = DispatchStaticWithCallback("SPS_IdentityBridge", "GetSPSBridgeVersion",
+        allowedAfterMs, now, MakeCallback([](const RE::BSScript::Variable& result) {
+            const int value = result.IsInt() ? result.GetSInt() : -1;
+            identityVersion.store(value == kIdentityBridgeVersion ? value : -1);
+            identityVersionPending.store(false);
+            if (value != kIdentityBridgeVersion)
+                SKSE::log::error("SPS-013: identity bridge version {} found, {} required; install the paired DLL and scripts",
+                    value, kIdentityBridgeVersion);
+        }));
+    if (!sent) identityVersionPending.store(false);
+    return false;
+}
+
 void Describe(std::uint32_t formID, bool readSos, bool readSexLab, std::uint64_t session,
     std::int64_t allowedAfterMs, std::int64_t now)
 {
@@ -140,7 +177,7 @@ void Describe(std::uint32_t formID, bool readSos, bool readSexLab, std::uint64_t
         entry.identity.pending = true;
         entry.describedAt = now;
     }
-    const bool sent = DispatchStaticWithCallback("SPS_SexLabBridge", "DescribeActor",
+    const bool sent = DispatchStaticWithCallback("SPS_IdentityBridge", "DescribeActor",
         allowedAfterMs, now,
         MakeCallback([formID, readSos, readSexLab, session](const RE::BSScript::Variable& result) {
             std::scoped_lock guard(lock);
@@ -272,7 +309,7 @@ void OnRevert(SKSE::SerializationInterface*)
     ClearManagedNpcMembership();
 }
 
-// SPS_SexLabBridge.ResolveIdentityActor. Game.GetForm returns None for FormIDs
+// SPS_IdentityBridge / SPS_SexLabBridge.ResolveIdentityActor. Game.GetForm returns None for FormIDs
 // >= 0x80000000, so light-plugin (FE) and runtime-created (FF) actors such as a
 // spawned follower could never be described or made futa from Papyrus.
 RE::Actor* NativeResolveIdentityActor(RE::StaticFunctionTag*, std::int32_t formID)
@@ -286,6 +323,7 @@ bool RegisterActorIdentityNatives(RE::BSScript::IVirtualMachine* vm)
 {
     if (!vm) return false;
     vm->RegisterFunction("ResolveIdentityActor", "SPS_SexLabBridge", NativeResolveIdentityActor);
+    vm->RegisterFunction("ResolveIdentityActor", "SPS_IdentityBridge", NativeResolveIdentityActor);
     return true;
 }
 
@@ -311,9 +349,12 @@ void TickActorIdentities(const std::vector<std::uint32_t>& watched, std::int64_t
 {
     const bool readSos = SosAeNativeLoaded();
     const bool readSexLab = ReadSexLab();
-    if (!readSos && !readSexLab) return;
+    if ((!readSos && !readSexLab) || !IdentityBridgeInstalled()) return;
     const auto now = NowMs();
-    if (!PapyrusReady(allowedAfterMs, now) || !EnsureBridge(allowedAfterMs, now)) return;
+    if (!PapyrusReady(allowedAfterMs, now) || !EnsureIdentityBridge(allowedAfterMs, now)) return;
+    // The SexLab bridge (futa writes, SexLab sex reads) is only checked, and
+    // only called, when SexLab is loaded.
+    if (readSexLab && !EnsureBridge(allowedAfterMs, now)) return;
 
     std::vector<std::uint32_t> targets = watched;
     std::vector<std::pair<std::uint32_t, bool>> requests;
@@ -384,6 +425,8 @@ void ResetActorIdentities()
     ++generation;
     bridgeVersion.store(0);
     versionPending.store(false);
+    identityVersion.store(0);
+    identityVersionPending.store(false);
 }
 
 void RegisterActorIdentitySerialization()

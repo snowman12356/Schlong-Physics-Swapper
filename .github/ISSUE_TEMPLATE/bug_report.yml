@@ -7,12 +7,12 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for helping improve the mod. Open Troubleshooting and check your setup first. For repeatable problems, record the next 30 seconds and attach the resulting text file below.
+        Thanks for helping improve the mod. Open the Help page and check your setup first. For repeatable problems, record the next 30 seconds and attach the resulting text file below.
   - type: input
     id: mod-version
     attributes:
       label: Mod version
-      placeholder: 1.8.0
+      placeholder: 2.3.0.5
     validations:
       required: true
   - type: input

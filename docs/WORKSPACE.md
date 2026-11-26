@@ -6,8 +6,8 @@ The active repository contains only SPS-owned source and project metadata:
 - `scripts/Source` - Papyrus source owned by SPS
 - `scripts/BuildStubs` - compile-only dependency declarations; never packaged
 - `scripts/*.pex` - compiled bridge components paired with the DLL
-- `compat` - optional compatibility components (OSL legacy script, bundled XML
-  physics configs, SOFTBODY SPS Natural)
+- `compat` - optional compatibility components (OSL legacy script and the
+  bundled XML physics profiles)
 - `config` and `fomod` - runtime configuration and installer declarations
 - `tests` - game-independent C++ regression tests and API smoke-test source
 - `tools` - environment, build, Papyrus, package and publication commands
@@ -21,7 +21,4 @@ sibling `codex-references` library; they must not be copied into this
 repository.
 
 Temporary worktrees, research downloads, extracted mods, repair staging,
-packages and old generated builds do not belong in the repository. The items
-found during the 2026-08-31 migration were audited and temporarily preserved,
-then permanently removed with explicit approval on 2026-09-01 after the active
-source, build dependencies and test installation were verified.
+packages and old generated builds do not belong in the repository.

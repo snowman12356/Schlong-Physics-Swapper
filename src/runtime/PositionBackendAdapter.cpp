@@ -5,6 +5,8 @@
 #include "SosPoseAngle.h"
 #include "controllers/PoseTargets.h"
 
+#include <SKSE/SKSE.h>
+
 #include <atomic>
 #include <filesystem>
 
@@ -160,6 +162,11 @@ PositionDispatchResult ApplyPosition(
         actor,
         RE::BSFixedString(restingPose ? "SOSFlaccid" : SosBendEventName(bend, tngBackend)),
         tngBackend, allowedAfterMs, nowMs);
+    // Logged because the resting clip lands right after a soft rest rebuild and
+    // moves the kinematic GenBase the SMP chain hangs from; the log must show
+    // when it was sent to compare with the shaft samples.
+    if (restingPose && actor == RE::PlayerCharacter::GetSingleton())
+        SKSE::log::info("Player resting pose sent: SOSFlaccid ({})", accepted ? "accepted" : "refused");
     return { accepted, false, 1 };
 }
 

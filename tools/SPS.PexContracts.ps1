@@ -106,7 +106,7 @@ function Read-SPSPexContract {
 
 function Get-SPSBridgeContracts {
     @(
-        @{ Name = 'SPS_FSMPBridge'; Version = 9; Prefix = ''; Signatures = @{
+        @{ Name = 'SPS_FSMPBridge'; Version = 12; Prefix = ''; Signatures = @{
             SetPlayerOwnerV3 = 'Int[](String,Bool,Int,Int):1'
             SetActorOwnerV3 = 'Int[](String,Bool,Int):1'
             CountDynamicBones = 'Int(Bool[]):1'
@@ -114,19 +114,22 @@ function Get-SPSBridgeContracts {
             ResolveOwnershipRequest = 'Actor(String):3'
             EnterOperation = 'Bool(String):3'; OperationCurrent = 'Bool(String):3'
             QueueResetBarrier = 'Bool(String):3'; ResetBarrierPassed = 'Bool(String):3'
-            SetPlayerOwnerV2 = 'Bool(Bool):1'; SetPlayerOwner = 'None(Bool):1'
-            ReleasePlayerPhysics = 'None():1'; ResetPlayerPhysics = 'None(Bool):1'
         }}
-        @{ Name = 'SPS_SexLabBridge'; Version = 6; Prefix = ''; Signatures = @{
-            GetPlayerThreadID = 'Int():1'; IsPlayerActive = 'Bool():1'; GetPlayerRole = 'Int():1'
+        @{ Name = 'SPS_SexLabBridge'; Version = 9; Prefix = ''; Signatures = @{
+            GetPlayerInteractionString = 'String():1'
+            GetPlayerThreadID = 'Int():1'; GetPlayerRole = 'Int():1'
             ResolveIdentityActor = 'Actor(Int):3'
-            DescribeActor = 'String(Int,Bool,Bool):1'; SetActorFuta = 'Int(Int,Bool):1'
+            GetActorSex = 'Int(Actor,Bool):1'; SetActorFuta = 'Int(Int,Bool):1'
             ReadActorSceneState = 'Int(Actor):1'; ReadActorRole = 'Int(Actor):1'
         }}
-        @{ Name = 'SPS_PositionBridge'; Version = 6; Prefix = ''; Signatures = @{
+        @{ Name = 'SPS_IdentityBridge'; Version = 1; Prefix = ''; Signatures = @{
+            ResolveIdentityActor = 'Actor(Int):3'
+            DescribeActor = 'String(Int,Bool,Bool):1'
+        }}
+        @{ Name = 'SPS_PositionBridge'; Version = 7; Prefix = ''; Signatures = @{
             GetActorSceneRole = 'Int(String,Bool,Bool):1'
             ReadActorSceneRole = 'Int(Actor,Bool,Bool):1'
-            SendPlayerAnimationEvent = 'Bool(String):1'; SetPlayerPoseAngle = 'Bool(Int,Float):1'
+            SendPlayerAnimationEvent = 'Bool(String):1'
             ActorRequestCurrent = 'Bool(String,Actor):3'
             ResolveActorRequest = 'Actor(String):3'
             ApplyActorPosition = 'Bool(String,String,Bool):1'
@@ -150,7 +153,7 @@ function Get-SPSBridgeContracts {
             ResolveArousalWriteRequest = 'Actor(String):3'
             SetActorArousal = 'Float(String,Float):1'
         }}
-        @{ Name = 'SPS_OStimBridge'; Version = 3; Prefix = 'Optional/OStim/'; Signatures = @{
+        @{ Name = 'SPS_OStimBridge'; Version = 4; Prefix = 'Optional/OStim/'; Signatures = @{
             GetPlayerRole = 'Int():1'; GetActorSceneState = 'Int(Actor):1'; GetActorRole = 'Int(Actor):1'
         }}
     )

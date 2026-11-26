@@ -102,12 +102,22 @@ void InvalidateManagedNpc(std::uint32_t formID);
 // skip these actors so the two paths never command the same target.
 bool IsManagedNpc(std::uint32_t formID);
 
+// Game thread. A managed NPC equipped or removed armour that can cover or
+// replace the genitals. After a short debounce its driver re-asserts the
+// current owner (an ordinary handoff to the same owner, no reset), because
+// FSMP rebuilds a dynamic shaft for the new mesh. Ignored for other actors.
+void NotifyManagedNpcEquipment(std::uint32_t formID);
+
 // Public API V5. Game thread. The physics owner SPS currently selected for a
 // managed NPC and its last accepted arousal. Nullopt when the actor is not managed.
 struct ManagedNpcApiState {
     bool physicsKnown{ false };
     bool usingCBPC{ false };
     std::optional<float> arousal;
+    // The scene role the managed driver already read (1 receiving, 2
+    // penetrating). Unset outside an active scene or before the first read, so
+    // the API falls back to its own probe.
+    std::optional<int> sceneRole;
 };
 std::optional<ManagedNpcApiState> ReadManagedNpcApiState(std::uint32_t formID);
 // Called once per service tick for every managed NPC while set, so the public

@@ -127,6 +127,8 @@ Copy-ReleaseFile 'config\CBPCMasterConfig_ZZZ_SchlongPhysicsSwapper.txt' 'SKSE\P
 Copy-ReleaseFile 'config\CBPConfig_ZZZ_SchlongPhysicsSwapper.txt' 'SKSE\Plugins\CBPConfig_ZZZ_SchlongPhysicsSwapper.txt'
 Copy-ReleaseFile 'scripts\SPS_SexLabBridge.pex' 'Scripts\SPS_SexLabBridge.pex'
 Copy-ReleaseFile 'scripts\Source\SPS_SexLabBridge.psc' 'Source\Scripts\SPS_SexLabBridge.psc'
+Copy-ReleaseFile 'scripts\SPS_IdentityBridge.pex' 'Scripts\SPS_IdentityBridge.pex'
+Copy-ReleaseFile 'scripts\Source\SPS_IdentityBridge.psc' 'Source\Scripts\SPS_IdentityBridge.psc'
 Copy-ReleaseFile 'scripts\SPS_PositionBridge.pex' 'Scripts\SPS_PositionBridge.pex'
 Copy-ReleaseFile 'scripts\Source\SPS_PositionBridge.psc' 'Source\Scripts\SPS_PositionBridge.psc'
 Copy-ReleaseFile 'scripts\SPS_ArousalBridge.pex' 'Scripts\SPS_ArousalBridge.pex'

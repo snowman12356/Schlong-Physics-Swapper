@@ -10,8 +10,20 @@
 
 namespace SPS::Runtime {
 
-// Paired SPS_FSMPBridge.pex must report this exact version (bridge v9).
-inline constexpr int kPhysicsBridgeVersion = 9;
+// Paired SPS_FSMPBridge.pex must report this exact version (bridge v12).
+inline constexpr int kPhysicsBridgeVersion = 12;
+
+// Ownership timeouts. A stack that was queued but never entered is retired
+// after the queued limit (cancelling it is safe: it cannot enter afterwards).
+// A stack that has entered is left to finish until the hard limit; its own
+// waits are bounded, so it returns well before that on a healthy game.
+inline constexpr std::int64_t kOwnershipQueuedTimeoutMs = 5000;
+// Counted from Begin, so it includes up to 5 s of queueing; the longest stack
+// (bounded 10 s barrier wait plus the bake's own waits) fits with margin.
+inline constexpr std::int64_t kOwnershipRunningTimeoutMs = 30000;
+// NPC ownership requests stay valid for the stack as long as the NPC
+// controller waits for it.
+inline constexpr std::int64_t kActorOwnershipValidityMs = kOwnershipRunningTimeoutMs;
 
 enum class OwnershipDispatchResult {
     failed,
@@ -39,6 +51,10 @@ bool OrderedFsmpBridgeAvailable();
 bool RegisterPhysicsBridge(RE::BSScript::IVirtualMachine* vm);
 void CancelPhysicsOperation();
 bool PhysicsOperationBusy();
+// True while a dispatched ownership stack is running (entered, not yet
+// returned). A running stack is never cancelled by the ordinary timeout: a
+// cancel between engine calls can leave the shaft half handed over.
+bool PhysicsOperationExecuting();
 void ResetPhysicsOperations();
 // Actor position stacks share the existing physics execution lease. Scoped
 // cancellation must never cancel an unrelated player's operation.

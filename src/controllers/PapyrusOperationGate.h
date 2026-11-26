@@ -15,6 +15,13 @@ public:
         std::scoped_lock lock(lock_);
         return !expected_.empty() || !executing_.empty();
     }
+    // True once a dispatched stack has entered and until it returns. Only one
+    // stack can be prepared at a time, so this is the pending owner's stack.
+    bool Executing() const
+    {
+        std::scoped_lock lock(lock_);
+        return !executing_.empty();
+    }
     bool Prepare(std::string token)
     {
         std::scoped_lock lock(lock_);

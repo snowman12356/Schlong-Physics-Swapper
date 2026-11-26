@@ -1,47 +1,5 @@
 # SPS pose angle: replacing the removed SOS AE bend (2026-11-01)
 
-## Evidence
-Schlongs of Skyrim AE updated to `d2026.10.18` (reported as 4.0.0). Checked
-against the previous version kept at
-`D:\Modding\usefulmods\Schlongs of Skyrim AE old`.
-
-**The native bend call is gone.** `SOSAE_SKSE.SetSchlongBend` is absent from
-both the new `Scripts\SOSAE_SKSE.pex` and `SKSE\Plugins\SchlongsOfSkyrim.dll`.
-The new script exposes seven natives only:
-
-`GetActorAddonName`, `GetActorRank`, `GetActorAddonArmor`, `SetActorAddonName`,
-`SetActorRank`, `SetActorAddonArmor`, and the `SOSAE_GetAPIVersion` string the
-DLL registers.
-
-Also removed: `ExecuteErectionCycle`, `ShowSchlong`, `GetActorUnderCrosshair`,
-`ScaleSchlongBonesAE`, `GetWinningAddon`, `PrepareForShutdown` (still present),
-and the whole `SOSAE_MCM.pex` / `SOSAE_PlayerAliasScript.pex` pair. The mod moved
-its own controls to SKSE input keys and the SKSE Menu Framework.
-
-**The skeleton layer is untouched.** All 23 files under `meshes\auxbones\SOS`
-are byte-identical to the old version (SHA-256 compared). The behaviour graph
-still binds:
-
-- events `SOSBend0`-`SOSBend9`, `SOSFlaccid`, `SOSFastErect`, `SOSSlowErect`,
-  `SOSErect`, `SOSBendUp`/`SOSBendDown`
-- AnimObjects `SOS_Bend0`-`SOS_Bend9`, `SOS_Custom00`-`SOS_Custom09`
-
-The new DLL contains the format string `SOSBend{}`, so its own keys drive the
-same graph events SPS can send. This is why the mod still works after deleting
-an entire MCM system.
-
-**New hard dependency.** The new DLL requires `po3_Tweaks` with the *Load
-EditorIDs* tweak for addon lookup (`SOS AE - Error: po3_Tweaks is not loaded,
-editor IDs are not available and no addon will be found`). The SKSE Menu
-Framework is optional. SexLab compatibility is still referenced.
-
-## Why a native replacement was not available
-
-The bend value used to be applied by the DLL. With that entry point removed
-there is no supported way to ask SOS for an arbitrary angle, and the graph
-events are both coarser (ten stages) and relative (re-sending repeats the blend,
-so a polling tick produces mush rather than a held angle).
-
 ## Outcome: the premise was wrong (verified in game 2026-11-01)
 
 Reported by the user: **the angle does not change.** The cause is not the axis
@@ -74,7 +32,7 @@ the animation graph was still overwriting it.
 - The gradual-erection ramp now drives graph events for SOS AE too, instead of
   calling the pose write from its worker thread.
 - Method 3 remains as an opt-in diagnostic and is labelled experimental in the
-  MCP panel.
+  menu.
 - `GenBase` is never the lever. If a genuinely continuous angle is wanted later
   it has to go through an animation clip, a CBPC config, or a native that the
   owning mod exposes - not a bone write.

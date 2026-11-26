@@ -52,7 +52,6 @@
 	<bone name="NPC L Hand [LHnd]" />
 	<bone name="NPC R Hand [RHnd]" />
 	//wof
-	<bone name="NPC R Thigh [LThg]" />
 
 	<!-- KEYFRAMED -->
 <bone-default>
@@ -350,13 +349,13 @@
 		<linearLowerLimit x="0" y="0" z="0"/>
 		<linearUpperLimit x="0" y="0" z="0"/>
 		<angularLowerLimit x="-0.30" y="-0.18" z="-0.18"/>
-		<angularUpperLimit x="0.12" y="0.18" z="0.18"/>
+		<angularUpperLimit x="0.16" y="0.18" z="0.18"/>
 		<linearStiffness x="0" y="0" z="0"/>
 		<angularStiffness x="75" y="115" z="115"/>
 		<linearDamping x="80" y="80" z="80"/>
 		<angularDamping x="32" y="40" z="40"/>
 		<linearEquilibrium x="0" y="0" z="0"/>
-		<angularEquilibrium x="-0.018" y="0" z="0"/>
+		<angularEquilibrium x="-0.08" y="0.072" z="0"/>
 		<linearBounce x="0" y="0" z="0"/>
 		<angularBounce x="0" y="0" z="0"/>
 	</generic-constraint>
@@ -369,7 +368,7 @@
 		<linearLowerLimit x="0" y="0" z="0"/>
 		<linearUpperLimit x="0" y="0" z="0"/>
 		<angularLowerLimit x="-0.32" y="-0.20" z="-0.20"/>
-		<angularUpperLimit x="0.12" y="0.20" z="0.20"/>
+		<angularUpperLimit x="0.18" y="0.20" z="0.20"/>
 		<linearStiffness x="0" y="0" z="0"/>
 		<angularStiffness x="60" y="100" z="100"/>
 		<linearDamping x="80" y="80" z="80"/>
@@ -388,7 +387,7 @@
 		<linearLowerLimit x="0" y="0" z="0"/>
 		<linearUpperLimit x="0" y="0" z="0"/>
 		<angularLowerLimit x="-0.34" y="-0.22" z="-0.22"/>
-		<angularUpperLimit x="0.12" y="0.22" z="0.22"/>
+		<angularUpperLimit x="0.18" y="0.22" z="0.22"/>
 		<linearStiffness x="0" y="0" z="0"/>
 		<angularStiffness x="48" y="85" z="85"/>
 		<linearDamping x="80" y="80" z="80"/>
@@ -406,12 +405,12 @@
 		<useLinearReferenceFrameA>false</useLinearReferenceFrameA>
 		<linearLowerLimit x="0" y="0" z="0"/>
 		<linearUpperLimit x="0" y="0" z="0"/>
-		<angularLowerLimit x="-0.36" y="-0.24" z="-0.24"/>
-		<angularUpperLimit x="0.12" y="0.24" z="0.24"/>
+		<angularLowerLimit x="-0.36" y="-0.20" z="-0.20"/>
+		<angularUpperLimit x="0.18" y="0.20" z="0.20"/>
 		<linearStiffness x="0" y="0" z="0"/>
-		<angularStiffness x="38" y="70" z="70"/>
+		<angularStiffness x="48" y="85" z="85"/>
 		<linearDamping x="80" y="80" z="80"/>
-		<angularDamping x="26" y="30" z="30"/>
+		<angularDamping x="32" y="36" z="36"/>
 		<linearEquilibrium x="0" y="0" z="0"/>
 		<angularEquilibrium x="-0.018" y="0" z="0"/>
 		<linearBounce x="0" y="0" z="0"/>
@@ -425,14 +424,14 @@
 		<useLinearReferenceFrameA>false</useLinearReferenceFrameA>
 		<linearLowerLimit x="0" y="0" z="0"/>
 		<linearUpperLimit x="0" y="0" z="0"/>
-		<angularLowerLimit x="-0.38" y="-0.26" z="-0.26"/>
-		<angularUpperLimit x="0.12" y="0.26" z="0.26"/>
+		<angularLowerLimit x="-0.28" y="-0.16" z="-0.16"/>
+		<angularUpperLimit x="0.16" y="0.16" z="0.16"/>
 		<linearStiffness x="0" y="0" z="0"/>
-		<angularStiffness x="30" y="55" z="55"/>
+		<angularStiffness x="50" y="90" z="90"/>
 		<linearDamping x="80" y="80" z="80"/>
-		<angularDamping x="24" y="28" z="28"/>
+		<angularDamping x="36" y="40" z="40"/>
 		<linearEquilibrium x="0" y="0" z="0"/>
-		<angularEquilibrium x="-0.018" y="0" z="0"/>
+		<angularEquilibrium x="0.04" y="0" z="0"/>
 		<linearBounce x="0" y="0" z="0"/>
 		<angularBounce x="0" y="0" z="0"/>
 	</generic-constraint>
@@ -541,68 +540,14 @@
 		<no-collide-with-tag>VirtualLegs</no-collide-with-tag>
 		<no-collide-with-tag>VirtualPenis</no-collide-with-tag>
 			<weight-threshold bone="NPC GenitalsScrotum [GenScrot]">1</weight-threshold>
-		<no-collide-with-tag>MaleHands</no-collide-with-tag>
-		<no-collide-with-tag>Malehands</no-collide-with-tag>
-		<no-collide-with-tag>penis</no-collide-with-tag>
-		<no-collide-with-tag>VirtualFeet</no-collide-with-tag>
-		<no-collide-with-tag>VirtualLegs</no-collide-with-tag>
-		<no-collide-with-tag>VirtualPenis</no-collide-with-tag>
 			<weight-threshold bone="NPC L GenitalsScrotum [LGenScrot]">1</weight-threshold>
-		<no-collide-with-tag>MaleHands</no-collide-with-tag>
-		<no-collide-with-tag>Malehands</no-collide-with-tag>
-		<no-collide-with-tag>penis</no-collide-with-tag>
-		<no-collide-with-tag>VirtualFeet</no-collide-with-tag>
-		<no-collide-with-tag>VirtualLegs</no-collide-with-tag>
-		<no-collide-with-tag>VirtualPenis</no-collide-with-tag>
 			<weight-threshold bone="NPC R GenitalsScrotum [RGenScrot]">1</weight-threshold>
-		<no-collide-with-tag>MaleHands</no-collide-with-tag>
-		<no-collide-with-tag>Malehands</no-collide-with-tag>
-		<no-collide-with-tag>penis</no-collide-with-tag>
-		<no-collide-with-tag>VirtualFeet</no-collide-with-tag>
-		<no-collide-with-tag>VirtualLegs</no-collide-with-tag>
-		<no-collide-with-tag>VirtualPenis</no-collide-with-tag>
 			<weight-threshold bone="NPC GenitalsBase [GenBase]">1</weight-threshold>
-		<no-collide-with-tag>MaleHands</no-collide-with-tag>
-		<no-collide-with-tag>Malehands</no-collide-with-tag>
-		<no-collide-with-tag>penis</no-collide-with-tag>
-		<no-collide-with-tag>VirtualFeet</no-collide-with-tag>
-		<no-collide-with-tag>VirtualLegs</no-collide-with-tag>
-		<no-collide-with-tag>VirtualPenis</no-collide-with-tag>
 			<weight-threshold bone="NPC Genitals01 [Gen01]">0.1</weight-threshold>
-		<no-collide-with-tag>MaleHands</no-collide-with-tag>
-		<no-collide-with-tag>Malehands</no-collide-with-tag>
-		<no-collide-with-tag>penis</no-collide-with-tag>
-		<no-collide-with-tag>VirtualFeet</no-collide-with-tag>
-		<no-collide-with-tag>VirtualLegs</no-collide-with-tag>
-		<no-collide-with-tag>VirtualPenis</no-collide-with-tag>
 			<weight-threshold bone="NPC Genitals02 [Gen02]">0.1</weight-threshold>
-		<no-collide-with-tag>MaleHands</no-collide-with-tag>
-		<no-collide-with-tag>Malehands</no-collide-with-tag>
-		<no-collide-with-tag>penis</no-collide-with-tag>
-		<no-collide-with-tag>VirtualFeet</no-collide-with-tag>
-		<no-collide-with-tag>VirtualLegs</no-collide-with-tag>
-		<no-collide-with-tag>VirtualPenis</no-collide-with-tag>
 			<weight-threshold bone="NPC Genitals03 [Gen03]">0.1</weight-threshold>
-		<no-collide-with-tag>MaleHands</no-collide-with-tag>
-		<no-collide-with-tag>Malehands</no-collide-with-tag>
-		<no-collide-with-tag>penis</no-collide-with-tag>
-		<no-collide-with-tag>VirtualFeet</no-collide-with-tag>
-		<no-collide-with-tag>VirtualLegs</no-collide-with-tag>
-		<no-collide-with-tag>VirtualPenis</no-collide-with-tag>
 			<weight-threshold bone="NPC Genitals04 [Gen04]">0.1</weight-threshold>
-		<no-collide-with-tag>MaleHands</no-collide-with-tag>
-		<no-collide-with-tag>Malehands</no-collide-with-tag>
-		<no-collide-with-tag>penis</no-collide-with-tag>
-		<no-collide-with-tag>VirtualFeet</no-collide-with-tag>
-		<no-collide-with-tag>VirtualLegs</no-collide-with-tag>
-		<no-collide-with-tag>VirtualPenis</no-collide-with-tag>
 			<weight-threshold bone="NPC Genitals05 [Gen05]">0.1</weight-threshold>
-		<no-collide-with-tag>MaleHands</no-collide-with-tag>
-		<no-collide-with-tag>Malehands</no-collide-with-tag>
-		<no-collide-with-tag>penis</no-collide-with-tag>
-		<no-collide-with-tag>VirtualFeet</no-collide-with-tag>
-		<no-collide-with-tag>VirtualLegs</no-collide-with-tag>
-		<no-collide-with-tag>VirtualPenis</no-collide-with-tag>
 			<weight-threshold bone="NPC Genitals06 [Gen06]">0.1</weight-threshold>
 	</per-triangle-shape>
 

@@ -1,6 +1,6 @@
-# Schlong Physics Swapper 2.3.0.3
+# Schlong Physics Swapper 2.3.0.5
 
-Local development build, not a published release; the latest release is 2.0.1.
+Local development build, not a published release; see the GitHub releases for the latest published version.
 Optional NPC support is on the **NPCs** page and is off by default.
 
 Native SKSE plugin for compatible SOS six-bone schlongs. Faster HDT-SMP owns
@@ -156,44 +156,34 @@ NPC reads. No new requirement is added for players. See
 ## Settings
 
 Open SKSE Menu Framework in game, then select **Schlong Physics Swapper**.
-The streamlined **Home** page provides the core controls and the two positions
-SPS switches between:
+The menu has six pages, each answering one question. Every control is a
+labelled row; hover the **(?)** next to a label for a short explanation.
 
-- live arousal, current physics engine, and overall health
-- plain-language Automatic, Always Soft, and Always Erect modes
-- soft and erect angle controls in one place
-- automatic soft-angle refresh, without a manual SMP reset
-- a simple recommended-settings button
+- **Overview**: is SPS working? Status card (SPS, physics, mode, live arousal
+  that can be dragged to set the player's OSL Aroused value, current scene role), the main on/off switch and physics mode
+  (Automatic, Always Soft, Always Erect), and a short guide to the other pages.
+- **Erection**: when SPS goes erect (erect-at arousal, soft return gap,
+  optional rise with arousal), how fast (**Rise time** and **Fall time**,
+  0.5-30 seconds for the full `SOSBend-9` to `SOSBend9` travel in 18 even
+  steps, with a preview button), and random erections.
+- **Angles**: erect angle, soft angle and an optional separate scene angle.
+  The collapsed **Advanced** section chooses how SPS sets the angle:
+  `Choose automatically` (recommended, the SOS/TNG animation stages),
+  `SOS / TNG animation stages` (the 19 `SOSBend-9`-`SOSBend9` graph events), or
+  `SPS pose angle` (experimental: writes `NPC GenitalsBase [GenBase]` directly;
+  the SOS/TNG animation rewrites that bone every frame, so it is kept only for
+  diagnosis).
+- **Scenes**: SexLab and OStim on/off and role following, what happens when
+  the player is receiving, and SexLab futa for the player and managed NPCs.
+- **NPCs**: managed NPCs as cards (state, arousal, Remove, their own settings),
+  a Nearby table to add more, and a collapsed section for simple poses on
+  other NPCs.
+- **Help**: setup check with plain-language fixes, soft/erect tests and
+  repair, the 30-second recording and support report, the settings file
+  buttons (open, reload, restore recommended) and collapsed technical details.
 
-The **Advanced** section of the Appearance page lets you choose how SPS sets the angle:
-
-- `Choose automatically` (recommended): uses the SOS/TNG animation stages.
-- `SOS / TNG animation stages`: sends the 19 `SOSBend-9`-`SOSBend9` graph events.
-- `SPS pose angle` (experimental): writes `NPC GenitalsBase [GenBase]` directly.
-  The SOS/TNG animation rewrites that bone every frame, so this usually does not
-  move the angle; it remains only for diagnosis.
-
-The **Appearance** page controls the transition between those positions:
-
-- an optional erection that rises gradually with live arousal
-- **Rise time** and **Fall time** sliders (0.5-30 seconds). Each is the exact
-  time to travel between the lowest (`SOSBend-9`) and highest (`SOSBend9`)
-  positions, in 18 even steps
-- separate rise and softening times, so an erection can fade naturally instead
-  of dropping immediately
-- optional random erections with separate shortest and longest intervals
-- an optional normal-gameplay guard that waits during combat, dialogue, loading
-  and paused menus
-- optional recovery time between spontaneous erections and an optional erection
-  after a long sleep or wait
-- a test button so random behaviour can be checked immediately
-
-SexLab and OStim controls have their own **Scenes** page, and NPC controls
-have the **NPCs** page. Rare timing, recovery and compatibility controls live
-in collapsed **Advanced** sections and are collapsed
-until needed. **Troubleshooting** shows the important setup results first,
-keeps file names and counters inside optional detail sections, and uses normal
-language for quick fixes and support reports.
+Rarely changed timing, recovery and compatibility values are in the settings
+file rather than the menu.
 
 Defaults are threshold 60, hysteresis 5, bend 14, and a 1000 ms polling
 interval. Settings are saved to
@@ -217,7 +207,7 @@ installs the experimental OStim role bridge. SOS AE, legacy SOS and TNG all use
 the same SPS core DLL. New users can install the recommended settings; updating
 users can choose **Keep my existing settings** so their INI is not replaced.
 Physics Editor and Auto Physics Reset notices are shown on the in-game
-**Troubleshooting** page and do not block installation.
+**Help** page and do not block installation.
 
 ## Behavior
 
@@ -298,9 +288,9 @@ an optional OSL 2.9.0-to-2.9.2 compatibility script, the SPS author's optional
 six-bone SMP XML, and an opt-in combined SOFTBODY 3.37.2 SMP XML set. It does
 not contain an ESP, body meshes or any other OSL files.
 
-## Troubleshooting page
+## Help page
 
-The Troubleshooting page shows loaded and live connection state for:
+The Help page shows loaded and live connection state for:
 
 - SKSE Menu Framework
 - Arousal provider (OSL, SLO NG, or classic SexLab Aroused)
@@ -339,23 +329,6 @@ computer paths.
 When reporting a problem, attach the diagnostic report or 30-second capture and
 include the schlong addon, Skyrim runtime, mod-manager name, expected result,
 actual result, and short reproduction steps. See [SUPPORT.md](docs/SUPPORT.md).
-
-## Unreleased 2.2.0 changes
-
-- Added the `SPS pose angle` angle method. SPS rotates `NPC GenitalsBase
-  [GenBase]` itself, giving a continuous angle instead of the 19 animation
-  stages, and needs no Schlongs of Skyrim native. Experimental: the SOS/TNG
-  animation graph rewrites that bone every frame, so the angle does not persist.
-- Fixed angle control with Schlongs of Skyrim AE 4.0.0, which removed
-  `SOSAE_SKSE.SetSchlongBend`. SPS no longer calls it anywhere; the position
-  bridge, physics bridge and build stubs were updated accordingly.
-- Managed NPCs use the pose angle when that method is selected, so their angle
-  no longer depends on the SOS event contract.
-- Fixed the position-dispatch fallback so a pose that cannot be applied (no 3D
-  yet, or no base bone) falls through to the animation graph instead of being
-  reported as applied.
-- Added pose diagnostics: a bone-frame log line and a base-pose recapture
-  control, so the rotation axis can be confirmed in game.
 
 ## Earlier changes
 

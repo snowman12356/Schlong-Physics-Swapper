@@ -56,6 +56,7 @@ scripts/*
 !scripts/SPS_PositionBridge.pex
 !scripts/SPS_ArousalBridge.pex
 !scripts/SPS_PoseAngle.pex
+!scripts/SPS_IdentityBridge.pex
 !scripts/Source/
 scripts/Source/*
 !scripts/Source/SPS_SexLabBridge.psc
@@ -64,6 +65,7 @@ scripts/Source/*
 !scripts/Source/SPS_PositionBridge.psc
 !scripts/Source/SPS_ArousalBridge.psc
 !scripts/Source/SPS_PoseAngle.psc
+!scripts/Source/SPS_IdentityBridge.psc
 !scripts/BuildStubs/
 scripts/BuildStubs/*
 !scripts/BuildStubs/SexLabFramework.psc
@@ -83,6 +85,7 @@ scripts/BuildStubs/*
 !scripts/SPS_FSMPBridge.pex
 !scripts/SPS_PositionBridge.pex
 !scripts/SPS_ArousalBridge.pex
+!scripts/SPS_IdentityBridge.pex
 MaleGenitals*.xml
 UBE-Amazing*.xml
 audit-bodyslide.ps1

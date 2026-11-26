@@ -22,6 +22,7 @@ $includes = "$sourceDirectory;$stubDirectory;$baseSources"
 $bridges = @(
     'SPS_FSMPBridge',
     'SPS_SexLabBridge',
+    'SPS_IdentityBridge',
     'SPS_PositionBridge',
     'SPS_ArousalBridge',
     'SPS_OStimBridge',

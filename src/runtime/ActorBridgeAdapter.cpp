@@ -40,8 +40,8 @@ struct VersionProbe {
     }
 };
 VersionProbe arousalVersion{ 3 };
-VersionProbe positionVersion{ 6 };
-VersionProbe ostimVersion{ 3 };
+VersionProbe positionVersion{ 7 };
+VersionProbe ostimVersion{ 4 };
 
 class VersionCallback final : public RE::BSScript::IStackCallbackFunctor {
 public:
