@@ -116,5 +116,7 @@ compat/OSL Aroused/Scripts/Source/*
 !compat/SOFTBODY SPS/**
 !compat/SOFTBODY SPS No Body Collision/
 !compat/SOFTBODY SPS No Body Collision/**
+!compat/SOFTBODY SPS Natural Hang/
+!compat/SOFTBODY SPS Natural Hang/**
 !compat/Personal Physics/
 !compat/Personal Physics/**

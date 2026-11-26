@@ -42,6 +42,10 @@ $requiredFiles = @(
     'Optional\SOFTBODY SPS No Body Collision\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsSoft.xml',
     'Optional\SOFTBODY SPS No Body Collision\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsToAnus.xml',
     'Optional\SOFTBODY SPS No Body Collision\README.md',
+    'Optional\SOFTBODY SPS Natural Hang\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml',
+    'Optional\SOFTBODY SPS Natural Hang\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsSoft.xml',
+    'Optional\SOFTBODY SPS Natural Hang\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsToAnus.xml',
+    'Optional\SOFTBODY SPS Natural Hang\README.md',
     'Optional\Personal Physics\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml',
     'Optional\Personal Physics\README.md',
     'Licenses\OSL-Aroused-Unlicense.txt',
@@ -105,7 +109,8 @@ $expectedPhysicsChoices = @(
     'I have my own compatible physics',
     'Use my personal physics',
     'Use my SOFTBODY physics',
-    'Use my SOFTBODY physics (no body collision)'
+    'Use my SOFTBODY physics (no body collision)',
+    'Use my SOFTBODY physics (natural hang)'
 )
 if (($physicsChoices -join '|') -ne ($expectedPhysicsChoices -join '|')) {
     throw 'The FOMOD physics choices or their order do not match the supported first-person wording.'
@@ -135,7 +140,7 @@ foreach ($xmlFile in $smpXmlFiles) {
     }
 }
 
-foreach ($softbodyOption in @('SOFTBODY SPS', 'SOFTBODY SPS No Body Collision')) {
+foreach ($softbodyOption in @('SOFTBODY SPS', 'SOFTBODY SPS No Body Collision', 'SOFTBODY SPS Natural Hang')) {
 $softbodySpsRoot = Join-Path $resolvedPackage "Optional\$softbodyOption\SKSE\Plugins\hdtSkinnedMeshConfigs"
 foreach ($fileName in @('MaleGenitals.xml', 'MaleGenitalsSoft.xml', 'MaleGenitalsToAnus.xml')) {
     [xml]$combined = Get-Content -LiteralPath (Join-Path $softbodySpsRoot $fileName) -Raw

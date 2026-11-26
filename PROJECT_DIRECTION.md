@@ -70,6 +70,18 @@ also in git history and the vault dev logs).
   unchanged. New `SPSSoftRecoveryTests` (61 checks, run by every build). DLL `EE3AAC7C...9973`,
   ZIP `E950DA04...78DE`. Installed with Skyrim closed, 17 files hash-verified, rollback
   `out/backups/testmod-before-coordinatorclass-20261126-172040` (54 files).
+- **Regrowth probe build (2026-11-26 18:19, installed, not checked in game):** INI-only
+  `[Debug] ProbeSkipPostBakeFlaccid=1` (default off) skips the SOSFlaccid resting clip after a clean
+  rest rebuild when no soft angle is configured and TNG is absent; logs `Probe: post-bake SOSFlaccid
+  resting clip not sent`. Tests candidate (a) of open item 1. 17 files hash-verified, DLL `A95F4D25...0721`,
+  rollback `out/backups/testmod-before-probeflaccid-20261126-181852` (54 files). The key was added to the
+  test mod INI (the only INI change). Remove the key or set 0 to restore normal behaviour.
+- **Private override XML retune (2026-11-26 evening, owner: "working how I want", not logged):**
+  in `SOFTBODY True Soft Shaft - SPS` (all three MaleGenitals*.xml; backups `out/backups/trueshaft-before-{moregravity,gen01closer,chaincloser,ballmove,ballgravity}-20261126-18*`):
+  gravity Gen01-06 0.75..0.54 and scrotum 0.90/0.95; Gen01 upper x -0.26, equilibrium -0.52;
+  Gen02-06 default upper x 0.14, equilibrium +0.05; ball angular limits and stiffness widened
+  and softened, ball linear stiffness 450/350 with wider limits. Shipped presets unchanged.
+  Regrowth probe result was not recorded; item 1 below stays open.
 - **Published:** GitHub releases v2.0.0, v2.0.1, v2.3.0.2, v2.3.0.3 and v2.3.0.4 (2.3.0.4
   was reverted in code; whether to withdraw its release is not decided). Nexus mod 188174
   (uploads are left to the owner).
@@ -238,13 +250,19 @@ also in git history and the vault dev logs).
    working XMLs are still outstanding. The SOFTBODY PPA patch v3.0 supplies no
    dynamic shaft chain, so it must not replace SPS profiles. See
    `docs/PREDATOR_HIMBO_COMPATIBILITY_2026-09-14.md`.
-6. **FOMOD natural-hang option** ("Use my SOFTBODY physics (natural hang)",
-   `compat/SOFTBODY SPS Natural/`, unpublished). *2026-11-25 audit:* neither that folder
-   nor a natural-hang entry in `fomod/ModuleConfig.xml` exists in the working tree, so
-   this item is stale until the option is found or dropped. Originally: tuned for one large mesh,
-   check on a normal mesh before releasing. The shaft-thigh collision
-   experiment is not shipped. `Test-PackageGuards.ps1` did not finish in two
-   minutes, so the guards are not verified for that option.
+6. **FOMOD natural-hang option** ("Use my SOFTBODY physics (natural hang)"). *Rebuilt
+   2026-11-26* from the owner's working override (`SOFTBODY True Soft Shaft - SPS`, with its
+   duplicate no-collide tags removed): `compat/SOFTBODY SPS Natural Hang/` (three XMLs and
+   README), the fourth physics choice in `fomod/ModuleConfig.xml`, and entries in
+   `New-ReleasePackage.ps1`, `Test-ReleasePackage.ps1` and `.gitignore`. Package validation
+   passes (the SOFTBODY guard loop covers it); not committed, not published, not tried from a
+   FOMOD install. Tuned on one large mesh: check on a normal mesh before releasing. The
+   override contains the owner's test-only passes (shaft collision margin 0.05, strong gravity),
+   which this option now ships. `Test-PackageGuards.ps1` was not run.
+   *Also 2026-11-26:* the post-rebuild SOSFlaccid skip is now the default
+   (`[Debug] ProbeSkipPostBakeFlaccid`, true unless set to 0; owner: looks better and fixes the
+   regrowth). Built, not installed (the test mod INI already has it set to 1); open item 1's
+   regrowth is reported fixed by the owner, not confirmed from a log.
 7. **Menu framework hygiene.** `CMakeLists.txt` fetches the menu example from a
    moving `master` (pinned locally by the `.sps-deps` override); the
    framework's wrappers have no null checks and SPS has no minimum-version check.

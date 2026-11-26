@@ -57,7 +57,17 @@
                 <file source="Optional\SOFTBODY SPS No Body Collision\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsToAnus.xml" destination="SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsToAnus.xml" priority="10" />
               </files>
               <typeDescriptor><type name="Optional" /></typeDescriptor>
-            </plugin>          </plugins>
+            </plugin>
+            <plugin name="Use my SOFTBODY physics (natural hang)">
+              <description>Same SOFTBODY collisions as "Use my SOFTBODY physics", with my own heavier hang: more gravity on the shaft and balls, the shaft rests closer to the balls and curves further down, and the balls move more and hang correctly when you bend over. Tuned on one large mesh, so it may clip on a smaller one. Choose it instead of the other SOFTBODY options, not in addition, and make SPS win conflicts for the three MaleGenitals XML files.</description>
+              <files>
+                <file source="Optional\SOFTBODY SPS Natural Hang\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml" destination="SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitals.xml" priority="10" />
+                <file source="Optional\SOFTBODY SPS Natural Hang\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsSoft.xml" destination="SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsSoft.xml" priority="10" />
+                <file source="Optional\SOFTBODY SPS Natural Hang\SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsToAnus.xml" destination="SKSE\Plugins\hdtSkinnedMeshConfigs\MaleGenitalsToAnus.xml" priority="10" />
+              </files>
+              <typeDescriptor><type name="Optional" /></typeDescriptor>
+            </plugin>
+          </plugins>
         </group>
       </optionalFileGroups>
     </installStep>

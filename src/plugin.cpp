@@ -2101,7 +2101,15 @@ void HandleOwnershipCompletion(const SPS::Controllers::OwnershipCompletion& comp
                 playerContext.position.settleDueMs.store(now + copy.settleDelayMs);
                 playerContext.position.confirmationDueMs.store(now + copy.settleDelayMs + 1500);
             }
-        } else if (!restingPoseAlreadyApplied && !bakedPoseFinal) QueueSoftBendAfterCompletion();
+        } else if (!restingPoseAlreadyApplied && !bakedPoseFinal) {
+            bool skipFlaccid = false;
+            if (baked && bakeClean) {
+                std::scoped_lock lock(settingsLock);
+                skipFlaccid = settings.probeSkipPostBakeFlaccid;
+            }
+            if (skipFlaccid) logger::info("Probe: post-bake SOSFlaccid resting clip not sent");
+            else QueueSoftBendAfterCompletion();
+        }
         if (baked && !bakeClean) {
             Record(fmt::format("Soft SMP rest rebuild not proven: the SMP-off step found {}/{} dynamic bones "
                 "and {}/{} were dynamic after the rebuild; one more rebuild requested",

@@ -21,6 +21,7 @@ Settings ReadSettings(CSimpleIniA& ini)
     settings.mode = std::clamp(static_cast<int>(ini.GetLongValue("General", "Mode", 0)), 0, 2);
     settings.erectBend = std::clamp(static_cast<int>(ini.GetLongValue("General", "ErectBend", 14)), 0, 20);
     settings.flaccidAngleControl = ini.GetBoolValue("Position", "FlaccidAngleControl", false);
+    settings.probeSkipPostBakeFlaccid = ini.GetBoolValue("Debug", "ProbeSkipPostBakeFlaccid", true);
     settings.flaccidBend = std::clamp(static_cast<int>(ini.GetLongValue("Position", "FlaccidBend", 0)), 0, 20);
     settings.pollMs = std::clamp(static_cast<int>(ini.GetLongValue("General", "PollMilliseconds", 1000)), 250, 10000);
     settings.sexLabOverride = ini.GetBoolValue("Compatibility", "SexLabPPlusOverride", true);

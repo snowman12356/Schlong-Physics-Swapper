@@ -17,6 +17,10 @@ struct Settings {
     int erectBend{ 14 };
     bool flaccidAngleControl{ false };
     int flaccidBend{ 0 };
+    // INI only, on by default (owner-verified 2026-11-26: looks better and stops the
+    // post-fall shaft regrowth): do not send the SOSFlaccid resting clip after a
+    // clean rest rebuild. Set [Debug] ProbeSkipPostBakeFlaccid=0 to send it again.
+    bool probeSkipPostBakeFlaccid{ true };
     int pollMs{ 1000 };
     bool sexLabOverride{ true };
     bool sexLabRoleSwitching{ true };
