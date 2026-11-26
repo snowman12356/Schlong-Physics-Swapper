@@ -62,13 +62,14 @@ also in git history and the vault dev logs).
 
 - **Branch:** `codex/codebase-rework`. The 2.3.0.5 work below was committed on 2026-11-26 as
   one checkpoint on top of `558a7ef` (2.3.0.4 reverted to 2.3.0.3); see `git log`. Not pushed.
-- **Soft recovery coordinator moved to a controller (2026-11-26, built, not installed):**
+- **Soft recovery coordinator moved to a controller (2026-11-26, installed 17:20, not checked in game):**
   `src/controllers/SoftRecoveryCoordinator.{h,cpp}` holds the round state and decisions
   (merge, quiet period, scene settle, max and long waits, dispatch-failure bound) and the
   dependency-quirk follow-ups (SMP proof re-checks, clean-bake rule and retries, CBPC release
   once per load). `plugin.cpp` only supplies inputs and runs the transaction. Behaviour is
   unchanged. New `SPSSoftRecoveryTests` (61 checks, run by every build). DLL `EE3AAC7C...9973`,
-  ZIP `E950DA04...78DE`. The installed test mod still has the audit-fix build (`B3B22AE0`).
+  ZIP `E950DA04...78DE`. Installed with Skyrim closed, 17 files hash-verified, rollback
+  `out/backups/testmod-before-coordinatorclass-20261126-172040` (54 files).
 - **Published:** GitHub releases v2.0.0, v2.0.1, v2.3.0.2, v2.3.0.3 and v2.3.0.4 (2.3.0.4
   was reverted in code; whether to withdraw its release is not decided). Nexus mod 188174
   (uploads are left to the owner).
